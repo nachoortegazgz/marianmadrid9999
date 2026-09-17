@@ -679,7 +679,6 @@ function _getBookingSlotFromCita(cita) {
     endDate: cita?.endDate || null
   };
 }
-```js
 function _getDualSlotInput(payload, key) {
   const slot = payload?.[key];
 
