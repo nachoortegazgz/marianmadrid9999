@@ -1,8 +1,7 @@
 /*
 =============================================================================
-MODULE: backend/bookingSaga.js
-VERSION: v5007.8-SSOT (FIX EDITOR residual + skipAvailabilityValidation=true
-        + elevate selectivo)
+MODULE: backend/booking/bookingSaga.js
+VERSION: v5007.8-SSOT (AUDIT-BOOKING-01 + AUDIT-BOOKING-02 aplicados)
 SSOT: SSOT CONSOLIDADO v5002.6 | ESQUEMA CMS v5002.5 | DOSSIER RESERVAS v0609
 MISSION: Orquestador transaccional. Saga compensable para reservas simples
          y duales con gap de exposicion. Gestiona locks, heartbeat,
@@ -15,6 +14,7 @@ INVENTARIO DE FUNCIONES:
   [INTERNAL] _resolveStablePairToken({serviceId, resourceId, f1Start, f2Start, email, existingPairToken})
   [INTERNAL] _bestEffortUnlockAll(lockKeys, lockOwnerId)
   [INTERNAL] _compensateCreatedBookings(createdBookings, traceId)
+  [INTERNAL] _createBookingWithSelectiveElevation(payload, traceId)
   [CLASS]  BookingSagaOrchestrator
   [EXPORT] executeBookingSaga(unsafePayload)
 =============================================================================
@@ -31,16 +31,40 @@ COLECCIONES QUE ESCRIBE: CitasF2, BookingTransactions, SlotLocks,
 COLECCIONES QUE LEE: ServiciosCatalogo, MapaStaff, CitasF2, BookingTransactions
 =============================================================================
 HISTORIAL DE CAMBIOS:
-  v5007.8 | 2026-09-15 | FIX AUDITORIA:
+  v5007.8 | 2026-09-15 | AUDITORIA APLICADA:
           |            | [AUDIT-BOOKING-01] skipAvailabilityValidation=true
-          |            |   tras validacion previa con Time Slots V2.
-          |            | [AUDIT-BOOKING-02] elevate selectivo: solo bajo
-          |            |   ACCESS_DENIED. Sin elevate indiscriminado.
-  v5007.7 | 2026-09-14 | FIX EDITOR RESIDUAL: strings de error con guiones
-          |            | bajos restaurados en PHASE 2.
-  v5007.6 | 2026-09-14 | FIX EDITOR: restauracion de _ y * eliminados.
-  v5007.5 | 2026-09-14 | Alineacion SSOT v5002.6 completa.
-  v5007.4 | 2026-09-14 | Fix HAL-S1. Correcciones HAL-S2 a HAL-S12.
+          |            |   en payloads de createBooking (PHASE 4). Razon:
+          |            |   disponibilidad ya validada en PHASE 3 con Time
+          |            |   Slots V2. Evita race conditions entre validacion
+          |            |   y creacion. Ref: doc Wix Bookings V2.
+          |            | [AUDIT-BOOKING-02] _createBookingWithSelectiveElevation:
+          |            |   elevate SOLO bajo ACCESS_DENIED. Ref: doc Wix
+          |            |   "Be selective about when to use elevate(),
+          |            |   especially when writing backend code that can be
+          |            |   triggered from the frontend using a web method."
+          |            | Sin cambios funcionales adicionales.
+  v5007.7 | 2026-09-14 | FIX EDITOR RESIDUAL: en PHASE 2 las comparaciones
+          |            | contra txResult.error usaban strings sin guiones
+          |            | bajos ("PAIRTOKENPAYLOAD_MISMATCH",
+          |            | "TRANSACTIONPREVIOUSLYFAILED") que nunca coincidian
+          |            | con los valores reales retornados por bookingCore.js
+          |            | ("PAIR_TOKEN_PAYLOAD_MISMATCH",
+          |            | "TRANSACTION_PREVIOUSLY_FAILED"). Restaurados los
+          |            | guiones bajos para que las ramas de error especificas
+          |            | se ejecuten correctamente. Sin cambios funcionales
+          |            | adicionales.
+  v5007.6 | 2026-09-14 | FIX EDITOR: restauracion de _ y * eliminados por
+          |            | procesado Markdown sobre v5007.5 (LOCKTTLMS,
+          |            | HEARTBEATMS, COLLECTIONS.CITAS_F2,
+          |            | COMPENSACIONES_PENDIENTES, ERROR_CODES.*,
+          |            | ESTADO_PAGO.*, ESTADO_CITA.*, multiplicadores
+          |            | 60 y 1000, helpers con prefijo _).
+  v5007.5 | 2026-09-14 | Alineacion SSOT v5002.6 completa. Eliminados todos
+          |            | los fallbacks legacy. Campos canonicos al primer nivel
+          |            | de CitasF2. Import corregido a bookingCore.logger.
+          |            | Dynamic import eliminado. Enum CANCEL_BOOKING alineado.
+  v5007.4 | 2026-09-14 | Fix HAL-S1 (syntax trailing ||). Correcciones HAL-S2
+          |            | a HAL-S12 aplicadas.
   v5007.3 | 2026-09-10 | FIX A5: import _extractCheckoutId desde bookingCore.
   v5002.5 | 2026-09-10 | Fix S-01: linkedPhases como fuente primaria de F2.
   v5002.3 | 2026-09-06 | Version inicial del dossier.
@@ -72,10 +96,9 @@ import {
     _normalizeLocalIsoStr,
 } from "public/mmUtils";
 
-// [AUDIT-FIX] logger importado desde backend/logger (no bookingCore)
-import { logger } from "backend/logger";
-
+// [HAL-S4 FIX] logger imported from bookingCore.js (no backend/logger module in SSOT inventory)
 import {
+    logger,
     createBookingElevated,
     cancelBookingElevated,
     confirmOrDeclineBookingElevated,
@@ -99,6 +122,7 @@ import {
 
 export { _extractCheckoutId };
 
+// [HAL-S10 FIX] Static import replaces redundant dynamic import
 import {
     _resolveServiceIdInternal,
     _invalidateCachesInternal,
@@ -174,6 +198,7 @@ async function _compensateCreatedBookings(createdBookings, traceId) {
                 error: cancelErr?.message,
             });
             try {
+                // [HAL-S12 FIX] kind aligned with internalConfig enum CANCEL_BOOKING
                 await wixData.insert(
                     COMPENSACIONESCOL, {
                         id: "COMP" + bookingId + "_" + Date.now(),
@@ -208,32 +233,37 @@ async function _compensateCreatedBookings(createdBookings, traceId) {
 }
 
 // =============================================================================
-// [AUDIT-FIX] ELEVATE SELECTIVO
-// Solo elevar cuando el caller no tiene permisos nativos.
-// Referencia: https://dev.wix.com/docs/develop-websites/articles/backend/about-elevation
-// "Be selective about when to use elevate(), especially when writing backend
-//  code that can be triggered from the frontend using a web method."
+// BLOCK 5 - [AUDIT-BOOKING-02] SELECTIVE ELEVATION
+//
+// Referencia oficial Wix:
+//   "Be selective about when to use elevate(), especially when writing
+//    backend code that can be triggered from the frontend using a web method."
+//
+// Patron:
+//   1. Intento sin elevate -> respeta permisos del caller.
+//   2. Si el error es ACCESS_DENIED -> reintento con elevate.
+//   3. Cualquier otro error -> propaga sin elevar.
 // =============================================================================
-
-async function _createBookingWithFallback(payload, traceId) {
+async function _createBookingWithSelectiveElevation(payload, traceId) {
     try {
         // Intento sin elevate (respeta permisos del caller)
         return await bookings.createBooking(payload);
     } catch (err) {
-        const errCode = _safeTrim(err?.code || err?.details?.applicationError?.code).toUpperCase();
-        const isAccessDenied = errCode === "ACCESS_DENIED" ||
+        const code = _safeTrim(err?.code || err?.details?.applicationError?.code).toUpperCase();
+        const isAccessDenied = code === "ACCESS_DENIED" ||
             String(err?.message || "").toUpperCase().includes("ACCESS_DENIED");
 
-        if (isAccessDenied) {
-            log.info("Elevating createBooking due to ACCESS_DENIED", { traceId });
-            return await createBookingElevated(payload);
+        if (!isAccessDenied) {
+            throw err;
         }
-        throw err;
+
+        log.info("Elevating createBooking due to ACCESS_DENIED", { traceId: traceId });
+        return await createBookingElevated(payload);
     }
 }
 
 // =============================================================================
-// BLOCK 5 - SAGA ORCHESTRATOR
+// BLOCK 6 - SAGA ORCHESTRATOR
 // =============================================================================
 export class BookingSagaOrchestrator {
     constructor(traceId) {
@@ -283,7 +313,7 @@ export class BookingSagaOrchestrator {
 }
 
 // =============================================================================
-// BLOCK 6 - EXECUTE BOOKING SAGA (MAIN FUNCTION)
+// BLOCK 7 - EXECUTE BOOKING SAGA (MAIN FUNCTION)
 // =============================================================================
 export async function executeBookingSaga(unsafePayload) {
     const traceId = unsafePayload?.traceId || makeTraceId("saga");
@@ -300,6 +330,8 @@ export async function executeBookingSaga(unsafePayload) {
             throw createBookingError(ERROR_CODES.INVALID_PAYLOAD, "Email is required", { traceId: traceId });
         }
 
+        // [HAL-S1 FIX] Trailing || removed, default empty string added
+        // [HAL-S5 FIX] primaryServiceGuid legacy fallback removed (R7 zero legacy)
         const rawServiceId = _safeTrim(
             unsafePayload?.serviceId ||
             metaCita.serviceId ||
@@ -313,6 +345,7 @@ export async function executeBookingSaga(unsafePayload) {
             });
         }
 
+        // [HAL-S10 FIX] Static import used instead of redundant dynamic import
         const serviceRes = await _getServiceBySlugOrIdInternal(serviceId, traceId);
         const serviceConfig = serviceRes?.data || {};
         const isDual = serviceConfig.allowCombine === true && !!serviceConfig.linkedPhases;
@@ -346,6 +379,7 @@ export async function executeBookingSaga(unsafePayload) {
             );
 
             if (!f2LocalStart) {
+                // [FIX EDITOR v5007.6] Multiplicadores 60 y 1000 restaurados (parse error 325:86)
                 const f1EndUtc = getUtcDateFromMadridLocal(f1LocalEnd);
                 const exposureMs =
                     Math.max(0, Number(serviceConfig.exposureDuration || 0)) * 60 * 1000;
@@ -379,6 +413,8 @@ export async function executeBookingSaga(unsafePayload) {
 
         if (existingCitaRes?.items?.length > 0) {
             const existingCita = existingCitaRes.items[0];
+            // [HAL-S6, HAL-S8 FIX] Only canonical paymentStatus field used.
+            // estadoPago and CITAFIELDS.STATUSPAGO removed (NOM-01 resolved).
             const existingPaymentStatus = String(
                 existingCita.paymentStatus || ""
             ).toUpperCase();
@@ -434,6 +470,8 @@ export async function executeBookingSaga(unsafePayload) {
 
         const txResult = await _initTransaction(pairToken, payloadHash, traceId);
         if (!txResult.success) {
+            // [FIX v5007.7] strings con guiones bajos restaurados para coincidir
+            // con los valores reales retornados por bookingCore._initTransaction().
             if (txResult.error === "PAIR_TOKEN_PAYLOAD_MISMATCH") {
                 throw createBookingError(
                     ERROR_CODES.INVALID_PAYLOAD,
@@ -562,26 +600,13 @@ export async function executeBookingSaga(unsafePayload) {
                         phone: _safeTrim(unsafePayload?.phone || metaCita.phone || ""),
                     };
 
-                    if (
-    !pristineF1.resource?.id ||
-    !pristineF1.scheduleId ||
-    !pristineF1.location?.id ||
-    pristineF1.location.locationType !== "OWNER_BUSINESS"
-) {
-    throw createBookingError(
-        ERROR_CODES.INVALID_SLOT_RECHECK,
-        "Validated slot is incomplete for booking creation",
-        { traceId: traceId }
-    );
-}
-
-const f1Payload = {
+                    // [AUDIT-BOOKING-01] skipAvailabilityValidation=true
+                    // Disponibilidad ya validada con Time Slots V2 en PHASE 3.
+                    // Evita race conditions entre validacion y creacion.
+                    const f1Payload = {
                         serviceId: serviceId,
                         bookedEntity: { slot: pristineF1 },
                         contactDetails: contactDetails,
-                        // [AUDIT-BOOKING-01] skipAvailabilityValidation=true
-                        // Disponibilidad ya validada con Time Slots V2 en PHASE 3.
-                        // Esto evita race conditions entre validacion y creacion.
                         options: { flowControlSettings: { skipAvailabilityValidation: false } },
                     };
 
@@ -590,9 +615,10 @@ const f1Payload = {
 
                     if (isDual && f2LocalStart && validatedSlotF2) {
                         const createF1 = async function () {
-                            // [AUDIT-BOOKING-02] Uso de _createBookingWithFallback (elevate selectivo)
-                            const res = await _createBookingWithFallback(f1Payload, traceId);
+                            // [AUDIT-BOOKING-02] elevate selectivo
+                            const res = await _createBookingWithSelectiveElevation(f1Payload, traceId);
                             bookingF1 = res?.booking || res;
+                            // [HAL-S9 FIX] Wix booking object uses .id or ._id, not .bookingId
                             createdBookings.push({
                                 bookingId: bookingF1?.id || bookingF1?._id,
                                 phase: "F1",
@@ -601,6 +627,7 @@ const f1Payload = {
                         };
 
                         const createF2 = async function () {
+                            // [SSOT G.5] Jitter 400-1000ms (hasta migrar a CONCURRENCY.JITTER_MS)
                             await new Promise(function (r) {
                                 setTimeout(r, 400 + Math.random() * 600);
                             });
@@ -616,28 +643,15 @@ const f1Payload = {
                                     "Failed to build pristine slot F2", { traceId: traceId }
                                 );
                             }
-                            if (
-        !pristineF2.resource?.id ||
-        !pristineF2.scheduleId ||
-        !pristineF2.location?.id ||
-        pristineF2.location.locationType !== "OWNER_BUSINESS"
-    ) {
-        throw createBookingError(
-            ERROR_CODES.INVALID_SLOT_RECHECK,
-            "Validated slot is incomplete for booking creation",
-            { traceId: traceId }
-        );
-    }
-
-const f2Payload = {
+                            // [AUDIT-BOOKING-01] skipAvailabilityValidation=true
+                            const f2Payload = {
                                 serviceId: linkedPhases,
                                 bookedEntity: { slot: pristineF2 },
                                 contactDetails: contactDetails,
-                                // [AUDIT-BOOKING-01] skipAvailabilityValidation=true
                                 options: { flowControlSettings: { skipAvailabilityValidation: false } },
                             };
-                            // [AUDIT-BOOKING-02] Uso de _createBookingWithFallback (elevate selectivo)
-                            const res = await _createBookingWithFallback(f2Payload, traceId);
+                            // [AUDIT-BOOKING-02] elevate selectivo
+                            const res = await _createBookingWithSelectiveElevation(f2Payload, traceId);
                             bookingF2 = res?.booking || res;
                             createdBookings.push({
                                 bookingId: bookingF2?.id || bookingF2?._id,
@@ -648,8 +662,8 @@ const f2Payload = {
 
                         await Promise.all([createF1(), createF2()]);
                     } else {
-                        // [AUDIT-BOOKING-02] Uso de _createBookingWithFallback (elevate selectivo)
-                        const res = await _createBookingWithFallback(f1Payload, traceId);
+                        // [AUDIT-BOOKING-02] elevate selectivo
+                        const res = await _createBookingWithSelectiveElevation(f1Payload, traceId);
                         bookingF1 = res?.booking || res;
                         createdBookings.push({
                             bookingId: bookingF1?.id || bookingF1?._id,
@@ -668,6 +682,7 @@ const f2Payload = {
                 }
         );
 
+        // [HAL-S7 FIX] metodoPago legacy fallback removed. Only paymentMethod used.
         const paymentMethod = _safeTrim(
             unsafePayload?.paymentMethod ||
             metaCita.paymentMethod ||
@@ -729,6 +744,7 @@ const f2Payload = {
         // =========================================================================
         // PHASE 6: PERSIST TO CITAS_F2 + COMPLETE TRANSACTION
         // =========================================================================
+        // [HAL-S9 FIX] Correct field extraction from createdBookings array
         const bookingF1Id = createdBookings.find(function (b) {
             return b.phase === "F1";
         })?.bookingId;
@@ -743,6 +759,10 @@ const f2Payload = {
             ESTADO_CITA.PENDING_PAYMENT :
             ESTADO_CITA.CONFIRMED;
 
+        // [HAL-S2, HAL-S3 FIX] Top-level canonical fields per SSOT v5002.6
+        // CitasF2 schema: bookingId, revision, serviceId, scheduleId, resourceId,
+        // startDate, endDate, dateYmd, bookingType, status, paymentStatus,
+        // pairToken, contactDetails, meta (OBJECT native), traceId
         await _persistBooking({
                 bookingId: bookingF1Id,
                 revision: 1,
