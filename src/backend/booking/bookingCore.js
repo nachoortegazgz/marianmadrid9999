@@ -1,7 +1,7 @@
 /*
 =============================================================================
 MODULE: backend/booking/bookingCore.js
-VERSION: v5007.6-FINAL (FIX A2, A3, A4, B2, B3, B4 aplicados)
+VERSION: v5007.7-FINAL (FIX A2, A3, A4, B2, B3, B4 + DOC-02 + COH-03)
 BASE: BIBLIA v5002.5 Bloque 12.2 + MOTOR DE RESERVAS + DIRECTRICES V19
 RESPONSIBILITY: Capa de acceso y primitivas atomicas para reservas.
                 - Elevated proxies para Wix Bookings V2 y eCommerce.
@@ -27,8 +27,14 @@ CORRECTIONS APPLIED:
            como campos INFORMATIVOS (uso interno, no van a Writer).
            _projectWriterSlotFromAvailability() mantiene shape minimo
            conforme a doc oficial: solo resource.id y location.locationType.
-  [DOC-01] _forceStaffInPristineSlot documenta campos obligatorios vs
-           opcionales segun Wix Bookings V2 Writer Reference.
+  [DOC-02] Doc oficial: "Wix Bookings prevents double bookings by default,
+           but conflicts can occasionally occur. When they do, the system
+           sets a booking's doubleBooked flag to true."
+           Se documenta el shape de retorno del booking para que el caller
+           (bookingSaga) pueda verificar doubleBooked.
+  [COH-03] Coercion defensiva BUSINESS -> OWNER_BUSINESS tambien en
+           _projectWriterSlotFromAvailability, consistente con
+           _forceStaffInPristineSlot.
 =============================================================================
 */
 
@@ -194,7 +200,20 @@ async function _resolveScheduleIdByResourceId(resourceId) {
 
 // =============================================================================
 // BLOQUE 6 - NORMALIZACION DE SLOTS PARA WRITER V2
-// [DOC-01] Documenta campos obligatorios vs opcionales segun doc oficial.
+// [DOC-01] Documenta campos obligatorios vs opcionales segun doc oficial:
+//
+//   Campos OBLIGATORIOS (appointment, sin eventId):
+//     - serviceId              (Step 1)
+//     - scheduleId             (Step 2)
+//     - startDate / endDate    (Step 2, Date UTC)
+//     - timezone               (Step 2, IANA tz)
+//     - resource.id            (Step 2)
+//     - location.locationType  (OWNER_BUSINESS)
+//
+//   Campos OPCIONALES (tolerados por Writer V2):
+//     - resource.name
+//     - resource.scheduleId
+//     - location.id
 // =============================================================================
 
 function _normalizeSlotShape(slot) {
@@ -204,25 +223,6 @@ function _normalizeSlotShape(slot) {
 
 /**
  * Sanitiza un slot al formato exacto requerido por Wix Bookings Writer V2.
- *
- * Campos OBLIGATORIOS segun documentacion oficial (appointment, sin eventId):
- *   - serviceId              (Step 1)
- *   - scheduleId             (Step 2, desde time slot response)
- *   - startDate / endDate    (Step 2, Date UTC)
- *   - timezone               (Step 2, IANA tz)
- *   - resource.id            (Step 2, desde availableResources)
- *   - location.locationType  (debe ser OWNER_BUSINESS, OWNER_CUSTOM o CUSTOM)
- *
- * Campos OPCIONALES (tolerados por Writer V2, utiles para UI de Bookings):
- *   - resource.name
- *   - resource.scheduleId
- *   - location.id
- *
- * IMPORTANTE: location.locationType NO puede ser BUSINESS (valor que
- * devuelve Time Slots V2); debe ser OWNER_BUSINESS. Se aplica coercion
- * defensiva por si SDK_CONFIG esta mal configurado.
- *
- * [FIX B3] Extrae resource.name desde availableResources o resource.name.
  *
  * @returns {Object|null} Slot pristino o null si invalido
  */
@@ -324,7 +324,6 @@ export async function _forceStaffInPristineSlot(slot, resourceId, serviceIdOverr
     }
 
     // --- Extras opcionales (tolerados por Writer V2, utiles para UI) ---
-    // resource.name: util para mostrar el nombre en la UI de Wix Bookings.
     const resourceName = _safeTrim(
         s.resource?.name ||
         s.availableResources
@@ -334,8 +333,6 @@ export async function _forceStaffInPristineSlot(slot, resourceId, serviceIdOverr
         ""
     );
 
-    // resource.scheduleId: duplica el scheduleId top-level; se mantiene por
-    // compatibilidad con el patron observado en respuestas de Time Slots V2.
     const resourceScheduleId = _safeTrim(
         s.resource?.scheduleId ||
         scheduleId
@@ -926,12 +923,11 @@ export function _areSlotsContiguous(slot1, slot2, maxGapMinutes = 120) {
 }
 
 // =============================================================================
-// BLOQUE 18 - [FIX A4 + B4] PROYECCION DE SLOTS CERTIFICADOS Y WRITER
+// BLOQUE 18 - [FIX A4 + B4 + DOC-02] PROYECCION DE SLOTS
 // =============================================================================
 
 /**
  * Proyecta un slot certificado desde un slot de disponibilidad.
- * Convierte el formato de respuesta de Wix Bookings V2 al formato interno canonico.
  *
  * [FIX B4] Incluye locationName y formattedAddress como campos INFORMATIVOS
  * (uso interno; no van al payload de Writer V2).
@@ -999,9 +995,6 @@ export function _projectCertifiedSlot(slot, resourceId) {
  * NO incluye extras (resource.name, location.name, etc.) para garantizar
  * compatibilidad con schemas estrictos de Writer V2.
  *
- * NOTA: Para el critical path de bookingSaga.js se usa _forceStaffInPristineSlot,
- * que SÍ incluye extras opcionales porque Writer V2 los tolera en la practica.
- *
  * @param {Object} slot - Slot de disponibilidad de Wix
  * @param {string} resourceId - GUID del recurso asignado
  * @param {string} serviceId - GUID del servicio (override)
@@ -1016,6 +1009,7 @@ export function _projectWriterSlotFromAvailability(slot, resourceId, serviceId) 
 
     // locationType DEBE ser OWNER_BUSINESS (no BUSINESS, que es el valor que
     // devuelve Time Slots V2). Ver warning oficial en "End-to-End Flow".
+    // Coercion defensiva consistente con _forceStaffInPristineSlot.
     const configuredLocationType = _safeTrim(
         SDK_CONFIG?.LOCATION_TYPES?.BOOKINGS_WRITER
     );
