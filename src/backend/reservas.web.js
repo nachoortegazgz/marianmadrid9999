@@ -54,7 +54,7 @@ import {
     _hashKey,
     _generateUUID,
     withTimeout,
-} from "public/mmUtils";
+} from "backend/internalConfig";
 
 // [FIX] Logger canonico (evita dependencia circular con bookingCore.js)
 import { logger } from "backend/logger";
