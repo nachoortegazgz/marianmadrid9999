@@ -562,14 +562,27 @@ export async function executeBookingSaga(unsafePayload) {
                         phone: _safeTrim(unsafePayload?.phone || metaCita.phone || ""),
                     };
 
-                    const f1Payload = {
+                    if (
+    !pristineF1.resource?.id ||
+    !pristineF1.scheduleId ||
+    !pristineF1.location?.id ||
+    pristineF1.location.locationType !== "OWNER_BUSINESS"
+) {
+    throw createBookingError(
+        ERROR_CODES.INVALID_SLOT_RECHECK,
+        "Validated slot is incomplete for booking creation",
+        { traceId: traceId }
+    );
+}
+
+const f1Payload = {
                         serviceId: serviceId,
                         bookedEntity: { slot: pristineF1 },
                         contactDetails: contactDetails,
                         // [AUDIT-BOOKING-01] skipAvailabilityValidation=true
                         // Disponibilidad ya validada con Time Slots V2 en PHASE 3.
                         // Esto evita race conditions entre validacion y creacion.
-                        options: { flowControlSettings: { skipAvailabilityValidation: true } },
+                        options: { flowControlSettings: { skipAvailabilityValidation: false } },
                     };
 
                     let bookingF1 = null;
@@ -603,12 +616,25 @@ export async function executeBookingSaga(unsafePayload) {
                                     "Failed to build pristine slot F2", { traceId: traceId }
                                 );
                             }
-                            const f2Payload = {
+                            if (
+        !pristineF2.resource?.id ||
+        !pristineF2.scheduleId ||
+        !pristineF2.location?.id ||
+        pristineF2.location.locationType !== "OWNER_BUSINESS"
+    ) {
+        throw createBookingError(
+            ERROR_CODES.INVALID_SLOT_RECHECK,
+            "Validated slot is incomplete for booking creation",
+            { traceId: traceId }
+        );
+    }
+
+const f2Payload = {
                                 serviceId: linkedPhases,
                                 bookedEntity: { slot: pristineF2 },
                                 contactDetails: contactDetails,
                                 // [AUDIT-BOOKING-01] skipAvailabilityValidation=true
-                                options: { flowControlSettings: { skipAvailabilityValidation: true } },
+                                options: { flowControlSettings: { skipAvailabilityValidation: false } },
                             };
                             // [AUDIT-BOOKING-02] Uso de _createBookingWithFallback (elevate selectivo)
                             const res = await _createBookingWithFallback(f2Payload, traceId);
