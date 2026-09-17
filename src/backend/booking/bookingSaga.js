@@ -1,7 +1,7 @@
 /*
 =============================================================================
 MODULE: backend/booking/bookingSaga.js
-VERSION: v5007.8-SSOT (AUDIT-BOOKING-01 + AUDIT-BOOKING-02 aplicados)
+VERSION: v5007.9-SSOT (AUDIT-BOOKING-01 + AUDIT-BOOKING-02 + PATCH-04 + PATCH-05)
 SSOT: SSOT CONSOLIDADO v5002.6 | ESQUEMA CMS v5002.5 | DOSSIER RESERVAS v0609
 MISSION: Orquestador transaccional. Saga compensable para reservas simples
          y duales con gap de exposicion. Gestiona locks, heartbeat,
@@ -21,7 +21,8 @@ INVENTARIO DE FUNCIONES:
 DEPENDENCIAS:
   - backend/internalConfig.js (COLLECTIONS, CONCURRENCY, SDK_CONFIG,
     ESTADO_CITA, ESTADO_PAGO, FORMA_PAGO)
-  - backend/booking/bookingCore.js (primitivas atomicas, locks, transacciones, logger)
+  - backend/logger.js (logger canonico)
+  - backend/booking/bookingCore.js (primitivas atomicas, locks, transacciones)
   - backend/reservas.web.js (resolucion de servicios, slots, invalidacion cache)
   - public/mmUtils.js (makeTraceId, helpers seguros)
   - wix-bookings.v2, wix-ecom-backend, wix-auth, wix-data
@@ -31,40 +32,25 @@ COLECCIONES QUE ESCRIBE: CitasF2, BookingTransactions, SlotLocks,
 COLECCIONES QUE LEE: ServiciosCatalogo, MapaStaff, CitasF2, BookingTransactions
 =============================================================================
 HISTORIAL DE CAMBIOS:
+  v5007.9 | 2026-09-15 | PATCHES APLICADOS:
+          |            | [PATCH-04] PHASE 6: extraccion nominal del step
+          |            |   de checkout (evita fragilidad por indice posicional).
+          |            | [PATCH-05] PHASE 5+6 envueltos en try/finally para
+          |            |   garantizar cleanup de heartbeat y locks en
+          |            |   cualquier path (exito o excepcion post-commit).
+          |            | [FIX-COH-01] Logger importado desde backend/logger
+          |            |   directamente (antes via bookingCore).
+          |            | [FIX-COH-02] skipAvailabilityValidation=true en
+          |            |   f1Payload y f2Payload (header decia true pero el
+          |            |   codigo tenia false).
   v5007.8 | 2026-09-15 | AUDITORIA APLICADA:
-          |            | [AUDIT-BOOKING-01] skipAvailabilityValidation=true
-          |            |   en payloads de createBooking (PHASE 4). Razon:
-          |            |   disponibilidad ya validada en PHASE 3 con Time
-          |            |   Slots V2. Evita race conditions entre validacion
-          |            |   y creacion. Ref: doc Wix Bookings V2.
-          |            | [AUDIT-BOOKING-02] _createBookingWithSelectiveElevation:
-          |            |   elevate SOLO bajo ACCESS_DENIED. Ref: doc Wix
-          |            |   "Be selective about when to use elevate(),
-          |            |   especially when writing backend code that can be
-          |            |   triggered from the frontend using a web method."
-          |            | Sin cambios funcionales adicionales.
-  v5007.7 | 2026-09-14 | FIX EDITOR RESIDUAL: en PHASE 2 las comparaciones
-          |            | contra txResult.error usaban strings sin guiones
-          |            | bajos ("PAIRTOKENPAYLOAD_MISMATCH",
-          |            | "TRANSACTIONPREVIOUSLYFAILED") que nunca coincidian
-          |            | con los valores reales retornados por bookingCore.js
-          |            | ("PAIR_TOKEN_PAYLOAD_MISMATCH",
-          |            | "TRANSACTION_PREVIOUSLY_FAILED"). Restaurados los
-          |            | guiones bajos para que las ramas de error especificas
-          |            | se ejecuten correctamente. Sin cambios funcionales
-          |            | adicionales.
-  v5007.6 | 2026-09-14 | FIX EDITOR: restauracion de _ y * eliminados por
-          |            | procesado Markdown sobre v5007.5 (LOCKTTLMS,
-          |            | HEARTBEATMS, COLLECTIONS.CITAS_F2,
-          |            | COMPENSACIONES_PENDIENTES, ERROR_CODES.*,
-          |            | ESTADO_PAGO.*, ESTADO_CITA.*, multiplicadores
-          |            | 60 y 1000, helpers con prefijo _).
-  v5007.5 | 2026-09-14 | Alineacion SSOT v5002.6 completa. Eliminados todos
-          |            | los fallbacks legacy. Campos canonicos al primer nivel
-          |            | de CitasF2. Import corregido a bookingCore.logger.
-          |            | Dynamic import eliminado. Enum CANCEL_BOOKING alineado.
-  v5007.4 | 2026-09-14 | Fix HAL-S1 (syntax trailing ||). Correcciones HAL-S2
-          |            | a HAL-S12 aplicadas.
+          |            | [AUDIT-BOOKING-01] skipAvailabilityValidation=true.
+          |            | [AUDIT-BOOKING-02] _createBookingWithSelectiveElevation.
+  v5007.7 | 2026-09-14 | FIX EDITOR RESIDUAL: strings de error con guiones
+          |            | bajos restaurados en PHASE 2.
+  v5007.6 | 2026-09-14 | FIX EDITOR: restauracion de _ y * eliminados.
+  v5007.5 | 2026-09-14 | Alineacion SSOT v5002.6 completa.
+  v5007.4 | 2026-09-14 | Fix HAL-S1. Correcciones HAL-S2 a HAL-S12.
   v5007.3 | 2026-09-10 | FIX A5: import _extractCheckoutId desde bookingCore.
   v5002.5 | 2026-09-10 | Fix S-01: linkedPhases como fuente primaria de F2.
   v5002.3 | 2026-09-06 | Version inicial del dossier.
@@ -96,9 +82,10 @@ import {
     _normalizeLocalIsoStr,
 } from "public/mmUtils";
 
-// [HAL-S4 FIX] logger imported from bookingCore.js (no backend/logger module in SSOT inventory)
+// [FIX-COH-01] logger importado directamente desde backend/logger
+import { logger } from "backend/logger";
+
 import {
-    logger,
     createBookingElevated,
     cancelBookingElevated,
     confirmOrDeclineBookingElevated,
@@ -122,7 +109,6 @@ import {
 
 export { _extractCheckoutId };
 
-// [HAL-S10 FIX] Static import replaces redundant dynamic import
 import {
     _resolveServiceIdInternal,
     _invalidateCachesInternal,
@@ -600,14 +586,14 @@ export async function executeBookingSaga(unsafePayload) {
                         phone: _safeTrim(unsafePayload?.phone || metaCita.phone || ""),
                     };
 
-                    // [AUDIT-BOOKING-01] skipAvailabilityValidation=true
+                    // [FIX-COH-02] skipAvailabilityValidation=true
                     // Disponibilidad ya validada con Time Slots V2 en PHASE 3.
                     // Evita race conditions entre validacion y creacion.
                     const f1Payload = {
                         serviceId: serviceId,
                         bookedEntity: { slot: pristineF1 },
                         contactDetails: contactDetails,
-                        options: { flowControlSettings: { skipAvailabilityValidation: false } },
+                        options: { flowControlSettings: { skipAvailabilityValidation: true } },
                     };
 
                     let bookingF1 = null;
@@ -643,12 +629,12 @@ export async function executeBookingSaga(unsafePayload) {
                                     "Failed to build pristine slot F2", { traceId: traceId }
                                 );
                             }
-                            // [AUDIT-BOOKING-01] skipAvailabilityValidation=true
+                            // [FIX-COH-02] skipAvailabilityValidation=true
                             const f2Payload = {
                                 serviceId: linkedPhases,
                                 bookedEntity: { slot: pristineF2 },
                                 contactDetails: contactDetails,
-                                options: { flowControlSettings: { skipAvailabilityValidation: false } },
+                                options: { flowControlSettings: { skipAvailabilityValidation: true } },
                             };
                             // [AUDIT-BOOKING-02] elevate selectivo
                             const res = await _createBookingWithSelectiveElevation(f2Payload, traceId);
@@ -737,112 +723,133 @@ export async function executeBookingSaga(unsafePayload) {
         );
 
         // =========================================================================
-        // PHASE 5: EXECUTE SAGA
+        // [PATCH-05] PHASE 5 + PHASE 6 envueltos en try/finally
+        // Garantiza cleanup de heartbeat y locks en cualquier path,
+        // incluso si _persistBooking, _completeTransaction o
+        // _invalidateCachesInternal lanzan excepcion post-commit.
         // =========================================================================
-        const results = await saga.execute();
+        const sagaStartTime = Date.now();
+        try {
+            // =========================================================================
+            // PHASE 5: EXECUTE SAGA
+            // =========================================================================
+            await saga.execute();
 
-        // =========================================================================
-        // PHASE 6: PERSIST TO CITAS_F2 + COMPLETE TRANSACTION
-        // =========================================================================
-        // [HAL-S9 FIX] Correct field extraction from createdBookings array
-        const bookingF1Id = createdBookings.find(function (b) {
-            return b.phase === "F1";
-        })?.bookingId;
-        const bookingF2Id = createdBookings.find(function (b) {
-            return b.phase === "F2";
-        })?.bookingId;
+            // =========================================================================
+            // PHASE 6: PERSIST TO CITAS_F2 + COMPLETE TRANSACTION
+            // =========================================================================
+            // [PATCH-04] Extraccion nominal del step de checkout/presencial
+            // (evita fragilidad por indice posicional en results[N]).
+            const checkoutStepName = isOnline ? "CreateCheckout" : "ConfirmPresencial";
+            const checkoutStepResult = saga.completedSteps
+                .find((s) => s.name === checkoutStepName)?.result || null;
+            const resolvedCheckoutUrl = checkoutStepResult?.checkoutUrl || null;
 
-        const paymentStatus = isOnline ?
-            ESTADO_PAGO.PENDING_PAYMENT :
-            ESTADO_PAGO.UNPAID;
-        const citaStatus = isOnline ?
-            ESTADO_CITA.PENDING_PAYMENT :
-            ESTADO_CITA.CONFIRMED;
+            // [HAL-S9 FIX] Correct field extraction from createdBookings array
+            const bookingF1Id = createdBookings.find(function (b) {
+                return b.phase === "F1";
+            })?.bookingId;
+            const bookingF2Id = createdBookings.find(function (b) {
+                return b.phase === "F2";
+            })?.bookingId;
 
-        // [HAL-S2, HAL-S3 FIX] Top-level canonical fields per SSOT v5002.6
-        // CitasF2 schema: bookingId, revision, serviceId, scheduleId, resourceId,
-        // startDate, endDate, dateYmd, bookingType, status, paymentStatus,
-        // pairToken, contactDetails, meta (OBJECT native), traceId
-        await _persistBooking({
-                bookingId: bookingF1Id,
-                revision: 1,
-                serviceId: serviceId,
-                scheduleId: null,
-                resourceId: finalResourceId,
-                startDate: getUtcDateFromMadridLocal(f1LocalStart),
-                endDate: getUtcDateFromMadridLocal(f1LocalEnd),
-                dateYmd: f1LocalStart.slice(0, 10),
-                bookingType: isDual ? "DUAL_F1" : "SIMPLE",
-                status: citaStatus,
-                paymentStatus: paymentStatus,
-                pairToken: pairToken,
-                contactDetails: { email: email },
-                meta: {
-                    uiPairToken: unsafePayload?.uiPairToken || pairToken,
-                    f1Start: f1LocalStart,
-                    f1End: f1LocalEnd,
-                    f2Start: f2LocalStart || null,
-                    f2End: f2LocalEnd || null,
-                    checkoutUrl: results?.[2]?.checkoutUrl || null,
-                },
-                traceId: traceId,
-            },
-            traceId
-        );
+            const paymentStatus = isOnline ?
+                ESTADO_PAGO.PENDING_PAYMENT :
+                ESTADO_PAGO.UNPAID;
+            const citaStatus = isOnline ?
+                ESTADO_CITA.PENDING_PAYMENT :
+                ESTADO_CITA.CONFIRMED;
 
-        if (isDual && bookingF2Id) {
+            // [HAL-S2, HAL-S3 FIX] Top-level canonical fields per SSOT v5002.6
+            // CitasF2 schema: bookingId, revision, serviceId, scheduleId, resourceId,
+            // startDate, endDate, dateYmd, bookingType, status, paymentStatus,
+            // pairToken, contactDetails, meta (OBJECT native), traceId
             await _persistBooking({
-                    bookingId: bookingF2Id,
+                    bookingId: bookingF1Id,
                     revision: 1,
-                    serviceId: linkedPhases,
+                    serviceId: serviceId,
                     scheduleId: null,
                     resourceId: finalResourceId,
-                    startDate: getUtcDateFromMadridLocal(f2LocalStart),
-                    endDate: getUtcDateFromMadridLocal(f2LocalEnd),
-                    dateYmd: f2LocalStart.slice(0, 10),
-                    bookingType: "DUAL_F2",
+                    startDate: getUtcDateFromMadridLocal(f1LocalStart),
+                    endDate: getUtcDateFromMadridLocal(f1LocalEnd),
+                    dateYmd: f1LocalStart.slice(0, 10),
+                    bookingType: isDual ? "DUAL_F1" : "SIMPLE",
                     status: citaStatus,
                     paymentStatus: paymentStatus,
                     pairToken: pairToken,
                     contactDetails: { email: email },
                     meta: {
                         uiPairToken: unsafePayload?.uiPairToken || pairToken,
-                        linkedF1BookingId: bookingF1Id,
+                        f1Start: f1LocalStart,
+                        f1End: f1LocalEnd,
+                        f2Start: f2LocalStart || null,
+                        f2End: f2LocalEnd || null,
+                        // [PATCH-04] URL resuelta nominalmente (no por indice)
+                        checkoutUrl: resolvedCheckoutUrl,
                     },
                     traceId: traceId,
                 },
                 traceId
             );
+
+            if (isDual && bookingF2Id) {
+                await _persistBooking({
+                        bookingId: bookingF2Id,
+                        revision: 1,
+                        serviceId: linkedPhases,
+                        scheduleId: null,
+                        resourceId: finalResourceId,
+                        startDate: getUtcDateFromMadridLocal(f2LocalStart),
+                        endDate: getUtcDateFromMadridLocal(f2LocalEnd),
+                        dateYmd: f2LocalStart.slice(0, 10),
+                        bookingType: "DUAL_F2",
+                        status: citaStatus,
+                        paymentStatus: paymentStatus,
+                        pairToken: pairToken,
+                        contactDetails: { email: email },
+                        meta: {
+                            uiPairToken: unsafePayload?.uiPairToken || pairToken,
+                            linkedF1BookingId: bookingF1Id,
+                        },
+                        traceId: traceId,
+                    },
+                    traceId
+                );
+            }
+
+            const finalResult = {
+                bookingIds: createdBookings.map(function (b) { return b.bookingId; }),
+                pairToken: pairToken,
+                requiresPayment: isOnline,
+                // [PATCH-04] URL resuelta nominalmente
+                checkoutUrl: resolvedCheckoutUrl,
+                status: citaStatus,
+            };
+
+            await _completeTransaction(pairToken, finalResult);
+
+            const madridDateYMD = f1LocalStart.slice(0, 10);
+            await _invalidateCachesInternal(serviceId, madridDateYMD, finalResourceId, traceId);
+
+            log.info("executeBookingSaga completed", {
+                traceId: traceId,
+                pairToken: pairToken,
+                isDual: isDual,
+                bookingIds: createdBookings.map(function (b) { return b.bookingId; }),
+                requiresPayment: isOnline,
+                elapsedMs: Date.now() - sagaStartTime,
+            });
+
+            return { status: "SUCCESS", data: finalResult, error: null };
+
+        } finally {
+            // [PATCH-05] Cleanup garantizado de heartbeat y locks en cualquier path
+            if (heartbeatInterval) {
+                clearInterval(heartbeatInterval);
+                heartbeatInterval = null;
+            }
+            await _bestEffortUnlockAll(lockKeys, lockOwnerId).catch(function () {});
         }
-
-        const finalResult = {
-            bookingIds: createdBookings.map(function (b) { return b.bookingId; }),
-            pairToken: pairToken,
-            requiresPayment: isOnline,
-            checkoutUrl: results?.[2]?.checkoutUrl || null,
-            status: citaStatus,
-        };
-
-        await _completeTransaction(pairToken, finalResult);
-
-        if (heartbeatInterval) {
-            clearInterval(heartbeatInterval);
-            heartbeatInterval = null;
-        }
-        await _bestEffortUnlockAll(lockKeys, lockOwnerId);
-
-        const madridDateYMD = f1LocalStart.slice(0, 10);
-        await _invalidateCachesInternal(serviceId, madridDateYMD, finalResourceId, traceId);
-
-        log.info("executeBookingSaga completed", {
-            traceId: traceId,
-            pairToken: pairToken,
-            isDual: isDual,
-            bookingIds: createdBookings.map(function (b) { return b.bookingId; }),
-            requiresPayment: isOnline,
-        });
-
-        return { status: "SUCCESS", data: finalResult, error: null };
 
     } catch (error) {
         const norm = normalizeError(error);
