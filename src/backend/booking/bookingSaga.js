@@ -1,7 +1,7 @@
 /*
 =============================================================================
 MODULE: backend/booking/bookingSaga.js
-VERSION: v5007.9-SSOT (AUDIT-BOOKING-01 + AUDIT-BOOKING-02 + PATCH-04 + PATCH-05)
+VERSION: v5007.10-SSOT (PATCH-06 + PATCH-07 + PATCH-08 + PATCH-09)
 SSOT: SSOT CONSOLIDADO v5002.6 | ESQUEMA CMS v5002.5 | DOSSIER RESERVAS v0609
 MISSION: Orquestador transaccional. Saga compensable para reservas simples
          y duales con gap de exposicion. Gestiona locks, heartbeat,
@@ -15,12 +15,14 @@ INVENTARIO DE FUNCIONES:
   [INTERNAL] _bestEffortUnlockAll(lockKeys, lockOwnerId)
   [INTERNAL] _compensateCreatedBookings(createdBookings, traceId)
   [INTERNAL] _createBookingWithSelectiveElevation(payload, traceId)
+  [INTERNAL] _validateCreateBookingResponse(booking, phase, traceId)
+  [INTERNAL] _checkDoubleBookingFlag(booking, phase, traceId)
   [CLASS]  BookingSagaOrchestrator
   [EXPORT] executeBookingSaga(unsafePayload)
 =============================================================================
 DEPENDENCIAS:
   - backend/internalConfig.js (COLLECTIONS, CONCURRENCY, SDK_CONFIG,
-    ESTADO_CITA, ESTADO_PAGO, FORMA_PAGO)
+    ESTADO_CITA, ESTADO_PAGO, FORMA_PAGO, APP_IDS)
   - backend/logger.js (logger canonico)
   - backend/booking/bookingCore.js (primitivas atomicas, locks, transacciones)
   - backend/reservas.web.js (resolucion de servicios, slots, invalidacion cache)
@@ -32,28 +34,33 @@ COLECCIONES QUE ESCRIBE: CitasF2, BookingTransactions, SlotLocks,
 COLECCIONES QUE LEE: ServiciosCatalogo, MapaStaff, CitasF2, BookingTransactions
 =============================================================================
 HISTORIAL DE CAMBIOS:
-  v5007.9 | 2026-09-15 | PATCHES APLICADOS:
-          |            | [PATCH-04] PHASE 6: extraccion nominal del step
-          |            |   de checkout (evita fragilidad por indice posicional).
-          |            | [PATCH-05] PHASE 5+6 envueltos en try/finally para
-          |            |   garantizar cleanup de heartbeat y locks en
-          |            |   cualquier path (exito o excepcion post-commit).
-          |            | [FIX-COH-01] Logger importado desde backend/logger
-          |            |   directamente (antes via bookingCore).
-          |            | [FIX-COH-02] skipAvailabilityValidation=true en
-          |            |   f1Payload y f2Payload (header decia true pero el
-          |            |   codigo tenia false).
+  v5007.10 | 2026-09-15 | PATCHES ALINEADOS CON DOC OFICIAL:
+           |            | [PATCH-06] Elevacion selectiva mejorada:
+           |            |   elevate(bookings.createBooking)(payload) en
+           |            |   lugar de wrapper global. Ref: doc oficial
+           |            |   "Keep elevation scoped to the specific call".
+           |            | [PATCH-07] App ID canonico desde APP_IDS.BOOKINGS
+           |            |   (no hardcoded). Ref: doc oficial checkout.
+           |            | [PATCH-08] Validacion defensiva de respuesta de
+           |            |   createBooking: verifica que booking.id existe.
+           |            | [PATCH-09] Deteccion de flag doubleBooked tras
+           |            |   confirmacion. Ref: doc oficial "system sets a
+           |            |   booking's doubleBooked flag to true".
+  v5007.9 | 2026-09-15 | PATCHES:
+           |            | [PATCH-04] Extraccion nominal del step de checkout.
+           |            | [PATCH-05] try/finally cleanup garantizado.
+           |            | [FIX-COH-01] Logger desde backend/logger.
+           |            | [FIX-COH-02] skipAvailabilityValidation=true.
   v5007.8 | 2026-09-15 | AUDITORIA APLICADA:
-          |            | [AUDIT-BOOKING-01] skipAvailabilityValidation=true.
-          |            | [AUDIT-BOOKING-02] _createBookingWithSelectiveElevation.
-  v5007.7 | 2026-09-14 | FIX EDITOR RESIDUAL: strings de error con guiones
-          |            | bajos restaurados en PHASE 2.
-  v5007.6 | 2026-09-14 | FIX EDITOR: restauracion de _ y * eliminados.
+           |            | [AUDIT-BOOKING-01] skipAvailabilityValidation=true.
+           |            | [AUDIT-BOOKING-02] _createBookingWithSelectiveElevation.
+  v5007.7 | 2026-09-14 | FIX EDITOR RESIDUAL.
+  v5007.6 | 2026-09-14 | FIX EDITOR.
   v5007.5 | 2026-09-14 | Alineacion SSOT v5002.6 completa.
-  v5007.4 | 2026-09-14 | Fix HAL-S1. Correcciones HAL-S2 a HAL-S12.
-  v5007.3 | 2026-09-10 | FIX A5: import _extractCheckoutId desde bookingCore.
-  v5002.5 | 2026-09-10 | Fix S-01: linkedPhases como fuente primaria de F2.
-  v5002.3 | 2026-09-06 | Version inicial del dossier.
+  v5007.4 | 2026-09-14 | Fix HAL-S1.
+  v5007.3 | 2026-09-10 | FIX A5.
+  v5002.5 | 2026-09-10 | Fix S-01.
+  v5002.3 | 2026-09-06 | Version inicial.
 =============================================================================
 */
 
@@ -69,6 +76,7 @@ import {
     ESTADO_CITA,
     ESTADO_PAGO,
     FORMA_PAGO,
+    APP_IDS,
 } from "backend/internalConfig";
 
 import {
@@ -219,15 +227,21 @@ async function _compensateCreatedBookings(createdBookings, traceId) {
 }
 
 // =============================================================================
-// BLOCK 5 - [AUDIT-BOOKING-02] SELECTIVE ELEVATION
+// BLOCK 5 - [AUDIT-BOOKING-02 + PATCH-06] SELECTIVE ELEVATION
 //
 // Referencia oficial Wix:
+//   "Keep elevation scoped to the specific call that needs higher permissions.
+//    Don't use elevation if the operation already works with the caller's
+//    existing permissions."
 //   "Be selective about when to use elevate(), especially when writing
 //    backend code that can be triggered from the frontend using a web method."
 //
 // Patron:
 //   1. Intento sin elevate -> respeta permisos del caller.
-//   2. Si el error es ACCESS_DENIED -> reintento con elevate.
+//   2. Si el error es ACCESS_DENIED -> se eleva la llamada especifica
+//      (elevate(bookings.createBooking)) en lugar de usar un wrapper global
+//      pre-elevado. Esto garantiza que la elevacion se aplica unicamente
+//      cuando es necesaria.
 //   3. Cualquier otro error -> propaga sin elevar.
 // =============================================================================
 async function _createBookingWithSelectiveElevation(payload, traceId) {
@@ -244,12 +258,62 @@ async function _createBookingWithSelectiveElevation(payload, traceId) {
         }
 
         log.info("Elevating createBooking due to ACCESS_DENIED", { traceId: traceId });
-        return await createBookingElevated(payload);
+        // [PATCH-06] Elevar la llamada especifica (no wrapper global)
+        // Ref: "Keep elevation scoped to the specific call that needs
+        //       higher permissions."
+        return await elevate(bookings.createBooking)(payload);
     }
 }
 
 // =============================================================================
-// BLOCK 6 - SAGA ORCHESTRATOR
+// BLOCK 6 - [PATCH-08] VALIDACION DEFENSIVA DE RESPUESTA DE CREATEBOOKING
+//
+// La doc oficial no garantiza que el objeto retornado tenga .id en todos
+// los casos. Se valida defensivamente antes de continuar.
+// =============================================================================
+function _validateCreateBookingResponse(booking, phase, traceId) {
+    const id = _safeTrim(booking?.id || booking?._id);
+    if (!id || !_looksLikeGuid(id)) {
+        log.error("CreateBooking returned invalid booking", {
+            phase,
+            traceId,
+            hasId: Boolean(booking?.id),
+            has_id: Boolean(booking?._id),
+        });
+        throw createBookingError(
+            ERROR_CODES.BOOKING_CREATION_FAILED,
+            `Booking ${phase} created but no valid ID returned`,
+            { traceId, phase }
+        );
+    }
+    return id;
+}
+
+// =============================================================================
+// BLOCK 7 - [PATCH-09] DETECCION DE FLAG DOUBLEBOOKED
+//
+// Ref doc oficial:
+//   "Wix Bookings prevents double bookings by default, but conflicts can
+//    occasionally occur. When they do, the system sets a booking's
+//    doubleBooked flag to true and requires the business to manually
+//    resolve the conflict."
+//
+// Se verifica el flag tras la confirmacion para detectar conflictos.
+// =============================================================================
+function _checkDoubleBookingFlag(booking, phase, traceId) {
+    if (booking?.doubleBooked === true) {
+        log.warn("DOUBLE_BOOKING_DETECTED", {
+            phase,
+            traceId,
+            bookingId: booking?.id || booking?._id,
+        });
+        return true;
+    }
+    return false;
+}
+
+// =============================================================================
+// BLOCK 8 - SAGA ORCHESTRATOR
 // =============================================================================
 export class BookingSagaOrchestrator {
     constructor(traceId) {
@@ -299,7 +363,7 @@ export class BookingSagaOrchestrator {
 }
 
 // =============================================================================
-// BLOCK 7 - EXECUTE BOOKING SAGA (MAIN FUNCTION)
+// BLOCK 9 - EXECUTE BOOKING SAGA (MAIN FUNCTION)
 // =============================================================================
 export async function executeBookingSaga(unsafePayload) {
     const traceId = unsafePayload?.traceId || makeTraceId("saga");
@@ -316,8 +380,6 @@ export async function executeBookingSaga(unsafePayload) {
             throw createBookingError(ERROR_CODES.INVALID_PAYLOAD, "Email is required", { traceId: traceId });
         }
 
-        // [HAL-S1 FIX] Trailing || removed, default empty string added
-        // [HAL-S5 FIX] primaryServiceGuid legacy fallback removed (R7 zero legacy)
         const rawServiceId = _safeTrim(
             unsafePayload?.serviceId ||
             metaCita.serviceId ||
@@ -331,7 +393,6 @@ export async function executeBookingSaga(unsafePayload) {
             });
         }
 
-        // [HAL-S10 FIX] Static import used instead of redundant dynamic import
         const serviceRes = await _getServiceBySlugOrIdInternal(serviceId, traceId);
         const serviceConfig = serviceRes?.data || {};
         const isDual = serviceConfig.allowCombine === true && !!serviceConfig.linkedPhases;
@@ -365,7 +426,6 @@ export async function executeBookingSaga(unsafePayload) {
             );
 
             if (!f2LocalStart) {
-                // [FIX EDITOR v5007.6] Multiplicadores 60 y 1000 restaurados (parse error 325:86)
                 const f1EndUtc = getUtcDateFromMadridLocal(f1LocalEnd);
                 const exposureMs =
                     Math.max(0, Number(serviceConfig.exposureDuration || 0)) * 60 * 1000;
@@ -399,8 +459,6 @@ export async function executeBookingSaga(unsafePayload) {
 
         if (existingCitaRes?.items?.length > 0) {
             const existingCita = existingCitaRes.items[0];
-            // [HAL-S6, HAL-S8 FIX] Only canonical paymentStatus field used.
-            // estadoPago and CITAFIELDS.STATUSPAGO removed (NOM-01 resolved).
             const existingPaymentStatus = String(
                 existingCita.paymentStatus || ""
             ).toUpperCase();
@@ -456,8 +514,6 @@ export async function executeBookingSaga(unsafePayload) {
 
         const txResult = await _initTransaction(pairToken, payloadHash, traceId);
         if (!txResult.success) {
-            // [FIX v5007.7] strings con guiones bajos restaurados para coincidir
-            // con los valores reales retornados por bookingCore._initTransaction().
             if (txResult.error === "PAIR_TOKEN_PAYLOAD_MISMATCH") {
                 throw createBookingError(
                     ERROR_CODES.INVALID_PAYLOAD,
@@ -549,7 +605,14 @@ export async function executeBookingSaga(unsafePayload) {
                     }
                     heartbeatInterval = setInterval(function () {
                         lockKeys.forEach(function (key) {
-                            _renewLock(key, lockOwnerId, LOCKTTLMS).catch(function () {});
+                            // [PATCH-05] Loguear fallos de renovacion (no silenciar)
+                            _renewLock(key, lockOwnerId, LOCKTTLMS).catch(function (err) {
+                                log.warn("heartbeat: lock renewal failed", {
+                                    key: key,
+                                    traceId: traceId,
+                                    error: err?.message,
+                                });
+                            });
                         });
                     }, HEARTBEATMS);
                     return { lockKeys: lockKeys };
@@ -588,7 +651,6 @@ export async function executeBookingSaga(unsafePayload) {
 
                     // [FIX-COH-02] skipAvailabilityValidation=true
                     // Disponibilidad ya validada con Time Slots V2 en PHASE 3.
-                    // Evita race conditions entre validacion y creacion.
                     const f1Payload = {
                         serviceId: serviceId,
                         bookedEntity: { slot: pristineF1 },
@@ -601,19 +663,21 @@ export async function executeBookingSaga(unsafePayload) {
 
                     if (isDual && f2LocalStart && validatedSlotF2) {
                         const createF1 = async function () {
-                            // [AUDIT-BOOKING-02] elevate selectivo
+                            // [AUDIT-BOOKING-02 + PATCH-06] elevate selectivo
                             const res = await _createBookingWithSelectiveElevation(f1Payload, traceId);
                             bookingF1 = res?.booking || res;
-                            // [HAL-S9 FIX] Wix booking object uses .id or ._id, not .bookingId
+                            // [PATCH-08] Validacion defensiva de respuesta
+                            const f1Id = _validateCreateBookingResponse(bookingF1, "F1", traceId);
+                            // [PATCH-09] Deteccion de flag doubleBooked
+                            _checkDoubleBookingFlag(bookingF1, "F1", traceId);
                             createdBookings.push({
-                                bookingId: bookingF1?.id || bookingF1?._id,
+                                bookingId: f1Id,
                                 phase: "F1",
                             });
                             return bookingF1;
                         };
 
                         const createF2 = async function () {
-                            // [SSOT G.5] Jitter 400-1000ms (hasta migrar a CONCURRENCY.JITTER_MS)
                             await new Promise(function (r) {
                                 setTimeout(r, 400 + Math.random() * 600);
                             });
@@ -636,11 +700,15 @@ export async function executeBookingSaga(unsafePayload) {
                                 contactDetails: contactDetails,
                                 options: { flowControlSettings: { skipAvailabilityValidation: true } },
                             };
-                            // [AUDIT-BOOKING-02] elevate selectivo
+                            // [AUDIT-BOOKING-02 + PATCH-06] elevate selectivo
                             const res = await _createBookingWithSelectiveElevation(f2Payload, traceId);
                             bookingF2 = res?.booking || res;
+                            // [PATCH-08] Validacion defensiva de respuesta
+                            const f2Id = _validateCreateBookingResponse(bookingF2, "F2", traceId);
+                            // [PATCH-09] Deteccion de flag doubleBooked
+                            _checkDoubleBookingFlag(bookingF2, "F2", traceId);
                             createdBookings.push({
-                                bookingId: bookingF2?.id || bookingF2?._id,
+                                bookingId: f2Id,
                                 phase: "F2",
                             });
                             return bookingF2;
@@ -648,11 +716,15 @@ export async function executeBookingSaga(unsafePayload) {
 
                         await Promise.all([createF1(), createF2()]);
                     } else {
-                        // [AUDIT-BOOKING-02] elevate selectivo
+                        // [AUDIT-BOOKING-02 + PATCH-06] elevate selectivo
                         const res = await _createBookingWithSelectiveElevation(f1Payload, traceId);
                         bookingF1 = res?.booking || res;
+                        // [PATCH-08] Validacion defensiva de respuesta
+                        const f1Id = _validateCreateBookingResponse(bookingF1, "F1", traceId);
+                        // [PATCH-09] Deteccion de flag doubleBooked
+                        _checkDoubleBookingFlag(bookingF1, "F1", traceId);
                         createdBookings.push({
-                            bookingId: bookingF1?.id || bookingF1?._id,
+                            bookingId: f1Id,
                             phase: "F1",
                         });
                     }
@@ -668,7 +740,6 @@ export async function executeBookingSaga(unsafePayload) {
                 }
         );
 
-        // [HAL-S7 FIX] metodoPago legacy fallback removed. Only paymentMethod used.
         const paymentMethod = _safeTrim(
             unsafePayload?.paymentMethod ||
             metaCita.paymentMethod ||
@@ -687,7 +758,8 @@ export async function executeBookingSaga(unsafePayload) {
                             lineItems: bookingIds.map(function (bookingId) {
                                 return {
                                     catalogReference: {
-                                        appId: "13d21c63-b5ec-5912-8397-c3a5ddb27a97",
+                                        // [PATCH-07] App ID canonico desde internalConfig
+                                        appId: APP_IDS.BOOKINGS,
                                         catalogItemId: bookingId,
                                         options: {},
                                     },
@@ -709,9 +781,17 @@ export async function executeBookingSaga(unsafePayload) {
                         };
                     } else {
                         for (const booking of createdBookings) {
-                            await confirmOrDeclineBookingElevated(booking.bookingId, {
-                                paymentStatus: "NOT_PAID",
-                            });
+                            // [PATCH-09] Deteccion de flag doubleBooked en confirmacion
+                            // Ref doc oficial: "If a session is double booked,
+                            // confirmOrDeclineBooking() can catch this and decline
+                            // the duplicate booking."
+                            const confirmResult = await confirmOrDeclineBookingElevated(
+                                booking.bookingId, {
+                                    paymentStatus: "NOT_PAID",
+                                }
+                            );
+                            // [PATCH-09] Deteccion post-confirmacion
+                            _checkDoubleBookingFlag(confirmResult, "CONFIRM_" + booking.phase, traceId);
                         }
                         return {
                             requiresPayment: false,
@@ -724,9 +804,7 @@ export async function executeBookingSaga(unsafePayload) {
 
         // =========================================================================
         // [PATCH-05] PHASE 5 + PHASE 6 envueltos en try/finally
-        // Garantiza cleanup de heartbeat y locks en cualquier path,
-        // incluso si _persistBooking, _completeTransaction o
-        // _invalidateCachesInternal lanzan excepcion post-commit.
+        // Garantiza cleanup de heartbeat y locks en cualquier path.
         // =========================================================================
         const sagaStartTime = Date.now();
         try {
@@ -739,13 +817,11 @@ export async function executeBookingSaga(unsafePayload) {
             // PHASE 6: PERSIST TO CITAS_F2 + COMPLETE TRANSACTION
             // =========================================================================
             // [PATCH-04] Extraccion nominal del step de checkout/presencial
-            // (evita fragilidad por indice posicional en results[N]).
             const checkoutStepName = isOnline ? "CreateCheckout" : "ConfirmPresencial";
             const checkoutStepResult = saga.completedSteps
                 .find((s) => s.name === checkoutStepName)?.result || null;
             const resolvedCheckoutUrl = checkoutStepResult?.checkoutUrl || null;
 
-            // [HAL-S9 FIX] Correct field extraction from createdBookings array
             const bookingF1Id = createdBookings.find(function (b) {
                 return b.phase === "F1";
             })?.bookingId;
@@ -760,10 +836,6 @@ export async function executeBookingSaga(unsafePayload) {
                 ESTADO_CITA.PENDING_PAYMENT :
                 ESTADO_CITA.CONFIRMED;
 
-            // [HAL-S2, HAL-S3 FIX] Top-level canonical fields per SSOT v5002.6
-            // CitasF2 schema: bookingId, revision, serviceId, scheduleId, resourceId,
-            // startDate, endDate, dateYmd, bookingType, status, paymentStatus,
-            // pairToken, contactDetails, meta (OBJECT native), traceId
             await _persistBooking({
                     bookingId: bookingF1Id,
                     revision: 1,
@@ -784,7 +856,6 @@ export async function executeBookingSaga(unsafePayload) {
                         f1End: f1LocalEnd,
                         f2Start: f2LocalStart || null,
                         f2End: f2LocalEnd || null,
-                        // [PATCH-04] URL resuelta nominalmente (no por indice)
                         checkoutUrl: resolvedCheckoutUrl,
                     },
                     traceId: traceId,
@@ -821,7 +892,6 @@ export async function executeBookingSaga(unsafePayload) {
                 bookingIds: createdBookings.map(function (b) { return b.bookingId; }),
                 pairToken: pairToken,
                 requiresPayment: isOnline,
-                // [PATCH-04] URL resuelta nominalmente
                 checkoutUrl: resolvedCheckoutUrl,
                 status: citaStatus,
             };
@@ -843,7 +913,7 @@ export async function executeBookingSaga(unsafePayload) {
             return { status: "SUCCESS", data: finalResult, error: null };
 
         } finally {
-            // [PATCH-05] Cleanup garantizado de heartbeat y locks en cualquier path
+            // [PATCH-05] Cleanup garantizado
             if (heartbeatInterval) {
                 clearInterval(heartbeatInterval);
                 heartbeatInterval = null;
