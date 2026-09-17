@@ -1,0 +1,204 @@
+{
+  "timestamp": "2026-09-17T20:56:38.852738+00:00",
+  "version": "v5008.3-FINAL",
+  "total": 31,
+  "passed": 31,
+  "failed": 0,
+  "results": [
+    {
+      "id": "BK-01 totalParticipants",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "BK-02 options 2nd arg",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "BK-03 no top serviceId",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "BK-04 ISO dates",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "BK-05 OWNER_BUSINESS",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "BK-06 sequential dual",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "BK-07 consumer exports",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "BK-08 reservas internals",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "LOG-01 events logger",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "LOG-02 citas logger",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "LOG-03 cajas logger",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "LOG-04 marian logger",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "LOG-05 fiscalAgg logger",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "WH-01 ProcessedWebhookEvents",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "WH-02 events uses it",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "WH-03 not Alertas",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "ACC-01 cajas imports contabilidad",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "ACC-02 non-blocking projection wired",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "ACC-03 projection sites",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "DATA-01 SecuenciaTickets no-op",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "DATA-02 no broken get without collection",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "DATA-03 LibroAsientos hooks",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "FLOW-01 pay->ledger",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "FLOW-02 pay->inventory",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "FLOW-03 cancel path",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "FLOW-04 refund path",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "FLOW-05 dual F1 F2",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "DEP-01 no wix-bookings-backend",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "DEP-02 uses v2",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "ASCII-01 core",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "ASCII-02 saga",
+      "status": "PASS",
+      "detail": ""
+    }
+  ],
+  "consolidationAnalysis": {
+    "doNotDelete": [
+      "bookingCore + bookingSaga (motor reservas)",
+      "reservas.web (disponibilidad / staff / dual cache)",
+      "cajas.web (ledger fiscal)",
+      "contabilidad (asientos PGC)",
+      "inventario.web (stock online)",
+      "events (webhooks nativos Wix)",
+      "security + securityEngine + security.web (capa auth)",
+      "staff, logger, audit, responseUtils, internalConfig, mmSecrets",
+      "bookingServiceSync (ServiciosCatalogo <-> Bookings)",
+      "horario.web (laboral)",
+      "fiscalDocuments + fiscalAggregator (paquetes AEAT - responsabilidades distintas)",
+      "crons + jobs.config",
+      "data.js (hooks inmutabilidad CMS)",
+      "http-functions (M365 HMAC)",
+      "m365GraphSync, marianAssistant, facturasRecibidas"
+    ],
+    "cleaned": [
+      "Webhook idempotency: ProcessedWebhookEvents (no AlertasOperativas)",
+      "Logger: todos los modulos usan backend/logger",
+      "SecuenciaTickets_beforeUpdate: no-op (coleccion fuera de SSOT, get roto eliminado)",
+      "LibroAsientosContablesDetalle hooks alineados con contabilidad",
+      "Proyeccion contable no bloqueante desde cajas tras cada movimiento",
+      "bookingCore: eliminado _getDualPairFromCache muerto",
+      "Exports de alineacion para consumers (reschedule, _updateCitaSafe, _handleError)"
+    ],
+    "notConsolidatedWhy": [
+      "fiscalDocuments vs fiscalAggregator: paquetes manager vs resumenes trimestrales",
+      "security.web: facade frontend necesaria",
+      "citasManager vs reservas: orquestacion citas vs disponibilidad",
+      "marianAssistant: opcional AI, no acoplar al motor de reservas"
+    ],
+    "wixNativeFriction": [
+      "Bookings V2 Writer API - contrato oficial (sin serviceId top-level)",
+      "Webhooks eCom/Bookings en events.js - patron nativo",
+      "No se sobrescribe calendario nativo Bookings; se escribe CitasF2 como SSOT interno",
+      "Stores/eCom inventario espejado, no sustituye catalogo Wix"
+    ]
+  }
+}

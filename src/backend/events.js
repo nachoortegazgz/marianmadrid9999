@@ -1,7 +1,7 @@
 /*
 =============================================================================
 MODULE: backend/events.js
-VERSION: v5007.4-FINAL (AUDIT-FIX: verificacion JWT de webhooks)
+VERSION: v5008.2-OPT (ProcessedWebhookEvents, no alert pollution)
 BASE: Modulos optimizados 3 + BIBLIA v5002.5 + DIRECTRICES V19
 RESPONSIBILITY: Server-to-server native webhooks for Wix Bookings V2 and
                 Wix eCommerce V2 with exact-indexed queries, bounded
@@ -10,7 +10,7 @@ STANDARDS: G10 ASCII Strict (0 non-ASCII characters).
 CORRECTIONS APPLIED:
   [R2-09] Idempotencia en wixEcom_onOrderCanceled.
   [R2-10] _updateCitaStatus busca por campo bookingId (no _id).
-  [R2-13] Sin fallback string en PROCESSED_EVENTS_COL.
+  [R2-13] PROCESSED_EVENTS_COL = COLLECTIONS.PROCESSED_WEBHOOK_EVENTS (no AlertasOperativas).
   [R2-21] Promise.allSettled para actualizar multiples citas en paralelo.
   [FIX-D3] _logAuditEvent local eliminado. Se importa logAuditEventWithTimeout de audit.js.
   [EVENTS-01] Handlers idempotentes mediante registro de eventId.
@@ -45,7 +45,8 @@ import {
     SDK_CONFIG,
 } from "backend/internalConfig";
 
-import { logger, normalizeError, _updateCitaSafe } from "backend/booking/bookingCore";
+import { logger } from "backend/logger";
+import { normalizeError, _updateCitaSafe } from "backend/booking/bookingCore";
 import { registerBookingPayment, queueFiscalRecovery } from "backend/cajas.web";
 import {
     recordOnlineInventoryOrderInternal,
@@ -114,7 +115,7 @@ function _normalizeBookingIds(value) {
     return Array.from(new Set(values.map((id) => String(id || "").trim()).filter(Boolean)));
 }
 
-const PROCESSED_EVENTS_COL = COLLECTIONS.ALERTAS_OPERATIVAS;
+const PROCESSED_EVENTS_COL = COLLECTIONS.PROCESSED_WEBHOOK_EVENTS;
 const EVENT_TTL_HOURS = 72;
 
 // ============================================================================

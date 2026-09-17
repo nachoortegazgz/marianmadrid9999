@@ -105,7 +105,7 @@ export async function testBookingEnumsValidation() {
   assert.ok(validBookingTypes.includes('DUAL_F2'), 'DUAL_F2 debe ser válido.');
   
   assert.ok(validStatuses.includes('CONFIRMED'), 'CONFIRMED debe ser válido.');
-  assert.ok(validStatuses.includes('PENDING'), 'PENDING debe ser válido.');
+  assert.ok(validStatuses.includes('PENDING_PAYMENT'), 'PENDING debe ser válido.');
   assert.ok(validStatuses.includes('CANCELED'), 'CANCELED debe ser válido.');
   
   // Validaciones negativas

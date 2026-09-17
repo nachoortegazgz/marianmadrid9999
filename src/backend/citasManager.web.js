@@ -1,7 +1,7 @@
 /*
 =============================================================================
 MODULE: backend/citasManager.web.js
-VERSION: v5007.8-SSOT (Alineacion SSOT v5002.6: logger canonico, audit
+VERSION: v5008.1-ALIGNED (logger from backend/logger)
         centralizado, campos top-level, imports depurados)
 BASE: BIBLIA v5002.5 Bloque 12.4 + MOTOR DE RESERVAS + DIRECTRICES V19
 CORRECTIONS APPLIED:
@@ -11,8 +11,7 @@ CORRECTIONS APPLIED:
   [CM-04] _assertBookingOwner verifica propiedad de la cita.
   [CM-05] Reprogramacion dual con revalidacion de slots.
   [CM-06] _buildDualRescheduleSlot usa linkedPhases (campo canonico v5002.5).
-  [CM-07] Logger importado desde backend/booking/bookingCore (backend/logger
-          no existe en el inventario SSOT).
+  [CM-07] Logger importado desde backend/logger (canonico).
   [CM-08] _logAuditEvent local retirado. Se importa logAuditEvent canonico
           desde backend/audit.
   [CM-09] Campos top-level canonicos: status, paymentStatus, meta (sin
@@ -43,8 +42,8 @@ import {
     withTimeout,
 } from "public/mmUtils";
 import { executeBookingSaga } from "backend/booking/bookingSaga";
+import { logger } from "backend/logger";
 import {
-    logger,
     normalizeError,
     _handleError,
     ERROR_CODES,

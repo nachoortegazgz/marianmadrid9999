@@ -1,7 +1,7 @@
 /*
 =============================================================================
 MODULE: backend/data.js
-VERSION: v5007.4-FINAL
+VERSION: v5008.3-FINAL (hooks SSOT aligned)
 BASE: BIBLIA v5002.5 + ESQUEMA CMS v5002.5 + DOSSIER CAJA
 RESPONSIBILITY: Hooks de inmutabilidad y validacion para Wix Data.
 STANDARDS: G10 ASCII Strict.
@@ -329,6 +329,16 @@ export async function LineasAsientoContable_beforeRemove(item) {
     return _validateAccountingLineParent(item);
 }
 
+// [v5008.3] SSOT collection name used by contabilidad.js
+export async function LibroAsientosContablesDetalle_beforeUpdate(item) {
+    return _validateAccountingLineParent(item);
+}
+
+export async function LibroAsientosContablesDetalle_beforeRemove(item) {
+    return _validateAccountingLineParent(item);
+}
+
+
 async function _validateAccountingLineParent(item = {}) {
     const journalEntryId = _safeTrim(
         item.journalEntryId
@@ -361,36 +371,9 @@ async function _validateAccountingLineParent(item = {}) {
 // BLOQUE 10 - SECUENCIA DE TICKETS
 // =============================================================================
 
+// [v5008.3] SecuenciaTickets removed from SSOT COLLECTIONS.
+// Keep hook as no-op so CMS residual collection does not crash data layer.
 export async function SecuenciaTickets_beforeUpdate(item) {
-    const existing = await wixData
-        .get(
-            // COLLECTIONS.SECUENCIA_TICKETS - ELIMINADA: no existe en SSOT,
-            item?._id, { suppressAuth: true }
-        )
-        .catch(() => null);
-
-    if (!existing?.sequenceCounters) {
-        return item;
-    }
-
-    const oldCounters =
-        existing.sequenceCounters || {};
-
-    const newCounters =
-        item.sequenceCounters || {};
-
-    const oldGlobal =
-        Number(oldCounters.seqGlobal) || 0;
-
-    const newGlobal =
-        Number(newCounters.seqGlobal) || 0;
-
-    if (newGlobal < oldGlobal) {
-        throw new Error(
-            "SEQUENCE_VIOLATION: No se permite retroceder seqGlobal"
-        );
-    }
-
     return item;
 }
 

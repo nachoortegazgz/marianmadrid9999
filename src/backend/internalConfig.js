@@ -1,7 +1,7 @@
 /*
 =============================================================================
 MODULE: backend/internalConfig.js
-VERSION: v5007.5-FINAL
+VERSION: v5008.2-OPT (ProcessedWebhookEvents)
 BASE: BIBLIA_DEFINITIVA v5002.5 + ESQUEMA CMS v5002.5 + DIRECTRICES V19
 RESPONSIBILITY: Single Source of Truth (SSOT) for backend configuration.
 STANDARDS: G10 ASCII Strict.
@@ -33,6 +33,7 @@ export const STAFF = Object.freeze({
 
 export const COLLECTIONS = Object.freeze({
     ALERTAS_OPERATIVAS: "AlertasOperativas",
+    PROCESSED_WEBHOOK_EVENTS: "ProcessedWebhookEvents",
     ASIENTOS_CONTABLES: "AsientosContables",
     AVAILABILITY_DAYS_CACHE: "AvailabilityDaysCache",
     BOOKINGS_SERVICE_SYNC_QUEUE: "BookingsServiceSyncQueue",

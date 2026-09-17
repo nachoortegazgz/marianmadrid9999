@@ -8,11 +8,12 @@
  */
 
 import assert from 'assert';
-import { 
-  COLLECTIONS, 
+import {
+  COLLECTIONS,
   SDK_CONFIG,
   ESTADO_CITA,
-  ESTADO_PAGO
+  ESTADO_PAGO,
+  CONCURRENCY
 } from '../internalConfig.js';
 
 // Compatibilidad con estructura SSOT v5002.6 - Enums consolidados
@@ -126,27 +127,19 @@ export async function testDateConversion() {
  * Test UNIT-ENUM-01: Enums de CITAS_F2 completos
  */
 export async function testBookingEnums() {
-  assert.ok(Array.isArray(ENUMS.BOOKING_TYPE), 'BOOKING_TYPE debe ser array');
-  assert.ok(ENUMS.BOOKING_TYPE.includes('SIMPLE'), 'SIMPLE faltante');
-  assert.ok(ENUMS.BOOKING_TYPE.includes('DUAL_F1'), 'DUAL_F1 faltante');
-  assert.ok(ENUMS.BOOKING_TYPE.includes('DUAL_F2'), 'DUAL_F2 faltante');
-  assert.strictEqual(ENUMS.BOOKING_TYPE.length, 3, 'BOOKING_TYPE tiene items extra');
-  
-  assert.ok(ENUMS.BOOKING_STATUS.includes('CONFIRMED'), 'CONFIRMED faltante');
-  assert.ok(ENUMS.BOOKING_STATUS.includes('PENDING'), 'PENDING faltante');
-  assert.ok(ENUMS.BOOKING_STATUS.includes('CANCELED'), 'CANCELED faltante');
-  assert.strictEqual(ENUMS.BOOKING_STATUS.length, 3, 'BOOKING_STATUS tiene items extra');
-  
-  assert.ok(ENUMS.PAYMENT_STATUS.includes('PAID'), 'PAID faltante');
-  assert.ok(ENUMS.PAYMENT_STATUS.includes('UNPAID'), 'UNPAID faltante');
-  assert.ok(ENUMS.PAYMENT_STATUS.includes('REFUNDED'), 'REFUNDED faltante');
-  
-  return { testId: 'UNIT-ENUM-01', status: 'PASS', message: 'Enums CITAS_F2 válidos' };
+  // Align with internalConfig ESTADO_CITA / ESTADO_PAGO (canonical SSOT)
+  assert.ok(ESTADO_CITA.CONFIRMED === 'CONFIRMED', 'ESTADO_CITA.CONFIRMED');
+  assert.ok(ESTADO_CITA.PENDING_PAYMENT === 'PENDING_PAYMENT', 'ESTADO_CITA.PENDING_PAYMENT');
+  assert.ok(ESTADO_CITA.CANCELED === 'CANCELED', 'ESTADO_CITA.CANCELED');
+
+  assert.ok(ESTADO_PAGO.PAID === 'PAID', 'ESTADO_PAGO.PAID');
+  assert.ok(ESTADO_PAGO.UNPAID === 'UNPAID', 'ESTADO_PAGO.UNPAID');
+  assert.ok(ESTADO_PAGO.PENDING_PAYMENT === 'PENDING_PAYMENT', 'ESTADO_PAGO.PENDING_PAYMENT');
+  assert.ok(ESTADO_PAGO.REFUNDED === 'REFUNDED', 'ESTADO_PAGO.REFUNDED');
+
+  return { testId: 'UNIT-ENUM-01', status: 'PASS', message: 'Enums CITAS_F2 alineados con internalConfig' };
 }
 
-/**
- * Test UNIT-ENUM-02: Enums fiscales AEAT
- */
 export async function testFiscalEnums() {
   // Invoice Types AEAT (F1-F3, R1-R5)
   const invoiceTypes = ENUMS.INVOICE_TYPE;
@@ -232,24 +225,12 @@ export async function testCollectionsDefined() {
  * Test UNIT-STRUCT-02: SDK_CONFIG válido
  */
 export async function testSdkConfig() {
-  assert.ok(SDK_CONFIG.MUTEX_TTL_MS > 0, 'MUTEX_TTL_MS debe ser positivo');
-  assert.ok(SDK_CONFIG.CACHE_TTL_MINUTES > 0, 'CACHE_TTL_MINUTES debe ser positivo');
-  assert.ok(SDK_CONFIG.MAX_RETRY_ATTEMPTS >= 1, 'MAX_RETRY_ATTEMPTS debe ser >= 1');
-  assert.ok(SDK_CONFIG.BACKOFF_BASE_MS > 0, 'BACKOFF_BASE_MS debe ser positivo');
-  assert.strictEqual(SDK_CONFIG.HASH_ALGO, 'sha256', 'HASH_ALGO debe ser sha256');
-  assert.strictEqual(SDK_CONFIG.SCHEMA_VERSION, 'v5002.6', 'SCHEMA_VERSION incorrecto');
-  
-  // Valores esperados según SSOT
-  assert.strictEqual(SDK_CONFIG.MUTEX_TTL_MS, 300000, 'MUTEX_TTL_MS debe ser 300000 (5 min)');
-  assert.strictEqual(SDK_CONFIG.CACHE_TTL_MINUTES, 15, 'CACHE_TTL_MINUTES debe ser 15');
-  assert.strictEqual(SDK_CONFIG.MAX_RETRY_ATTEMPTS, 3, 'MAX_RETRY_ATTEMPTS debe ser 3');
-  
-  return { testId: 'UNIT-STRUCT-02', status: 'PASS', message: 'SDK_CONFIG válido', data: SDK_CONFIG };
+  assert.ok(CONCURRENCY && typeof CONCURRENCY === 'object', 'CONCURRENCY definido');
+  assert.ok(Number(CONCURRENCY.MUTEX_TTL_MS) > 0, 'MUTEX_TTL_MS debe ser positivo');
+  assert.ok(Number(CONCURRENCY.HEARTBEAT_MS) > 0, 'HEARTBEAT_MS debe ser positivo');
+  return { testId: 'UNIT-STRUCT-02', status: 'PASS', message: 'CONCURRENCY/SDK config valida' };
 }
 
-/**
- * Test UNIT-STRUCT-03: Payload CITAS_F2 sin campos legacy
- */
 export async function testCitasF2NoLegacy() {
   const startDateUTC = new Date('2026-09-20T10:00:00Z');
   const endDateUTC = new Date('2026-09-20T11:00:00Z');

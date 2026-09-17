@@ -16,7 +16,8 @@ import wixData from "wix-data";
 import { COLLECTIONS, SDK_CONFIG, TIPO_MOVIMIENTO } from "backend/internalConfig";
 import { makeTraceId, _safeTrim, _roundMoney, withTimeout } from "public/mmUtils";
 import { requireCajero, requireAdmin, requireMarianManager, rateLimiter } from "backend/security";
-import { logger } from "backend/booking/bookingCore";
+import { logger } from "backend/logger";
+
 import { _toPublicError } from "backend/responseUtils";
 
 const log = logger;

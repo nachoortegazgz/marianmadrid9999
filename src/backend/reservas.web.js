@@ -1,7 +1,7 @@
 /**
  * =============================================================================
  * FILE: backend/reservas.web.js
- * VERSION: refactor-reservas-v8 (IDs tecnicos nativos del CSV ServiciosCatalogo
+ * VERSION: v5008.1-ALIGNED (export internals for saga)
  *          + shape dual espanol/ingles para compatibilidad total con
  *          bookingSaga.js y citasManager.js)
  * RESPONSIBILITY: Availability engine, dual slots with gap, same-staff pairing,
@@ -260,7 +260,7 @@ function _resolveAddonContext(service, requestedAddonIds) {
     return _resolveAddonContextInternal(service, requestedAddonIds);
 }
 
-async function _getServiceBySlugOrIdInternal(slugOrId, externalTraceId = null) {
+export async function _getServiceBySlugOrIdInternal(slugOrId, externalTraceId = null) {
     const traceId = externalTraceId || makeTraceId("service");
     const raw = _safeTrim(slugOrId);
     const isGuid = _looksLikeGuid(raw);
@@ -298,7 +298,7 @@ async function _getServiceBySlugOrIdInternal(slugOrId, externalTraceId = null) {
     }
 }
 
-async function _resolveServiceIdInternal(serviceIdReq) {
+export async function _resolveServiceIdInternal(serviceIdReq) {
     const raw = _safeTrim(serviceIdReq);
     if (!raw) return null;
     if (_looksLikeGuid(raw)) return raw;

@@ -1,7 +1,7 @@
 /*
 =============================================================================
 MODULE: backend/cajas.web.js
-VERSION: v5007.9-FINAL (Alineacion maxima con documentacion oficial Wix,
+VERSION: v5008.2-OPT (logger from backend/logger)
         Booking y fiscalidad espanola)
 BASE: Modulos optimizados 3 + BIBLIA v5002.5 + DOSSIER CAJA + DIRECTRICES V19
 RESPONSIBILITY: TPV cashier ledger, daily closures (Arqueo X / Cierre Z),
@@ -112,12 +112,14 @@ import {
     withTimeout,
 } from "public/mmUtils";
 
-import { logger, normalizeError } from "backend/booking/bookingCore";
+import { logger } from "backend/logger";
+import { normalizeError } from "backend/booking/bookingCore";
 import { _toPublicError } from "backend/responseUtils";
 import { _lockSlotKeyOrFail, _unlockSlotKey } from "backend/booking/bookingCore";
 
 // [FIX-D3] Import canonico de auditoria centralizada
 import { logAuditEvent } from "backend/audit";
+import { projectLedgerMovementToAccounting } from "backend/contabilidad";
 
 const log = logger;
 
@@ -630,6 +632,16 @@ export const registerManualTransaction = webMethod(Permissions.SiteMember, async
 
             const saved = await wixData.insert(COLLECTIONS.MOVIMIENTOS_CAJA, movimiento, { suppressAuth: true });
             await _updateCajaActual(movimiento, traceId);
+            // [v5008.3] Non-blocking accounting projection - never fails the cash movement
+            try {
+                projectLedgerMovementToAccounting(movimiento).catch((accErr) => {
+                    log.warn("Accounting projection deferred", {
+                        error: accErr?.message || String(accErr),
+                        concept: movimiento?.concept,
+                        traceId,
+                    });
+                });
+            } catch (_) { /* ignore */ }
 
             if (SDK_CONFIG?.M365?.ENABLED) {
                 try {
@@ -1187,6 +1199,16 @@ export const registerGiftCardSale = webMethod(Permissions.SiteMember, async (pay
 
             const saved = await wixData.insert(COLLECTIONS.MOVIMIENTOS_CAJA, movimiento, { suppressAuth: true });
             await _updateCajaActual(movimiento, traceId);
+            // [v5008.3] Non-blocking accounting projection - never fails the cash movement
+            try {
+                projectLedgerMovementToAccounting(movimiento).catch((accErr) => {
+                    log.warn("Accounting projection deferred", {
+                        error: accErr?.message || String(accErr),
+                        concept: movimiento?.concept,
+                        traceId,
+                    });
+                });
+            } catch (_) { /* ignore */ }
 
             await logAuditEvent("GIFT_CARD_SOLD", "INFO", `Tarjeta regalo vendida: ${giftCardId}`, { giftCardId, amount, traceId }, traceId, giftCardId, "backend/cajas.web.js");
 
@@ -1356,6 +1378,16 @@ export const registerGiftCardRedemption = webMethod(Permissions.SiteMember, asyn
 
             const saved = await wixData.insert(COLLECTIONS.MOVIMIENTOS_CAJA, movimiento, { suppressAuth: true });
             await _updateCajaActual(movimiento, traceId);
+            // [v5008.3] Non-blocking accounting projection - never fails the cash movement
+            try {
+                projectLedgerMovementToAccounting(movimiento).catch((accErr) => {
+                    log.warn("Accounting projection deferred", {
+                        error: accErr?.message || String(accErr),
+                        concept: movimiento?.concept,
+                        traceId,
+                    });
+                });
+            } catch (_) { /* ignore */ }
 
             await logAuditEvent("GIFT_CARD_REDEEMED", "INFO", `Tarjeta regalo canjeada: ${giftCardId}`, { giftCardId, amount, serviceId, traceId }, traceId, giftCardId, "backend/cajas.web.js");
 

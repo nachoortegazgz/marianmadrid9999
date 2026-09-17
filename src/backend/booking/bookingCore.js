@@ -1,6 +1,6 @@
 /*
 MODULE: backend/booking/bookingCore.js
-VERSION: v5008.0-MINIMAL-OFFICIAL
+VERSION: v5008.2-OPT (aligned + dead code removed)
 PURPOSE: Atomic primitives for Wix Bookings V2 Writer (simple + dual with gap).
          Official Create Booking contract only. Zero deprecated APIs.
 STANDARDS: ASCII only. No Node builtins.
@@ -50,8 +50,12 @@ export const ERROR_CODES = Object.freeze({
 export const createBookingElevated = elevate(bookings.createBooking);
 export const cancelBookingElevated = elevate(bookings.cancelBooking);
 export const confirmOrDeclineBookingElevated = elevate(bookings.confirmOrDeclineBooking);
+export const rescheduleBookingElevated = elevate(bookings.rescheduleBooking);
 export const createCheckoutElevated = elevate(checkout.createCheckout);
 export const getCheckoutUrlElevated = elevate(checkout.getCheckoutUrl);
+
+// Back-compat: some modules historically imported logger from this file.
+export { logger };
 
 export class BookingError extends Error {
     constructor(code, message, details = {}) {
@@ -97,6 +101,24 @@ export function normalizeError(err) {
     }
     return { code: ERROR_CODES.UNKNOWN_ERROR, message: "Unknown error", stack: null, details: {} };
 }
+
+export function _handleError(error, context, traceId, logFn) {
+    const loggerInstance = logFn || log;
+    const norm = normalizeError(error);
+    loggerInstance.error("[" + context + "] " + norm.code + ": " + norm.message, {
+        traceId,
+        details: norm.details,
+    });
+    return {
+        status: "ERROR",
+        data: null,
+        error: {
+            code: norm.code || ERROR_CODES.UNKNOWN_ERROR,
+            message: norm.message || "Unknown error",
+        },
+    };
+}
+
 
 async function _resolveScheduleIdByResourceId(resourceId) {
     const id = _safeTrim(resourceId);
@@ -506,21 +528,6 @@ export async function _persistBooking(params, traceId) {
     return { created: true, item };
 }
 
-export async function _getDualPairFromCache(pairToken, traceId) {
-    if (!pairToken) return null;
-    const res = await wixData
-        .query(COLLECTIONS.DUAL_SLOT_CACHE)
-        .eq("_id", String(pairToken))
-        .limit(1)
-        .find({ suppressAuth: true })
-        .catch(() => null);
-    const item = res?.items?.[0] || null;
-    if (!item) return null;
-    const exp = _toDateSafe(item.expiresAt);
-    if (exp && exp.getTime() < Date.now()) return null;
-    return item;
-}
-
 export function _areSlotsContiguous(slot1, slot2, maxGapMinutes) {
     if (!slot1 || !slot2) return false;
     const maxGap = maxGapMinutes == null ? 120 : maxGapMinutes;
@@ -532,6 +539,47 @@ export function _areSlotsContiguous(slot1, slot2, maxGapMinutes) {
     if (!end1Utc || !start2Utc) return false;
     const gapMinutes = (start2Utc.getTime() - end1Utc.getTime()) / 60000;
     return gapMinutes >= -1 && gapMinutes <= maxGap;
+}
+
+
+/**
+ * Safe update of a CitasF2 row by bookingId.
+ * updater(cita) must return the updated document or null/undefined to skip.
+ */
+export async function _updateCitaSafe(bookingId, updater, traceId, operation) {
+    const bid = _safeTrim(bookingId);
+    if (!bid) return { updated: false, reason: "INVALID_BOOKING_ID" };
+
+    try {
+        const res = await wixData
+            .query(CITAS_COL)
+            .eq("bookingId", bid)
+            .limit(1)
+            .find({ suppressAuth: true, suppressHooks: true });
+
+        const cita = res?.items?.[0];
+        if (!cita) {
+            log.warn("_updateCitaSafe: cita not found", { bookingId: bid, operation, traceId });
+            return { updated: false, reason: "NOT_FOUND" };
+        }
+
+        const updated = updater(cita);
+        if (!updated) return { updated: false, reason: "NO_CHANGE" };
+
+        updated._updatedDate = new Date();
+        updated.traceId = traceId || updated.traceId;
+
+        await wixData.update(CITAS_COL, updated, { suppressAuth: true, suppressHooks: true });
+        return { updated: true, bookingId: bid };
+    } catch (err) {
+        log.error("_updateCitaSafe failed", {
+            bookingId: bid,
+            operation,
+            traceId,
+            error: err?.message,
+        });
+        return { updated: false, reason: "ERROR", error: err?.message };
+    }
 }
 
 export function isValidGuid(id) {

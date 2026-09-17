@@ -15,7 +15,6 @@
     "@wix/site-storage": "1.23.0",
     "@wix/secrets": "1.0.75",
     "@wix/site-window": "1.59.0",
-    "wix-bookings-backend": "0.0.0",
     "@wix/members": "1.0.519"
   },
   "scripts": {
