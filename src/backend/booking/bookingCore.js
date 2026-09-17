@@ -277,9 +277,13 @@ export async function _forceStaffInPristineSlot(slot, resourceId, serviceIdOverr
     if (!startDate || !endDate) return null;
 
     const locationId = _safeTrim(SDK_CONFIG?.LOCATION_ID);
-    const locationType = _safeTrim(
-        SDK_CONFIG?.LOCATION_TYPES?.BOOKINGS_WRITER || "OWNER_BUSINESS"
+    const configuredLocationType = _safeTrim(
+        SDK_CONFIG?.LOCATION_TYPES?.BOOKINGS_WRITER
     );
+    const locationType =
+        configuredLocationType === "BUSINESS"
+            ? "OWNER_BUSINESS"
+            : configuredLocationType || "OWNER_BUSINESS";
     const timezone = _safeTrim(SDK_CONFIG?.TZ);
 
     if (!locationId || !locationType || !timezone) {
@@ -965,7 +969,7 @@ export function _projectWriterSlotFromAvailability(slot, resourceId, serviceId) 
         },
         location: {
             id: projected.locationId,
-            locationType: SDK_CONFIG?.LOCATION_TYPES?.BOOKINGS_WRITER || "OWNER_BUSINESS",
+            locationType: "OWNER_BUSINESS",
         },
     };
 }
