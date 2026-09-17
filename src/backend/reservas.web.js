@@ -203,6 +203,9 @@ function _getResourceIdsFromSlot(slot) {
     else if (s.resource?.id || s.resource?._id) {
         const id = s.resource.id || s.resource._id;
         return _looksLikeGuid(String(id)) ? [String(id)] : [];
+    } else if (s.resource?.resourceId) {
+        const id = s.resource.resourceId;
+        return _looksLikeGuid(String(id)) ? [String(id)] : [];
     } else if (s.resourceId) return _looksLikeGuid(String(s.resourceId)) ? [String(s.resourceId)] : [];
 
     const staffGroup = groups.find((g) => String(g.resourceTypeId) === String(STAFF_RESOURCE_TYPE_ID));
