@@ -1,0 +1,82 @@
+{
+  "timestamp": "2026-09-14T19:48:38.576Z",
+  "environment": "nodejs-test-runner",
+  "batteries": [
+    {
+      "name": "UNIT_TESTS",
+      "description": "Tests puros de lógica, enums y estructuras SSOT",
+      "timestamp": "2026-09-14T19:48:38.608Z",
+      "results": {
+        "traceId": "UNIT_RUN_1789415318576",
+        "total": 9,
+        "passed": 7,
+        "failed": 2,
+        "successRate": "77.78%",
+        "status": "UNIT_TESTS_FAILED",
+        "details": [
+          {
+            "testId": "UNIT-GEN-01",
+            "status": "PASS",
+            "message": "pairToken determinista verificado",
+            "data": {
+              "token": "323d15f3911d9f5a"
+            }
+          },
+          {
+            "testId": "UNIT-GEN-02",
+            "status": "PASS",
+            "message": "SlotKey formato correcto",
+            "data": {
+              "slotKey": "lock:res_test_001:2026-09-20:1000"
+            }
+          },
+          {
+            "testId": "UNIT-GEN-03",
+            "status": "PASS",
+            "message": "Conversión timezone correcta"
+          },
+          {
+            "testId": "BookingEnums",
+            "status": "FAIL",
+            "error": "PENDING faltante"
+          },
+          {
+            "testId": "UNIT-ENUM-02",
+            "status": "PASS",
+            "message": "Enums fiscales AEAT válidos"
+          },
+          {
+            "testId": "UNIT-ENUM-03",
+            "status": "PASS",
+            "message": "Enums contables PGC válidos"
+          },
+          {
+            "testId": "UNIT-STRUCT-01",
+            "status": "PASS",
+            "message": "Todas las colecciones SSOT definidas",
+            "data": {
+              "count": 34
+            }
+          },
+          {
+            "testId": "SdkConfig",
+            "status": "FAIL",
+            "error": "MUTEX_TTL_MS debe ser positivo"
+          },
+          {
+            "testId": "UNIT-STRUCT-03",
+            "status": "PASS",
+            "message": "Payload sin campos legacy"
+          }
+        ]
+      }
+    }
+  ],
+  "globalSummary": {
+    "totalTests": 9,
+    "totalPassed": 7,
+    "totalFailed": 2,
+    "overallStatus": "SOME_TESTS_FAILED_REVIEW_REQUIRED",
+    "successRate": "77.78%"
+  }
+}
