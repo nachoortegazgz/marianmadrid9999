@@ -351,7 +351,6 @@ async function _getValidatedPaidOrder(
     bookingLineItems
   };
 }
-```js
 async function _validatePaymentCitaSet(
   citas,
   orderId,
