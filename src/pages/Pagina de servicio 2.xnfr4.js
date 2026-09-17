@@ -1,406 +1,390 @@
-/**
- * MODULE: pages/servicio-2.js
- * VERSION: v5005-2
- * STANDARDS: G10 ASCII Strict, Velo Native Optimized.
- */
+/*
+=============================================================================
+MODULE: pages/servicio-2.js
+VERSION: v5005.3-IMAGE-FALLBACK
+STANDARDS: G10 ASCII Strict, Velo Native Optimized.
+=============================================================================
+*/
 
 import wixLocation from "wix-location";
+
 import {
-    getServiceBySlugOrId
+  getServiceBySlugOrId
 } from "backend/reservas.web";
 
 import {
-    MESSAGE_TYPES,
-    URLS,
-    makeTraceId,
-    _safeTrim,
-    _safeSlugOrId,
-    _looksLikeGuid
+  MESSAGE_TYPES,
+  URLS,
+  makeTraceId,
+  _safeTrim,
+  _safeSlugOrId,
+  _looksLikeGuid
 } from "public/mmUtils";
 
 import {
-    createWidgetBridge
+  createWidgetBridge
 } from "public/widgetBridge";
+
+const DEFAULT_SERVICE_IMAGE =
+  "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 800'><rect width='1200' height='800' fill='%23e9e2d9'/><circle cx='900' cy='170' r='210' fill='%23d8bea0'/><rect x='105' y='180' width='530' height='450' rx='30' fill='%23f7f3ee'/><text x='160' y='420' fill='%23342b24' font-family='Georgia' font-size='68'>MARIAN</text><text x='160' y='500' fill='%23342b24' font-family='Georgia' font-size='68'>MADRID</text></svg>";
 
 let bridge = null;
 let resolvedService = null;
 
 function getSafeMessage(error, fallback) {
-    const message = error && error.message ?
-        error.message :
-        fallback;
+  const message = error && error.message
+    ? error.message
+    : fallback;
 
-    return _safeTrim(message) || fallback;
+  return _safeTrim(message) || fallback;
 }
 
 function showError(message) {
-    const safeMessage = _safeTrim(
-        message || "No se pudo cargar el servicio."
-    );
+  const safeMessage = _safeTrim(
+    message || "No se pudo cargar el servicio."
+  );
 
-    console.error(
-        "[servicio-2] Error:",
-        safeMessage
-    );
+  console.error("[servicio-2] Error:", safeMessage);
 
-    try {
-        const banner = $w("#errorBanner");
+  try {
+    const banner = $w("#errorBanner");
 
-        if (!banner) {
-            return;
-        }
-
-        banner.text = `Error: ${safeMessage}`;
-
-        if (typeof banner.show === "function") {
-            banner.show();
-        }
-    } catch (error) {
-        console.warn(
-            "[servicio-2] Could not display error:",
-            error && error.message
-        );
+    if (!banner) {
+      return;
     }
+
+    banner.text = `Error: ${safeMessage}`;
+
+    if (typeof banner.show === "function") {
+      banner.show();
+    }
+  } catch (error) {
+    console.warn(
+      "[servicio-2] Could not display error:",
+      error && error.message
+    );
+  }
 }
 
 function getMessageType(message) {
-    if (
-        !message ||
-        typeof message !== "object"
-    ) {
-        return "";
-    }
+  if (!message || typeof message !== "object") {
+    return "";
+  }
 
-    return _safeTrim(
-        message.type || message.action || ""
-    ).toUpperCase();
+  return _safeTrim(
+    message.type || message.action || ""
+  ).toUpperCase();
 }
 
 function getPayload(message) {
-    if (
-        !message ||
-        typeof message !== "object" ||
-        !message.payload ||
-        typeof message.payload !== "object" ||
-        Array.isArray(message.payload)
-    ) {
-        return {};
-    }
+  if (
+    !message ||
+    typeof message !== "object" ||
+    !message.payload ||
+    typeof message.payload !== "object" ||
+    Array.isArray(message.payload)
+  ) {
+    return {};
+  }
 
-    return message.payload;
+  return message.payload;
 }
 
 async function resolveServiceLookup() {
-    const query = wixLocation.query || {};
+  const query = wixLocation.query || {};
 
-    const candidates = [
-        query.slugUrl,
-        query.serviceKey,
-        query.serviceId
-    ];
+  const candidates = [
+    query.slugUrl,
+    query.serviceKey,
+    query.serviceId
+  ];
 
-    for (const candidate of candidates) {
-        const value = _safeSlugOrId(candidate);
+  for (const candidate of candidates) {
+    const value = _safeSlugOrId(candidate);
 
-        if (value) {
-            return value;
-        }
+    if (value) {
+      return value;
     }
+  }
 
-    const path = Array.isArray(wixLocation.path) ?
-        wixLocation.path : [];
+  const path = Array.isArray(wixLocation.path)
+    ? wixLocation.path
+    : [];
 
-    const pathValue = _safeSlugOrId(
-        path[path.length - 1] || ""
-    );
+  const pathValue = _safeSlugOrId(
+    path[path.length - 1] || ""
+  );
 
-    const excludedPaths = new Set([
-        "servicios",
-        "service",
-        "servicio",
-        "servicio-2"
-    ]);
+  const excludedPaths = new Set([
+    "servicios",
+    "service",
+    "servicio",
+    "servicio-2"
+  ]);
 
-    if (
-        !pathValue ||
-        excludedPaths.has(pathValue)
-    ) {
-        return null;
-    }
+  if (!pathValue || excludedPaths.has(pathValue)) {
+    return null;
+  }
 
-    return pathValue;
+  return pathValue;
 }
 
 function getServiceId(service) {
-    if (
-        !service ||
-        typeof service !== "object"
-    ) {
-        return "";
-    }
+  if (!service || typeof service !== "object") {
+    return "";
+  }
 
-    return _safeTrim(
-        service.serviceId ||
-        service._id ||
-        ""
-    );
+  return _safeTrim(
+    service.serviceId ||
+    service._id ||
+    ""
+  );
 }
 
 function getServiceSlug(service) {
-    if (
-        !service ||
-        typeof service !== "object"
-    ) {
-        return "";
-    }
+  if (!service || typeof service !== "object") {
+    return "";
+  }
 
-    return _safeSlugOrId(
-        service.slugUrl || ""
-    );
+  return _safeSlugOrId(
+    service.slugUrl || ""
+  );
+}
+
+function getServiceImage(service) {
+  const metadata = service?.metadata || {};
+
+  return _safeTrim(
+    service.imageUrl ||
+    metadata.imageUrl ||
+    metadata.mainMedia ||
+    DEFAULT_SERVICE_IMAGE
+  ) || DEFAULT_SERVICE_IMAGE;
 }
 
 function getAddonIds(payload) {
-    if (
-        !payload ||
-        !Array.isArray(payload.addons)
-    ) {
-        return [];
-    }
+  if (!payload || !Array.isArray(payload.addons)) {
+    return [];
+  }
 
-    return Array.from(
-        new Set(
-            payload.addons
-            .map((addon) => {
-                if (
-                    addon &&
-                    typeof addon === "object"
-                ) {
-                    return (
-                        addon.addonId ||
-                        addon.id ||
-                        ""
-                    );
-                }
+  return Array.from(
+    new Set(
+      payload.addons
+        .map((addon) => {
+          if (addon && typeof addon === "object") {
+            return addon.addonId || addon.id || "";
+          }
 
-                return addon || "";
-            })
-            .map((value) =>
-                _safeTrim(value)
-            )
-            .filter(Boolean)
-        )
-    ).slice(0, 21);
+          return addon || "";
+        })
+        .map((value) => _safeTrim(value))
+        .filter(Boolean)
+    )
+  ).slice(0, 21);
 }
 
 function buildBookingUrl(service, payload) {
-    const base = _safeTrim(
-        URLS?.CALENDARIO_2 ||
-        "/booking-calendar/calendario-2"
+  const base = _safeTrim(
+    URLS?.CALENDARIO_2 ||
+    "/booking-calendar/calendario-2"
+  );
+
+  const serviceId = getServiceId(service);
+  const slugUrl = getServiceSlug(service);
+
+  const query = [];
+
+  if (slugUrl) {
+    query.push(
+      `slugUrl=${encodeURIComponent(slugUrl)}`
     );
+  }
 
-    const serviceId = getServiceId(service);
-    const slugUrl = getServiceSlug(service);
-    const query = [];
+  if (serviceId) {
+    query.push(
+      `serviceId=${encodeURIComponent(serviceId)}`
+    );
+  }
 
-    if (slugUrl) {
-        query.push(
-            `slugUrl=${encodeURIComponent(slugUrl)}`
-        );
-    }
+  query.push("referral=servicio-2");
 
-    if (serviceId) {
-        query.push(
-            `serviceId=${encodeURIComponent(serviceId)}`
-        );
-    }
+  const addonIds = getAddonIds(payload);
 
-    query.push("referral=servicio-2");
+  if (addonIds.length > 0) {
+    query.push(
+      `addonIds=${encodeURIComponent(addonIds.join(","))}`
+    );
+  }
 
-    const addonIds = getAddonIds(payload);
-
-    if (addonIds.length > 0) {
-        query.push(
-            `addonIds=${encodeURIComponent(
-                addonIds.join(",")
-            )}`
-        );
-    }
-
-    return `${base}?${query.join("&")}`;
+  return `${base}?${query.join("&")}`;
 }
 
 function getServicesUrl() {
-    return _safeTrim(
-        URLS?.SERVICIOS ||
-        "/reserva-online"
-    );
+  return _safeTrim(
+    URLS?.SERVICIOS ||
+    "/reserva-online"
+  );
 }
 
 async function loadService(lookupValue) {
-    const result = await getServiceBySlugOrId(
-        lookupValue
+  const result = await getServiceBySlugOrId(lookupValue);
+
+  if (
+    !result ||
+    result.status !== "SUCCESS" ||
+    !result.data ||
+    typeof result.data !== "object"
+  ) {
+    throw new Error(
+      result?.error?.message ||
+      "Servicio no encontrado."
     );
+  }
 
-    if (
-        !result ||
-        result.status !== "SUCCESS" ||
-        !result.data ||
-        typeof result.data !== "object"
-    ) {
-        throw new Error(
-            result?.error?.message ||
-            "Servicio no encontrado."
-        );
-    }
+  const serviceId = getServiceId(result.data);
 
-    const serviceId = getServiceId(
-        result.data
+  if (!_looksLikeGuid(serviceId)) {
+    throw new Error(
+      "El servicio no tiene un identificador valido."
     );
+  }
 
-    if (!_looksLikeGuid(serviceId)) {
-        throw new Error(
-            "El servicio no tiene un identificador valido."
-        );
+  const imageUrl = getServiceImage(result.data);
+
+  return {
+    ...result.data,
+    serviceId,
+    slugUrl: getServiceSlug(result.data),
+    imageUrl,
+    metadata: {
+      ...(result.data.metadata || {}),
+      imageUrl
     }
-
-    return {
-        ...result.data,
-        serviceId,
-        slugUrl: getServiceSlug(result.data)
-    };
+  };
 }
 
 $w.onReady(async () => {
-    const traceId = makeTraceId("servicio");
+  const traceId = makeTraceId("servicio");
+  let widget;
 
-    let widget;
+  try {
+    widget = $w("#htmlWidgetCustomService");
+  } catch (error) {
+    showError(
+      "El widget del servicio no esta disponible."
+    );
+    return;
+  }
 
-    try {
-        widget = $w("#htmlWidgetCustomService");
-    } catch (error) {
-        showError(
-            "El widget del servicio no esta disponible."
-        );
-        return;
+  if (
+    !widget ||
+    typeof widget.postMessage !== "function" ||
+    typeof widget.onMessage !== "function"
+  ) {
+    showError(
+      "El widget del servicio no esta disponible."
+    );
+    return;
+  }
+
+  try {
+    const lookupValue = await resolveServiceLookup();
+
+    if (!lookupValue) {
+      showError(
+        "No se pudo localizar el servicio en la URL."
+      );
+      return;
     }
 
-    if (
-        !widget ||
-        typeof widget.postMessage !== "function" ||
-        typeof widget.onMessage !== "function"
-    ) {
-        showError(
-            "El widget del servicio no esta disponible."
-        );
-        return;
-    }
+    bridge = createWidgetBridge(widget, {
+      slugUrl: lookupValue,
+      traceId,
 
-    try {
-        const lookupValue =
-            await resolveServiceLookup();
+      onContextReady: async () => {
+        resolvedService = await loadService(lookupValue);
+        return resolvedService;
+      },
 
-        if (!lookupValue) {
-            showError(
-                "No se pudo localizar el servicio en la URL."
-            );
-            return;
+      onWidgetMessage: async (message) => {
+        const type = getMessageType(message);
+        const payload = getPayload(message);
+
+        if (!resolvedService) {
+          console.warn(
+            "[servicio-2] Service not ready",
+            { traceId, type }
+          );
+          return;
         }
 
-        bridge = createWidgetBridge(widget, {
-            slugUrl: lookupValue,
-            traceId,
-
-            onContextReady: async () => {
-                resolvedService =
-                    await loadService(lookupValue);
-
-                return resolvedService;
-            },
-
-            onWidgetMessage: async (message) => {
-                const type = getMessageType(message);
-                const payload = getPayload(message);
-
-                if (!resolvedService) {
-                    console.warn(
-                        "[servicio-2] Service not ready", {
-                            traceId,
-                            type
-                        }
-                    );
-                    return;
-                }
-
-                if (type === MESSAGE_TYPES.BOOK) {
-                    wixLocation.to(
-                        buildBookingUrl(
-                            resolvedService,
-                            payload
-                        )
-                    );
-                    return;
-                }
-
-                if (type === MESSAGE_TYPES.NAV) {
-                    const target = _safeTrim(
-                        payload.target || ""
-                    ).toUpperCase();
-
-                    if (
-                        !target ||
-                        target === "SERVICIOS"
-                    ) {
-                        wixLocation.to(
-                            getServicesUrl()
-                        );
-                    }
-
-                    return;
-                }
-
-                if (
-                    type === MESSAGE_TYPES.READY ||
-                    type === MESSAGE_TYPES.CONTEXT
-                ) {
-                    return;
-                }
-
-                console.warn(
-                    "[servicio-2] Unsupported widget message", {
-                        traceId,
-                        type
-                    }
-                );
-            },
-
-            onError: (error) => {
-                showError(
-                    getSafeMessage(
-                        error,
-                        "No se pudo cargar el servicio."
-                    )
-                );
-            }
-        });
-
-        if (!bridge) {
-            showError(
-                "No se pudo inicializar el widget del servicio."
-            );
-        }
-    } catch (error) {
-        console.error(
-            "[servicio-2] Initialization failed", {
-                traceId,
-                message: error && error.message
-            }
-        );
-
-        showError(
-            getSafeMessage(
-                error,
-                "No se pudo cargar el servicio."
+        if (type === MESSAGE_TYPES.BOOK) {
+          wixLocation.to(
+            buildBookingUrl(
+              resolvedService,
+              payload
             )
+          );
+          return;
+        }
+
+        if (type === MESSAGE_TYPES.NAV) {
+          const target = _safeTrim(
+            payload.target || ""
+          ).toUpperCase();
+
+          if (
+            !target ||
+            target === "SERVICIOS"
+          ) {
+            wixLocation.to(getServicesUrl());
+          }
+
+          return;
+        }
+
+        if (
+          type === MESSAGE_TYPES.READY ||
+          type === MESSAGE_TYPES.CONTEXT
+        ) {
+          return;
+        }
+
+        console.warn(
+          "[servicio-2] Unsupported widget message",
+          { traceId, type }
         );
+      },
+
+      onError: (error) => {
+        showError(
+          getSafeMessage(
+            error,
+            "No se pudo cargar el servicio."
+          )
+        );
+      }
+    });
+
+    if (!bridge) {
+      showError(
+        "No se pudo inicializar el widget del servicio."
+      );
     }
+  } catch (error) {
+    console.error(
+      "[servicio-2] Initialization failed",
+      {
+        traceId,
+        message: error && error.message
+      }
+    );
+
+    showError(
+      getSafeMessage(
+        error,
+        "No se pudo cargar el servicio."
+      )
+    );
+  }
 });
