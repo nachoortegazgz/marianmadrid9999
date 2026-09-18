@@ -5,6 +5,7 @@
  */
 
 import wixLocation from "wix-location";
+import wixWindow from "wix-window";
 
 import {
   getServiceBySlugOrId,
@@ -328,14 +329,29 @@ async function handleBooking(message, reply, traceId) {
       "processDualBooking"
     );
 
-    reply(
-      MESSAGE_TYPES.BOOK,
-      result || createResultError(
+    const bookingResult =
+      result ||
+      createResultError(
         "EMPTY_BOOKING_RESPONSE",
         "No se recibio respuesta de la reserva."
-      ),
+      );
+
+    reply(
+      MESSAGE_TYPES.BOOK,
+      bookingResult,
       message
     );
+
+    const bookingSucceeded =
+      bookingResult?.status === "SUCCESS" ||
+      bookingResult?.success === true;
+
+    if (bookingSucceeded) {
+      await wixWindow.openLightbox(
+        "ConfirmacionReserva",
+        bookingResult.data || bookingResult
+      );
+    }
   } catch (error) {
     const timeout =
       error?.code === "TIMEOUT" ||
