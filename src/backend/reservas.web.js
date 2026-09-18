@@ -31,7 +31,7 @@ import {
   _hashKey,
   _generateUUID,
   withTimeout
-} from "backend/mmUtils";
+} from "public/mmUtils";
 
 import { logger } from "backend/logger";
 import { getStaffDisplayName } from "backend/staff";
@@ -374,7 +374,6 @@ function _getResourceIdsFromSlot(slot) {
     )
   );
 }
-```js
 function _minutesBetweenUtcDates(a, b) {
   if (!(a instanceof Date) || !(b instanceof Date)) {
     return 0;
@@ -937,7 +936,6 @@ export async function _mapServiceImport2ToUX(
     }
   };
 }
-```js
 export async function getServiceForBookingInternal(
   serviceId,
   traceId = null
