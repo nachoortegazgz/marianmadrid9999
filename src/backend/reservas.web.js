@@ -1,16 +1,35 @@
 /**
  * ============================================================================
  * FILE: backend/reservas.web.js
- * VERSION: v5008.3-ALIGNED-FIXED
+ * VERSION: v5008.6-ALIGNED
  * RESPONSIBILITY: Availability engine, dual slots, staff pairing and caching.
  * STANDARDS: G10 ASCII Strict.
  *
- * FIXES APPLIED (audit v5008.2):
- *  - FIX-1: _resolveServiceIdInternal now validates GUID against ServiciosCatalogo.
- *  - FIX-2: F2 duration is resolved from the linked service (linkedPhases).
- *  - FIX-3: revalidateExactAvailabilitySlot validates slot duration vs service.
- *  - FIX-4: _getResourceIdsFromSlot prioritizes staff resource group.
- *  - FIX-5: _mapServiceImport2ToUX returns normalized totalDuration.
+ * FIXES APPLIED (audit v5008.3 + v5008.4 + v5008.5):
+ *  - FIX-1: _resolveServiceIdInternal valida GUID contra ServiciosCatalogo.
+ *  - FIX-2: F2 resuelve su duracion desde linkedPhases.
+ *  - FIX-3: revalidateExactAvailabilitySlot valida duracion vs servicio.
+ *  - FIX-4: _getResourceIdsFromSlot prioriza grupo de recursos de personal.
+ *  - FIX-5: _mapServiceImport2ToUX devuelve totalDuration normalizado.
+ *  - FIX-6: Validacion de duracion phase-aware (F1 no se compara contra
+ *            estimatedTotal del flujo dual completo).
+ *  - FIX-7: Duracion real de F2 centralizada en _resolveLinkedPhase2Duration.
+ *  - FIX-8: requiredResourceId validado con _looksLikeGuid antes de usarlo.
+ *  - FIX-9: Eliminadas constantes/imports no usados.
+ *  - FIX-10: Fallback seguro para LOCATION_TS.locationType.
+ *  - FIX-11: Verificacion de staff concreto via getAvailabilityTimeSlot
+ *            cuando se usa List API (addons) y hay >10 recursos.
+ *
+ * AUDIT v5008.5 BLOCKERS:
+ *  - FIX-12: LOCATION_TS.locationType se normaliza. Si el config trae
+ *            "BUSINESS" o vacio, se fuerza "OWNER_BUSINESS" (valor
+ *            canonico de Time Slots V2).
+ *  - FIX-13: La verificacion Get del staff requerido se ejecuta SIEMPRE
+ *            que exista requiredResourceId, sin depender de que List
+ *            haya devuelto un slot. Get pasa a ser fuente autoritativa.
+ *  - FIX-14: Proteccion contra auto-enlace y ciclos indirectos en
+ *            linkedPhases. Se lanza error en auto-enlace y se detectan
+ *            ciclos con un set de visitados.
  * ============================================================================
  */
 
@@ -33,10 +52,7 @@ import {
   _looksLikeGuid,
   _normalizeLocalIsoStr,
   getUtcDateFromMadridLocal,
-  getMadridLocalStringNoZ,
   _executeWithRetry,
-  _hashKey,
-  _generateUUID,
   withTimeout
 } from "public/mmUtils";
 
@@ -114,32 +130,36 @@ function _normalizeImport2Addon(addon) {
 }
 
 const SERVICIOS_COL = COLLECTIONS.SERVICIOS_CATALOGO;
-const DUAL_CACHE_COL = COLLECTIONS.DUAL_SLOT_CACHE;
-const DAYS_CACHE_COL = COLLECTIONS.AVAILABILITY_DAYS_CACHE;
-const CITAS_COL = COLLECTIONS.CITAS_F2;
 
 const WATCHDOG_TIMEOUT_MS = SDK_CONFIG.TIMEOUTS.WATCHDOG_MS;
 const SERVICE_CACHE_TTL_MS = SDK_CONFIG.CACHE.SERVICES_TTL_MS;
-const SLOTS_CACHE_TTL_MS = SDK_CONFIG.CACHE.SLOTS_CACHE_TTL_MS;
-const DUAL_CACHE_TTL_MS = SDK_CONFIG.CACHE.DUAL_CACHE_TTL_MS;
 
 const DIAS_LIMITE = SLOT_SEARCH.DIAS_LIMITE;
-const MAX_DUAL_GAP_MINUTES = Math.max(
-  0,
-  Number(SLOT_SEARCH.MAX_DUAL_GAP_MINUTES) || 120
-);
 
 const CACHE_MAX_SIZE = SDK_CONFIG.CACHE.MAX_ENTRIES;
-const DAYS_CACHE_VERSION = SDK_CONFIG.CACHE.DAYS_CACHE_VERSION;
 const STAFF_RESOURCE_TYPE_ID = API.STAFF_RESOURCE_TYPE_ID;
+
+/**
+ * FIX-12: Normalizacion estricta de locationType.
+ *
+ * Time Slots V2 usa "OWNER_BUSINESS" como valor canonico para locations
+ * de tipo business. Si el config trae "BUSINESS" (valor invalido) o esta
+ * vacio, se fuerza "OWNER_BUSINESS". Cualquier otro valor no vacio se
+ * respeta tal cual.
+ */
+const CONFIGURED_LOCATION_TYPE = _safeTrim(
+  SDK_CONFIG.LOCATION_TYPES?.TIME_SLOTS
+);
 
 const LOCATION_TS = Object.freeze({
   id: SDK_CONFIG.LOCATION_ID,
-  locationType: SDK_CONFIG.LOCATION_TYPES.TIME_SLOTS
+  locationType:
+    !CONFIGURED_LOCATION_TYPE ||
+    CONFIGURED_LOCATION_TYPE === "BUSINESS"
+      ? "OWNER_BUSINESS"
+      : CONFIGURED_LOCATION_TYPE
 });
 
-const availabilityCache = new Map();
-const inflightRequests = new Map();
 const serviceCatalogRAM = new Map();
 
 function _cacheSetBounded(map, key, value, maxSize) {
@@ -317,8 +337,6 @@ function _normalizeResourceIds(resourceId, traceId) {
 
 /**
  * FIX-4: Prioriza siempre el grupo de recursos de personal.
- * Solo acepta resource.id directo como fallback cuando NO hay grupos
- * disponibles (caso en el que la API ya fue filtrada por includeResourceTypeIds).
  */
 function _getResourceIdsFromSlot(slot) {
   const normalizedSlot = _normalizeSlotShape(slot);
@@ -403,6 +421,177 @@ function _isValidSlotRange(startLocal, endLocal) {
     endUtc &&
     endUtc.getTime() > startUtc.getTime()
   );
+}
+
+/**
+ * FIX-6: Helper phase-aware para calcular la duracion esperada de un slot.
+ */
+function _resolveExpectedSlotMinutes(serviceConfig) {
+  if (!serviceConfig || typeof serviceConfig !== "object") {
+    return 0;
+  }
+
+  if (serviceConfig.allowCombine === true) {
+    return Number(serviceConfig.phase1Duration || 0) || 0;
+  }
+
+  return (
+    Number(serviceConfig.phase1Duration || 0) ||
+    Number(serviceConfig.totalDuration || 0) ||
+    Number(
+      serviceConfig.metadata?.timing?.estimatedTotal || 0
+    ) ||
+    0
+  );
+}
+
+/**
+ * FIX-7 + FIX-14: Resolucion centralizada de la duracion real de F2.
+ *
+ * Proteccion contra ciclos:
+ *  - `visited` es un Set con los serviceId ya resueltos en la cadena.
+ *  - Si el linkedPhases ya esta en `visited`, se aborta y se devuelve 0.
+ *  - El propio serviceId que llama debe estar en `visited` antes de
+ *    invocar este helper (lo hace _mapServiceImport2ToUX).
+ */
+async function _resolveLinkedPhase2Duration(
+  linkedPhases,
+  traceId,
+  visited = new Set()
+) {
+  const linkedId = _safeTrim(linkedPhases);
+
+  if (!_looksLikeGuid(linkedId)) {
+    return 0;
+  }
+
+  if (visited.has(linkedId)) {
+    log.warn(
+      "FIX-14: Cycle detected in linkedPhases chain",
+      { traceId, linkedId, visited: Array.from(visited) }
+    );
+    return 0;
+  }
+
+  visited.add(linkedId);
+
+  try {
+    const linkedResult =
+      await _getServiceBySlugOrIdInternal(
+        linkedId,
+        traceId
+      );
+
+    if (
+      linkedResult?.status === "SUCCESS" &&
+      linkedResult?.data
+    ) {
+      const linked = linkedResult.data;
+
+      return (
+        Number(linked.phase1Duration || 0) ||
+        Number(linked.totalDuration || 0) ||
+        Number(
+          linked.metadata?.timing?.estimatedTotal || 0
+        ) ||
+        0
+      );
+    }
+  } catch (_) {
+    log.warn(
+      "FIX-7: No se pudo resolver duracion de F2 desde linkedPhases",
+      { traceId, linkedPhases: linkedId }
+    );
+  }
+
+  return 0;
+}
+
+/**
+ * FIX-11 + FIX-13: Verifica la disponibilidad de un staff concreto
+ * mediante getAvailabilityTimeSlot + resourceTypes.
+ *
+ * Se ejecuta SIEMPRE que exista requiredResourceId, sin depender de que
+ * List haya devuelto un slot. Get es la fuente autoritativa.
+ */
+async function _verifyRequiredStaffViaGet({
+  serviceId,
+  start,
+  end,
+  requiredResourceId,
+  nativeAddonIds,
+  traceId
+}) {
+  const getPayload = {
+    serviceId: String(serviceId),
+    localStartDate: start,
+    localEndDate: end,
+    location: LOCATION_TS,
+    timeZone: SDK_CONFIG.TZ,
+    resourceTypes: [
+      {
+        resourceTypeId: STAFF_RESOURCE_TYPE_ID,
+        resourceIds: [requiredResourceId]
+      }
+    ]
+  };
+
+  if (
+    Array.isArray(nativeAddonIds) &&
+    nativeAddonIds.length > 0
+  ) {
+    getPayload.customerChoices = {
+      addOnIds: nativeAddonIds
+    };
+  }
+
+  try {
+    const result = await _executeWithRetry(
+      () =>
+        withTimeout(
+          availabilityTimeSlots
+            .getAvailabilityTimeSlot(
+              getPayload
+            ),
+          WATCHDOG_TIMEOUT_MS,
+          "exactSlot:verifyStaffGet"
+        ),
+      2,
+      300
+    );
+
+    if (result?.timeSlot) {
+      return {
+        ok: true,
+        slot: result.timeSlot,
+        errorCode: null
+      };
+    }
+
+    return {
+      ok: false,
+      slot: null,
+      errorCode: "STAFF_UNAVAILABLE"
+    };
+  } catch (error) {
+    log.warn(
+      "FIX-11/FIX-13: getAvailabilityTimeSlot verification failed",
+      {
+        traceId,
+        serviceId: String(serviceId),
+        start,
+        end,
+        requiredResourceId,
+        message: error?.message
+      }
+    );
+
+    return {
+      ok: false,
+      slot: null,
+      errorCode: "STAFF_UNAVAILABLE"
+    };
+  }
 }
 
 function _resolveAddonContextInternal(
@@ -620,9 +809,7 @@ export async function _getServiceBySlugOrIdInternal(
 }
 
 /**
- * FIX-1: Ya no acepta GUID sin validar. Siempre pasa por el catálogo
- * (_getServiceBySlugOrIdInternal) para confirmar existencia y obtener
- * el serviceId canonico.
+ * FIX-1: Ya no acepta GUID sin validar.
  */
 export async function _resolveServiceIdInternal(serviceIdReq) {
   const raw = _safeTrim(serviceIdReq);
@@ -696,6 +883,20 @@ export async function _mapServiceImport2ToUX(
     );
   }
 
+  /**
+   * FIX-14: Auto-enlace explicito. Un servicio no puede apuntarse a si
+   * mismo como fase enlazada; seria una recursion infinita.
+   */
+  if (
+    allowCombine &&
+    _looksLikeGuid(linkedPhases) &&
+    linkedPhases === serviceId
+  ) {
+    throw new Error(
+      "A service cannot link to itself (linkedPhases === serviceId)."
+    );
+  }
+
   const phase1Duration = Number(
     _readImport2Field(
       service,
@@ -710,12 +911,6 @@ export async function _mapServiceImport2ToUX(
     )
   ) || 0;
 
-  /**
-   * FIX-2: La duracion real de F2 debe proceder del servicio enlazado
-   * (linkedPhases), no de un campo local potencialmente desactualizado.
-   * Si el servicio enlazado no se puede resolver, se conserva el valor
-   * del CMS como fallback controlado.
-   */
   let phase2Duration = Number(
     _readImport2Field(
       service,
@@ -723,36 +918,23 @@ export async function _mapServiceImport2ToUX(
     )
   ) || 0;
 
+  /**
+   * FIX-7 + FIX-14: Resolucion de la duracion real de F2 con proteccion
+   * de ciclos. El propio serviceId entra en `visited` antes de resolver
+   * el linkedPhases, de modo que si F2 enlaza de vuelta a F1 la recursion
+   * se corta de inmediato.
+   */
   if (allowCombine && _looksLikeGuid(linkedPhases)) {
-    try {
-      const linkedResult =
-        await _getServiceBySlugOrIdInternal(
-          linkedPhases,
-          traceId
-        );
+    const visited = new Set([serviceId]);
 
-      if (
-        linkedResult?.status === "SUCCESS" &&
-        linkedResult?.data
-      ) {
-        const linked = linkedResult.data;
+    const resolved = await _resolveLinkedPhase2Duration(
+      linkedPhases,
+      traceId,
+      visited
+    );
 
-        const linkedDuration = Number(
-          linked.phase1Duration ||
-          linked.totalDuration ||
-          linked.metadata?.timing?.estimatedTotal ||
-          0
-        ) || 0;
-
-        if (linkedDuration > 0) {
-          phase2Duration = linkedDuration;
-        }
-      }
-    } catch (_) {
-      log.warn(
-        "FIX-2: No se pudo resolver duracion de F2 desde linkedPhases",
-        { traceId, serviceId, linkedPhases }
-      );
+    if (resolved > 0) {
+      phase2Duration = resolved;
     }
   }
 
@@ -945,7 +1127,6 @@ export async function _mapServiceImport2ToUX(
     phase1Duration,
     exposureDuration,
     phase2Duration,
-    // FIX-5: totalDuration normalizado (evita 0 cuando el CMS viene vacio).
     totalDuration: estimatedTotal,
     hidden,
 
@@ -1111,8 +1292,11 @@ export async function revalidateExactAvailabilitySlot({
     localEndDate
   );
 
+  const rawResourceId = _safeTrim(resourceId);
   const requiredResourceId =
-    _safeTrim(resourceId);
+    _looksLikeGuid(rawResourceId)
+      ? rawResourceId
+      : "";
 
   if (
     !resolvedServiceId ||
@@ -1160,10 +1344,7 @@ export async function revalidateExactAvailabilitySlot({
         }
       };
 
-      if (
-        requiredResourceId &&
-        _looksLikeGuid(requiredResourceId)
-      ) {
+      if (requiredResourceId) {
         listPayload.resourceTypes = [
           {
             resourceTypeId:
@@ -1220,10 +1401,7 @@ export async function revalidateExactAvailabilitySlot({
         timeZone: SDK_CONFIG.TZ
       };
 
-      if (
-        requiredResourceId &&
-        _looksLikeGuid(requiredResourceId)
-      ) {
+      if (requiredResourceId) {
         getPayload.resourceTypes = [
           {
             resourceTypeId:
@@ -1249,6 +1427,51 @@ export async function revalidateExactAvailabilitySlot({
         );
 
       rawSlot = result?.timeSlot || null;
+    }
+
+    /**
+     * FIX-13: Si hay staff requerido, la verificacion Get se ejecuta
+     * SIEMPRE, independientemente de que List haya devuelto o no un slot.
+     * Get pasa a ser la fuente autoritativa.
+     *
+     * Si no hay staff requerido y List no devolvio slot, se devuelve
+     * SLOT_UNAVAILABLE de inmediato.
+     */
+    if (requiredResourceId) {
+      const verification =
+        await _verifyRequiredStaffViaGet({
+          serviceId: resolvedServiceId,
+          start,
+          end,
+          requiredResourceId,
+          nativeAddonIds: normalizedAddonIds,
+          traceId: activeTraceId
+        });
+
+      if (!verification.ok) {
+        return {
+          status: "ERROR",
+          data: null,
+          error: {
+            code: "STAFF_UNAVAILABLE",
+            message:
+              "Selected staff is no longer available.",
+            traceId: activeTraceId
+          }
+        };
+      }
+
+      rawSlot = verification.slot;
+    } else if (!rawSlot) {
+      return {
+        status: "ERROR",
+        data: null,
+        error: {
+          code: "SLOT_UNAVAILABLE",
+          message:
+            "Selected slot is no longer available."
+        }
+      };
     }
 
     const normalizedSlot = _attachServiceId(
@@ -1297,9 +1520,7 @@ export async function revalidateExactAvailabilitySlot({
     }
 
     /**
-     * FIX-3: Validar que la duracion del slot revalidado coincida con la
-     * duracion esperada del servicio (incluidos addons). Evita aceptar
-     * slots con duraciones inconsistentes cuando hay nativeAddonIds.
+     * FIX-6: Validacion de duracion phase-aware.
      */
     const serviceConfig =
       await _getServiceBySlugOrIdInternal(
@@ -1311,12 +1532,10 @@ export async function revalidateExactAvailabilitySlot({
       serviceConfig?.status === "SUCCESS" &&
       serviceConfig?.data
     ) {
-      const expectedMinutes = Number(
-        serviceConfig.data.metadata?.timing
-          ?.estimatedTotal ||
-        serviceConfig.data.totalDuration ||
-        0
-      );
+      const expectedMinutes =
+        _resolveExpectedSlotMinutes(
+          serviceConfig.data
+        );
 
       if (expectedMinutes > 0) {
         const startUtc = getUtcDateFromMadridLocal(start);
@@ -1330,10 +1549,12 @@ export async function revalidateExactAvailabilitySlot({
           Math.abs(actualMinutes - expectedMinutes) > 1
         ) {
           log.warn(
-            "FIX-3: Slot duration mismatch",
+            "FIX-6: Slot duration mismatch",
             {
               traceId: activeTraceId,
               serviceId: String(resolvedServiceId),
+              allowCombine:
+                serviceConfig.data.allowCombine === true,
               expectedMinutes,
               actualMinutes,
               start,
