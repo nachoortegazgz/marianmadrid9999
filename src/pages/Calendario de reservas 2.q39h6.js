@@ -1,25 +1,12 @@
 /**
  * MODULE: pages/calendario-2.js
- * VERSION: v5003.6-FUNCTIONAL
+ * VERSION: v5003.7-FINAL
  * STANDARDS: G10 ASCII Strict, Velo Native Optimized.
  *
- * CORRECTIONS APPLIED (v5003.4):
- *  - C1..C6 (ver version anterior).
- *
- * CORRECTIONS APPLIED (v5003.5):
- *  - C7: reply() recibe payload como 3er argumento.
- *  - C8: Eliminada variable local `message` en catch de handleBooking.
- *
- * CORRECTIONS APPLIED (v5003.6):
- *  - C9:  Disponibilidad separada simple vs dual. `getCertifiedDualSlots`
- *         solo se usa cuando allowCombine === true. Para single se usa
- *         `getAvailableSlots`.
- *  - C10: Guard currentService en AVAIL, SELECT y BOOK.
- *         Respuesta SERVICE_CONTEXT_NOT_READY si aun no esta cargado.
- *  - C11: Eliminado DEFAULT_SERVICE_IMAGE. imageUrl = "" si no hay real.
- *  - C12: Filtro de addonIds contra currentService.metadata.addons.
- *         Se aplica en AVAIL, SELECT y BOOK.
- *  - C13: Validacion de slotF2 en handleBooking cuando allowCombine.
+ * CORRECTIONS APPLIED (v5003.7):
+ *  - FIX-25: Usa currentService.serviceId (GUID validado) en todas las
+ *            llamadas backend en lugar de currentServiceId || currentSlugUrl.
+ *  - FIX-26: Eliminada getResponseType (dead code).
  */
 
 import wixLocation from "wix-location";
@@ -127,15 +114,8 @@ function createResultError(code, message) {
   };
 }
 
-function getResponseType(type) {
-  return type || MESSAGE_TYPES.BOOK;
-}
-
 /**
  * C12: Filtra addonIds conservando solo los permitidos por el servicio.
- *
- * Lee currentService.metadata.addons y acepta tanto `id` como `nativeId`
- * de cada addon. Devuelve [] si el servicio no expone addons.
  */
 function filterAllowedAddonIds(service, requestedAddonIds) {
   if (!Array.isArray(requestedAddonIds) || requestedAddonIds.length === 0) {
@@ -165,15 +145,22 @@ function filterAllowedAddonIds(service, requestedAddonIds) {
     .filter((id) => id && allowed.has(id));
 }
 
+/**
+ * FIX-25: Devuelve siempre el serviceId validado por el servidor cuando
+ * este disponible; si no, cae al slug para que el backend lo resuelva.
+ */
+function getActiveServiceLookup() {
+  if (currentService?.serviceId) {
+    return currentService.serviceId;
+  }
+
+  return currentServiceId || currentSlugUrl;
+}
+
 // =============================================================================
 // CONTEXTO DE SERVICIO
 // =============================================================================
 
-/**
- * C2 + C11: Carga y valida el servicio activo.
- * - Valida serviceId como GUID.
- * - imageUrl puede ser "" si no hay imagen real (sin data URL fabricado).
- */
 async function loadServiceContext(params) {
   const lookup = currentServiceId || currentSlugUrl;
   const result = await getServiceBySlugOrId(lookup);
@@ -260,15 +247,7 @@ async function handleNavigation(payload) {
 // DISPONIBILIDAD
 // =============================================================================
 
-/**
- * C9 + C10 + C12: Disponibilidad separada simple vs dual.
- *  - Guard currentService.
- *  - addonIds filtrados contra el servicio.
- *  - `days` vale para ambos modos.
- *  - `slots` bifurca segun allowCombine.
- */
 async function handleAvailability(payload, reply) {
-  // C10: guard de contexto.
   if (!currentService) {
     reply(
       MESSAGE_TYPES.AVAIL,
@@ -285,7 +264,6 @@ async function handleAvailability(payload, reply) {
     payload.action || ""
   ).toLowerCase();
 
-  // C12: filtrado de addons contra el servicio cargado.
   const addonIds = filterAllowedAddonIds(
     currentService,
     Array.isArray(payload.addonIds) ? payload.addonIds : []
@@ -294,13 +272,16 @@ async function handleAvailability(payload, reply) {
   const timeoutMs =
     UI?.FRONTEND_API_TIMEOUT_MS || 60000;
 
+  // FIX-25: serviceId validado.
+  const lookup = getActiveServiceLookup();
+
   let result;
 
   try {
     if (action === "days") {
       result = await withTimeout(
         () => getAvailableDays(
-          currentServiceId || currentSlugUrl,
+          lookup,
           payload.resourceId || null,
           Number(payload.year),
           Number(payload.month),
@@ -311,10 +292,9 @@ async function handleAvailability(payload, reply) {
       );
     } else if (action === "slots") {
       if (currentService.allowCombine === true) {
-        // Dual: usa getCertifiedDualSlots.
         result = await withTimeout(
           () => getCertifiedDualSlots(
-            currentServiceId || currentSlugUrl,
+            lookup,
             payload.resourceId || null,
             _safeTrim(payload.dateYMD || ""),
             addonIds
@@ -323,10 +303,9 @@ async function handleAvailability(payload, reply) {
           "getCertifiedDualSlots"
         );
       } else {
-        // Single: usa getAvailableSlots.
         result = await withTimeout(
           () => getAvailableSlots(
-            currentServiceId || currentSlugUrl,
+            lookup,
             payload.resourceId || null,
             _safeTrim(payload.dateYMD || ""),
             addonIds
@@ -366,11 +345,7 @@ async function handleAvailability(payload, reply) {
 // SELECCION
 // =============================================================================
 
-/**
- * C3 + C10 + C12: Validacion de slot y resolucion de staff.
- */
 async function handleSelection(payload, reply) {
-  // C10: guard de contexto.
   if (!currentService) {
     reply(
       MESSAGE_TYPES.SELECT,
@@ -407,16 +382,18 @@ async function handleSelection(payload, reply) {
     return;
   }
 
-  // C12: filtrado de addons.
   const addonIds = filterAllowedAddonIds(
     currentService,
     Array.isArray(payload.addonIds) ? payload.addonIds : []
   );
 
+  // FIX-25: serviceId validado.
+  const lookup = getActiveServiceLookup();
+
   try {
     const result = await withTimeout(
       () => resolveStaffForSlot(
-        currentServiceId || currentSlugUrl,
+        lookup,
         start,
         payload.resourceId || null,
         addonIds,
@@ -454,19 +431,9 @@ async function handleSelection(payload, reply) {
 // RESERVA
 // =============================================================================
 
-/**
- * C4 + C5 + C7 + C8 + C10 + C12 + C13:
- * - Guard currentService.
- * - Fuerza serviceId/slugUrl.
- * - Valida slotF2 si allowCombine.
- * - Filtra addonIds.
- * - reply(payload).
- * - Mensaje de timeout sin invitar a reenviar.
- */
 async function handleBooking(message, reply, traceId) {
   const payload = getPayload(message);
 
-  // C10: guard de contexto.
   if (!currentService) {
     reply(
       MESSAGE_TYPES.BOOK,
@@ -500,7 +467,6 @@ async function handleBooking(message, reply, traceId) {
     return;
   }
 
-  // C13: validacion de F2 en duales.
   if (currentService.allowCombine === true) {
     const f2 = bookingData.slotF2;
 
@@ -520,7 +486,6 @@ async function handleBooking(message, reply, traceId) {
     }
   }
 
-  // C12: filtrado de addons.
   const rawAddonIds = Array.isArray(bookingData.addonIds)
     ? bookingData.addonIds
     : [];
@@ -530,10 +495,11 @@ async function handleBooking(message, reply, traceId) {
     rawAddonIds
   );
 
+  // FIX-25: forzamos serviceId y slugUrl desde el estado del modulo.
   const requestPayload = {
     ...bookingData,
     addonIds,
-    serviceId: currentServiceId,
+    serviceId: currentService.serviceId,
     slugUrl: currentSlugUrl,
     traceId
   };
