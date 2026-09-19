@@ -1,25 +1,28 @@
 /*
 =============================================================================
 MODULE: backend/internalConfig.js
-VERSION: v5008.2-OPT (ProcessedWebhookEvents)
+VERSION: v5008.4-OPT
 BASE: BIBLIA_DEFINITIVA v5002.5 + ESQUEMA CMS v5002.5 + DIRECTRICES V19
 RESPONSIBILITY: Single Source of Truth (SSOT) for backend configuration.
 STANDARDS: G10 ASCII Strict.
 WIX STORES CATALOG: V1.
+
+FIXES APLICADOS:
+  - FIX-24: LOCATION_TYPES.TIME_SLOTS = OWNER_BUSINESS.
+  - FIX-40: ESTADO_CITA.CANCELLED canonico (dos L, coincide con Writer V2).
+            CANCELED se conserva como alias deprecated para retrocompat.
+  - FIX-41: Documentado que `availabilityTimeSlots` de `@wix/bookings` YA es
+            Time Slots V2. No hay migracion pendiente.
 =============================================================================
 */
 
-// =============================================================================
 // BLOQUE 1 - STAFF ACTIVO
-// =============================================================================
-
 export const STAFF = Object.freeze({
     IDS: Object.freeze([
         "e556070a-6d6a-402e-8422-11133033ea76",
         "07f7344f-e7e4-4c53-854b-47fd82ac8d40",
         "9b905bfd-1a09-485d-9273-a24a20dfe648",
     ]),
-
     RESOURCE_TO_DISPLAY: Object.freeze({
         "e556070a-6d6a-402e-8422-11133033ea76": "Marian Madrid",
         "07f7344f-e7e4-4c53-854b-47fd82ac8d40": "Andrea",
@@ -27,10 +30,7 @@ export const STAFF = Object.freeze({
     }),
 });
 
-// =============================================================================
 // BLOQUE 2 - COLECCIONES CMS CANONICAS
-// =============================================================================
-
 export const COLLECTIONS = Object.freeze({
     ALERTAS_OPERATIVAS: "AlertasOperativas",
     PROCESSED_WEBHOOK_EVENTS: "ProcessedWebhookEvents",
@@ -59,10 +59,7 @@ export const COLLECTIONS = Object.freeze({
     SLOT_LOCKS: "SlotLocks",
 });
 
-// =============================================================================
 // BLOQUE 3 - WIX APP IDS
-// =============================================================================
-
 export const APP_IDS = Object.freeze({
     BOOKINGS: "13d21c63-b5ec-5912-8397-c3a5ddb27a97",
     STORES: "215238eb-22a5-4c36-9e7b-e7c08025e04e",
@@ -73,33 +70,25 @@ export const APP_IDS = Object.freeze({
     GIFT_CARDS: "d80111c5-a0f4-47a8-b63a-65b54d774a27",
 });
 
-// =============================================================================
 // BLOQUE 4 - API KEYS Y RECURSOS WIX NATIVOS
-// =============================================================================
-
 export const API = Object.freeze({
     STAFF_RESOURCE_TYPE_ID: "1cd44cf8-756f-41c3-bd90-3e2ffcaf1155",
     MARIAN_MANAGEMENT_RESOURCE_ID: "e556070a-6d6a-402e-8422-11133033ea76",
 });
 
-// =============================================================================
 // BLOQUE 5 - SINGLETONS PROTEGIDOS
-// =============================================================================
-
 export const SINGLETONS = Object.freeze({
     CAJA: "CAJA_PRINCIPAL",
 });
 
-// =============================================================================
 // BLOQUE 6 - CONFIGURACION GLOBAL DEL SDK
-// =============================================================================
-
 export const SDK_CONFIG = Object.freeze({
     TZ: "Europe/Madrid",
     LOCATION_ID: "7a12abfd-bf30-4847-bcdf-00dc573d4802",
 
+    // FIX-24: OWNER_BUSINESS es el unico valor valido en Time Slots V2.
     LOCATION_TYPES: Object.freeze({
-        TIME_SLOTS: "BUSINESS",
+        TIME_SLOTS: "OWNER_BUSINESS",
         BOOKINGS_WRITER: "OWNER_BUSINESS",
     }),
 
@@ -171,13 +160,8 @@ export const SDK_CONFIG = Object.freeze({
         ]),
     }),
 
-    M365: Object.freeze({
-        ENABLED: false,
-    }),
-
-    ACCOUNTING: Object.freeze({
-        ENABLED: false,
-    }),
+    M365: Object.freeze({ ENABLED: false }),
+    ACCOUNTING: Object.freeze({ ENABLED: false }),
 
     DOCUMENTS: Object.freeze({
         DEFAULT_MANAGER_EMAIL: "gestion@marianmadrid.es",
@@ -186,10 +170,7 @@ export const SDK_CONFIG = Object.freeze({
     }),
 });
 
-// =============================================================================
 // BLOQUE 7 - CONCURRENCIA, LOCKS Y TRANSACCIONES
-// =============================================================================
-
 export const CONCURRENCY = Object.freeze({
     MUTEX_TTL_MS: 300000,
     HEARTBEAT_MS: 15000,
@@ -202,10 +183,7 @@ export const CONCURRENCY = Object.freeze({
     DEFAULT_DURATION_MIN: 30,
 });
 
-// =============================================================================
 // BLOQUE 8 - ENUMS DE NEGOCIO
-// =============================================================================
-
 export const TIPO_FICHAJE = Object.freeze({
     ENTRADA: "ENTRADA",
     SALIDA: "SALIDA",
@@ -256,12 +234,17 @@ export const CAJA_STATUS = Object.freeze({
     CLOSED: "CERRADA",
 });
 
+/**
+ * FIX-40: CANCELLED canonico (dos L, coincide con Writer V2 y con
+ * suppressHooks de Wix). CANCELED se conserva como alias deprecated
+ * para retrocompatibilidad. Migrar progresivamente todo el codigo a
+ * ESTADO_CITA.CANCELLED y eliminar el alias cuando ya no se use.
+ */
 export const ESTADO_CITA = Object.freeze({
-    PENDING: "PENDING",
     CONFIRMED: "CONFIRMED",
     PENDING_PAYMENT: "PENDING_PAYMENT",
     CANCELLED: "CANCELLED",
-    CANCELED: "CANCELLED",
+    CANCELED: "CANCELLED", // alias deprecated (FIX-40)
     REFUNDED: "REFUNDED",
 });
 
@@ -281,10 +264,7 @@ export const COLLAB_ROLES = Object.freeze({
     ESTILISTA: "ESTILISTA",
 });
 
-// =============================================================================
 // BLOQUE 9 - CATALOGO Y BUSQUEDA DE SLOTS
-// =============================================================================
-
 export const SERVICE_CATALOG = Object.freeze({
     STATES: Object.freeze({
         ACTIVO: "ACTIVO",
@@ -306,23 +286,16 @@ export const SLOT_SEARCH = Object.freeze({
 
 export const BOOKINGS_ADDON_CONFIG = Object.freeze({
     MAX_PER_BOOKING: 5,
-
     ACTIVE_NATIVE_IDS: Object.freeze([]),
 });
 
-// =============================================================================
 // BLOQUE 10 - JWT Y SEGURIDAD
-// =============================================================================
-
 export const JWT = Object.freeze({
     ALGORITHM: "HS256",
     EXPIRATION_MS: 1800000,
 });
 
-// =============================================================================
 // BLOQUE 11 - CAMPOS DE CITA
-// =============================================================================
-
 export const CITA_FIELDS = Object.freeze({
     STATUS: "status",
     STATUS_PAGO: "paymentStatus",
@@ -334,23 +307,13 @@ export const CITA_FIELDS = Object.freeze({
     META: "meta",
 });
 
-// =============================================================================
 // BLOQUE 12 - ACCESO Y ROLES
-// =============================================================================
-
 export const STAFF_ACCESS = Object.freeze({
-    ALLOWED_ROLES: Object.freeze([
-        "ADMIN",
-        "GESTION",
-        "ESTILISTA",
-    ]),
+    ALLOWED_ROLES: Object.freeze(["ADMIN", "GESTION", "ESTILISTA"]),
     MARIAN_RESOURCE_ID: "e556070a-6d6a-402e-8422-11133033ea76",
 });
 
-// =============================================================================
 // BLOQUE 13 - DINERO Y TEXTO POR DEFECTO
-// =============================================================================
-
 export const MONEY = Object.freeze({
     DISPLAY_CURRENCY: "EUR",
     DECIMALS: 2,
@@ -358,10 +321,7 @@ export const MONEY = Object.freeze({
 
 export const STAFF_DEFAULT_NAME = "Profesional";
 
-// =============================================================================
 // BLOQUE 14 - VALIDACION DE ADDONS NATIVOS
-// =============================================================================
-
 const GUID_PATTERN =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
