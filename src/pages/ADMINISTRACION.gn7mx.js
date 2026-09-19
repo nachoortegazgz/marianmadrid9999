@@ -1,19 +1,23 @@
 /*
  =============================================================================
  MODULE: pages/ADMINISTRACION.gn7mx.js
- VERSION: v5002.2-canonical-admin-page
+ VERSION: v5002.3-canonical-admin-page
  RESPONSIBILITY: Canonical Velo page controller for Marian Administration.
                  Declarative Command Dispatch pattern for widget actions.
  STANDARDS: G10 ASCII Strict (0 non-ASCII characters), Velo V3 SDK.
  CORRECTIONS:
    - wix-location -> wix-location-frontend (Velo V3)
    - slugUrl maintained as canonical field (user correction)
+   - FIX-46: eliminado import registerXCount y accion X_COUNT.
+             registerXCount fue retirado en cajas.web.js [CLEAN-05] porque
+             dependia de la coleccion CONTROL_PARCIAL_X, eliminada del SSOT.
+             El HTML del panel admin debe eliminar el boton correspondiente.
  =============================================================================
  */
  import wixMembersFrontend from "wix-members-frontend";
  import wixLocation from "wix-location-frontend";
  import { checkStaffCollaboratorAccess } from "backend/security.web";
- import { getCashierState, registerManualTransaction, registerXCount, registerZClosing } from "backend/cajas.web";
+ import { getCashierState, registerManualTransaction, registerZClosing } from "backend/cajas.web";
  import { getInventoryDashboard, getInventoryReconciliationQueue } from "backend/inventario.web";
  import { getQuarterlyTaxSummary, getLibroRegistroFacturasExpedidas } from "backend/fiscalAggregator.web";
  import {
@@ -27,12 +31,14 @@
  import { askMarianAssistant } from "backend/marianAssistant.web";
  import { makeTraceId, URLS } from "public/mmUtils";
  import { createWidgetBridge } from "public/widgetBridge";
+
  const ACTIONS = {
    CASHIER_STATE: ({ payload, traceId }) => getCashierState({ traceId, diaKey: payload?.diaKey || null }),
    INVENTORY_DASH: () => getInventoryDashboard(),
    INVENTORY_QUEUE: () => getInventoryReconciliationQueue(),
    TPV_TX: ({ payload, traceId }) => registerManualTransaction({ ...payload, traceId }),
-   X_COUNT: ({ payload, traceId }) => registerXCount(payload?.diaKey, { ...payload, traceId }),
+   // FIX-46: X_COUNT ELIMINADO. registerXCount fue retirado del backend
+   // (coleccion CONTROL_PARCIAL_X eliminada del SSOT).
    Z_CLOSING: ({ payload, traceId }) => registerZClosing(payload?.diaKey, { traceId }),
    FISCAL_SUMMARY: ({ payload, traceId }) => getQuarterlyTaxSummary(payload?.year, payload?.quarter, { traceId }),
    FISCAL_BOOK: ({ payload, traceId }) => getLibroRegistroFacturasExpedidas(payload?.year, payload?.quarter, { traceId }),
@@ -44,21 +50,25 @@
    DOCUMENT_EMAIL: ({ payload }) => emailManagerPackageVersion(payload),
    AI_CHAT: ({ payload, traceId }) => askMarianAssistant({ ...payload, traceId }),
  };
+
  $w.onReady(async () => {
    const traceId = makeTraceId("admin-page");
    const widget = $w("#htmlAdmin") || $w("#htmlAdministracion");
    if (!widget || typeof widget.postMessage !== "function") {return;}
+
    const member = await wixMembersFrontend.currentMember.getMember().catch(() => null);
    if (!member) {
      await wixMembersFrontend.authentication.promptLogin();
      return;
    }
+
    const accessRes = await checkStaffCollaboratorAccess(traceId).catch(() => null);
    const access = accessRes?.status === "SUCCESS" ? accessRes.data : null;
    if (!access || !access.isMarianManager) {
      wixLocation.to(URLS.SERVICIOS || "/reserva-online");
      return;
    }
+
    createWidgetBridge(widget, {
      slugUrl: "administracion",
      traceId,
