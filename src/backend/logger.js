@@ -1,11 +1,15 @@
 /*
 =============================================================================
 MODULE: backend/logger.js
-VERSION: v5007.3-FINAL
+VERSION: v5007.4-FINAL
 CORRECTIONS: LOG-01 sin global, LOG-03 PII recursiva con enmascarado real
+FIXES APLICADOS v5007.4:
+  - FIX-44: import de mmUtils via alias "public/mmUtils" en lugar de ruta
+            relativa "../../public/mmUtils.js". Evita fallo de resolucion
+            en el bundler de Velo.
 =============================================================================
 */
-import { makeTraceId, _maskEmail, _maskPhone, _maskName } from '../../public/mmUtils.js';
+import { makeTraceId, _maskEmail, _maskPhone, _maskName } from "public/mmUtils";
 
 export const LOG_LEVELS = Object.freeze({ DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 });
 const CURRENT_LOG_LEVEL = LOG_LEVELS.INFO;
@@ -27,7 +31,13 @@ function sanitizeValue(value, seen) {
     if (typeof value !== "object") return value;
     if (seen.has(value)) return "[Circular]";
     seen.add(value);
-    if (Array.isArray(value)) return value.map((item) => sanitizeValue(item, seen));
+
+    if (Array.isArray(value)) {
+        const result = value.map((item) => sanitizeValue(item, seen));
+        seen.delete(value);
+        return result;
+    }
+
     const sanitized = {};
     for (const [key, val] of Object.entries(value)) {
         const lowerKey = key.toLowerCase().replace(/[-_\s]/g, "");
@@ -48,6 +58,7 @@ function sanitizeValue(value, seen) {
             sanitized[key] = val;
         }
     }
+    seen.delete(value);
     return sanitized;
 }
 
