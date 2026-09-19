@@ -1,12 +1,12 @@
 /*
 =============================================================================
 MODULE: backend/booking/bookingSaga.js
-VERSION: v5007.13-SSOT (Auditoria reservas: gap maximo, validacion F2,
-        persistencia compensable, scheduleId real)
+VERSION: v5007.14-SSOT (Auditoria 2: payload createBooking, secuencial F1->F2,
+        compensacion completa, parseo de meta, SLOT_SEARCH top-level)
 SSOT: SSOT CONSOLIDADO v5002.6 | ESQUEMA CMS v5002.5 | DOSSIER RESERVAS v0609
 MISSION: Orquestador transaccional. Saga compensable para reservas simples
          y duales con gap de exposicion. Gestiona locks, heartbeat,
-         idempotencia triple capa y creacion paralela F1+F2.
+         idempotencia triple capa y creacion SECUENCIAL F1 -> F2.
 STANDARDS: G10 ASCII Strict (0 non-ASCII characters).
 =============================================================================
 INVENTARIO DE FUNCIONES:
@@ -14,61 +14,60 @@ INVENTARIO DE FUNCIONES:
   [INTERNAL] _resolveStablePairToken({...})
   [INTERNAL] _bestEffortUnlockAll(lockKeys, lockOwnerId)
   [INTERNAL] _compensateCreatedBookings(createdBookings, traceId)
-  [INTERNAL] _createBookingWithSelectiveElevation(payload, traceId)
+  [INTERNAL] _createBookingWithSelectiveElevation(booking, options, traceId)
   [INTERNAL] _validateCreateBookingResponse(booking, phase, traceId)
   [INTERNAL] _checkDoubleBookingFlag(booking, phase, traceId)
-  [INTERNAL] _validateDualGap(f1LocalEnd, f2LocalStart, traceId)    [v13]
-  [INTERNAL] _validateLinkedPhaseService(linkedPhases, traceId)     [v13]
-  [INTERNAL] _deleteCitasByPairToken(pairToken, traceId)            [v13]
+  [INTERNAL] _validateDualGap(f1LocalEnd, f2LocalStart, traceId)
+  [INTERNAL] _validateLinkedPhaseService(linkedPhases, parentLocationId, traceId)
+  [INTERNAL] _deleteCitasByPairToken(pairToken, traceId)
+  [INTERNAL] _isGuidOrNull(value)
   [CLASS]  BookingSagaOrchestrator
   [EXPORT] executeBookingSaga(unsafePayload)
 =============================================================================
 HISTORIAL DE CAMBIOS:
-  v5007.13 | 2026-09-19 | AUDITORIA DE RESERVAS (8 puntos):
-           |            | [AUDIT-RES-01] Nuevo helper _validateDualGap:
-           |            |   valida 0 <= gap <= MAX_DUAL_GAP_MINUTES antes
-           |            |   de crear F2. Defensa en profundidad sobre la
-           |            |   validacion interna de _resolveStaffForSlotInternal.
-           |            | [AUDIT-RES-02] Nuevo helper _validateLinkedPhaseService:
-           |            |   consulta ServiciosCatalogo para verificar que
-           |            |   linkedPhases sea visible, activo, APPOINTMENT,
-           |            |   con duraciones validas y personal disponible.
-           |            | [AUDIT-RES-03] Persistencia en saga compensable:
-           |            |   nuevo step "PersistCitas" con compensateFn
-           |            |   _deleteCitasByPairToken que revierte los
-           |            |   registros CMS si F2 falla. Evita persistencia
-           |            |   parcial.
-           |            | [AUDIT-RES-04] scheduleId real en _persistBooking:
-           |            |   se persiste validatedSlot.scheduleId en lugar
-           |            |   de null. Mejora trazabilidad y rescheduling.
-           |            | [AUDIT-RES-05] Verificado uso de
-           |            |   getUtcDateFromMadridLocal en todas las
-           |            |   conversiones de fecha local Madrid.
-           |            | [AUDIT-RES-06] Triple validacion antes de
-           |            |   createBooking:
-           |            |   1. _resolveStaffForSlotInternal (slots)
-           |            |   2. _validateDualGap (gap entre fases)
-           |            |   3. _validateLinkedPhaseService (F2 catalogo)
-           |            | [AUDIT-RES-07] Restaurado import { checkout }
-           |            |   retirado en v12 (falso positivo; ahora
-           |            |   documentado como no usado). Se retira
-           |            |   definitivamente y se documenta.
-           |            | [AUDIT-RES-08] pairToken: documentada deuda
-           |            |   tecnica. La verificacion se delega al
-           |            |   consumidor (citasManager._assertBookingOwner).
-  v5007.12 | 2026-09-15 | [W1] Retirado import { checkout } no usado.
-           |            | [FF] Fire-and-forget: invalidacion de cache en
-           |            | background. [AUDIT-BOOKING-01/02]. [PATCH-04..09].
-           |            | [RETRACT-14] NO se usa checkAvailabilityValidation.
-  v5007.8 | 2026-09-15 | AUDITORIA APLICADA: skipAvailabilityValidation=true,
+  v5007.14 | 2026-09-19 | AUDITORIA 2 APLICADA:
+           |            | [AUDIT2-01] Contrato createBooking corregido:
+           |            |   separacion en (booking, options) segun SDK
+           |            |   wix-bookings.v2. booking incluye
+           |            |   { bookedEntity, contactDetails, totalParticipants: 1 }.
+           |            |   options incluye { flowControlSettings }.
+           |            |   Aplicado a F1 y F2.
+           |            | [AUDIT2-02] Creacion SECUENCIAL F1 -> F2 (antes
+           |            |   Promise.all). Evita reservas huerfanas si F1
+           |            |   falla mientras F2 esta creando. El lock ya
+           |            |   garantiza exclusion; no se necesita paralelismo.
+           |            | [AUDIT2-03] _completeTransaction envuelto en
+           |            |   try/catch con compensacion explicita:
+           |            |   _deleteCitasByPairToken + _compensateCreatedBookings.
+           |            |   Evita persistencia parcial si falla la
+           |            |   finalizacion de la transaccion.
+           |            | [AUDIT2-04] _normalizePersistedMeta() corregido:
+           |            |   parsea strings ANTES de validar tipo object.
+           |            | [AUDIT2-05] SLOT_SEARCH importado como top-level
+           |            |   (no SDK_CONFIG.SLOT_SEARCH). MAX_DUAL_GAP_MINUTES
+           |            |   leido de SLOT_SEARCH.MAX_DUAL_GAP_MINUTES.
+           |            | [AUDIT2-06] Verificado: ERROR_CODES.INVALID_DATES
+           |            |   y ERROR_CODES.STAFF_UNAVAILABLE existen en
+           |            |   bookingCore.js Bloque 1.
+           |            | [AUDIT2-07] _validateLinkedPhaseService() ampliado:
+           |            |   verifica locationId compatible con el servicio
+           |            |   padre y documenta allowCombine.
+           |            | [AUDIT2-08] scheduleId validado como GUID antes
+           |            |   de persistir (_isGuidOrNull).
+           |            | [AUDIT2-09] Documentacion: creado SECUENCIAL, no
+           |            |   paralelo. Deuda tecnica pairToken documentada.
+  v5007.13 | 2026-09-19 | AUDITORIA 1: gap maximo, validacion F2,
+           |            | persistencia compensable, scheduleId real.
+  v5007.12 | 2026-09-15 | W1 retirado checkout no usado, FF fire-and-forget.
+  v5007.8 | 2026-09-15 | AUDITORIA APLICADA: skipAvailabilityValidation,
            |            | _createBookingWithSelectiveElevation.
   v5007.7 | 2026-09-14 | FIX EDITOR RESIDUAL: strings con guiones bajos.
   v5007.6 | 2026-09-14 | FIX EDITOR: restauracion de _ y *.
   v5007.5 | 2026-09-14 | Alineacion SSOT v5002.6.
-  v5007.4 | 2026-09-14 | Fix HAL-S1. Correcciones HAL-S2 a HAL-S12.
+  v5007.4 | 2026-09-14 | Fix HAL-S1. HAL-S2..S12.
   v5007.3 | 2026-09-10 | FIX A5: import _extractCheckoutId.
-  v5002.5 | 2026-09-10 | Fix S-01: linkedPhases como fuente primaria de F2.
-  v5002.3 | 2026-09-06 | Version inicial del dossier.
+  v5002.5 | 2026-09-10 | Fix S-01: linkedPhases primaria de F2.
+  v5002.3 | 2026-09-06 | Version inicial.
 =============================================================================
 */
 
@@ -80,6 +79,7 @@ import {
     COLLECTIONS,
     CONCURRENCY,
     SDK_CONFIG,
+    SLOT_SEARCH,
     ESTADO_CITA,
     ESTADO_PAGO,
     FORMA_PAGO,
@@ -137,13 +137,15 @@ const CITASCOL = COLLECTIONS.CITAS_F2;
 const SERVICIOSCOL = COLLECTIONS.SERVICIOS_CATALOGO;
 const COMPENSACIONESCOL = COLLECTIONS.COMPENSACIONES_PENDIENTES;
 
+const MAX_DUAL_GAP_MINUTES =
+    Math.max(0, Number(SLOT_SEARCH?.MAX_DUAL_GAP_MINUTES || 120));
+
 // =============================================================================
 // BLOCK 1 - DETERMINISTIC PAIR TOKEN
 //
-// [AUDIT-RES-08] Documentacion de deuda tecnica: el pairToken se deriva
-// de email+servicio+horarios, por lo que un tercero que conozca esos datos
-// podria reutilizarlo. La verificacion de propiedad se delega al consumidor
-// (citasManager._assertBookingOwner) que debe exigir sesion del miembro.
+// [AUDIT-RES-08 / AUDIT2-09] Deuda tecnica: pairToken derivado de
+// email+servicio+horarios. La verificacion de propiedad se delega al
+// consumidor (citasManager._assertBookingOwner).
 // =============================================================================
 function _resolveStablePairToken({ serviceId, resourceId, f1Start, f2Start, email, existingPairToken }) {
     const existing = _safeTrim(existingPairToken);
@@ -162,12 +164,24 @@ function _resolveStablePairToken({ serviceId, resourceId, f1Start, f2Start, emai
 
 // =============================================================================
 // BLOCK 2 - PERSISTED META NORMALIZATION
+//
+// [AUDIT2-04] CORREGIDO: parsea strings ANTES de validar tipo object.
+// Version anterior retornaba {} directamente para strings sin parsear.
 // =============================================================================
 export function _normalizePersistedMeta(meta) {
-    if (!meta || typeof meta !== "object") return {};
+    if (!meta) return {};
+
     try {
-        if (typeof meta === "string") return JSON.parse(meta);
-        return meta;
+        if (typeof meta === "string") {
+            const parsed = JSON.parse(meta);
+            return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+                ? parsed
+                : {};
+        }
+
+        return typeof meta === "object" && !Array.isArray(meta)
+            ? meta
+            : {};
     } catch (_) {
         return {};
     }
@@ -238,17 +252,20 @@ async function _compensateCreatedBookings(createdBookings, traceId) {
 
 // =============================================================================
 // BLOCK 5 - SELECTIVE ELEVATION
+//
+// [AUDIT2-01] Corregido: createBooking(booking, options) segun SDK
+// wix-bookings.v2.
 // =============================================================================
-async function _createBookingWithSelectiveElevation(payload, traceId) {
+async function _createBookingWithSelectiveElevation(booking, options, traceId) {
     try {
-        return await bookings.createBooking(payload);
+        return await bookings.createBooking(booking, options);
     } catch (err) {
         const code = _safeTrim(err?.code || err?.details?.applicationError?.code).toUpperCase();
         const isAccessDenied = code === "ACCESS_DENIED" ||
             String(err?.message || "").toUpperCase().includes("ACCESS_DENIED");
         if (!isAccessDenied) throw err;
         log.info("Elevating createBooking due to ACCESS_DENIED", { traceId: traceId });
-        return await elevate(bookings.createBooking)(payload);
+        return await elevate(bookings.createBooking)(booking, options);
     }
 }
 
@@ -289,26 +306,15 @@ function _checkDoubleBookingFlag(booking, phase, traceId) {
 }
 
 // =============================================================================
-// BLOCK 8 - [AUDIT-RES-01] VALIDACION EXPLICITA DE GAP MAXIMO
-//
-// Defensa en profundidad: aunque _resolveStaffForSlotInternal valida el gap
-// internamente, revalidamos explicitamente antes de crear F2. Esto evita
-// que un cambio de contrato en reservas.web.js pueda permitir gaps invalidos.
-//
-// Reglas:
-//   - gap >= 0: F2 no puede empezar antes de que F1 termine.
-//   - gap <= MAX_DUAL_GAP_MINUTES: no puede haber un gap excesivo.
+// BLOCK 8 - VALIDACION EXPLICITA DE GAP MAXIMO
 // =============================================================================
 function _validateDualGap(f1LocalEnd, f2LocalStart, traceId) {
-    const MAX_DUAL_GAP_MINUTES =
-        Math.max(0, Number(SDK_CONFIG?.SLOT_SEARCH?.MAX_DUAL_GAP_MINUTES || 120));
-
     const f1EndLocal = _normalizeLocalIsoStr(f1LocalEnd);
     const f2StartLocal = _normalizeLocalIsoStr(f2LocalStart);
 
     if (!f1EndLocal || !f2StartLocal) {
         throw createBookingError(
-            ERROR_CODES.INVALID_PAYLOAD,
+            ERROR_CODES.INVALID_DATES,
             "Dual gap validation: invalid dates",
             { traceId, f1LocalEnd, f2LocalStart }
         );
@@ -338,7 +344,7 @@ function _validateDualGap(f1LocalEnd, f2LocalStart, traceId) {
     if (gapMinutes > MAX_DUAL_GAP_MINUTES) {
         throw createBookingError(
             ERROR_CODES.INVALID_PAYLOAD,
-            `Dual gap validation: gap ${gapMinutes.toFixed(2)} min exceeds MAX_DUAL_GAP_MINUTES (${MAX_DUAL_GAP_MINUTES})`,
+            `Dual gap validation: gap ${gapMinutes.toFixed(2)} min exceeds MAX (${MAX_DUAL_GAP_MINUTES})`,
             { traceId, gapMinutes, maxGapMinutes: MAX_DUAL_GAP_MINUTES }
         );
     }
@@ -347,16 +353,13 @@ function _validateDualGap(f1LocalEnd, f2LocalStart, traceId) {
 }
 
 // =============================================================================
-// BLOCK 9 - [AUDIT-RES-02] VALIDACION DEL SERVICIO F2 (linkedPhases)
+// BLOCK 9 - VALIDACION DEL SERVICIO F2 (linkedPhases)
 //
-// Verifica que el servicio F2 referenciado por linkedPhases:
-//   - existe en ServiciosCatalogo,
-//   - esta visible (hidden !== true),
-//   - es de tipo APPOINTMENT (no CLASS/COURSE),
-//   - tiene duraciones validas,
-//   - tiene personal disponible.
+// [AUDIT2-07] Ampliado: valida locationId compatible con el servicio padre
+// y documenta la no-exigencia de allowCombine en F2 (es el padre quien
+// debe tener allowCombine=true).
 // =============================================================================
-async function _validateLinkedPhaseService(linkedPhases, traceId) {
+async function _validateLinkedPhaseService(linkedPhases, parentLocationId, traceId) {
     const linkedServiceId = _safeTrim(linkedPhases);
     if (!linkedServiceId || !_looksLikeGuid(linkedServiceId)) {
         throw createBookingError(
@@ -382,7 +385,6 @@ async function _validateLinkedPhaseService(linkedPhases, traceId) {
         );
     }
 
-    // [AUDIT-RES-02] Verificacion de visibilidad
     if (service.hidden === true) {
         throw createBookingError(
             ERROR_CODES.SERVICE_NOT_FOUND,
@@ -391,7 +393,6 @@ async function _validateLinkedPhaseService(linkedPhases, traceId) {
         );
     }
 
-    // [AUDIT-RES-02] Verificacion de tipo APPOINTMENT
     const serviceType = _safeTrim(service.serviceType).toUpperCase();
     if (serviceType && serviceType !== "APPOINTMENT" && serviceType !== "CITA") {
         throw createBookingError(
@@ -401,7 +402,6 @@ async function _validateLinkedPhaseService(linkedPhases, traceId) {
         );
     }
 
-    // [AUDIT-RES-02] Verificacion de duraciones
     const phase2Duration = Number(service.phase2Duration || service.totalDuration || 0);
     if (phase2Duration <= 0) {
         throw createBookingError(
@@ -411,7 +411,6 @@ async function _validateLinkedPhaseService(linkedPhases, traceId) {
         );
     }
 
-    // [AUDIT-RES-02] Verificacion de personal disponible
     const availableStaff = Array.isArray(service.availableStaff)
         ? service.availableStaff.filter((id) => _looksLikeGuid(id))
         : [];
@@ -423,6 +422,21 @@ async function _validateLinkedPhaseService(linkedPhases, traceId) {
         );
     }
 
+    // [AUDIT2-07] Verificacion de locationId compatible
+    const parentLoc = _safeTrim(parentLocationId);
+    const f2Loc = _safeTrim(service.locationId || service.location);
+    if (parentLoc && f2Loc && parentLoc !== f2Loc) {
+        throw createBookingError(
+            ERROR_CODES.INVALID_PAYLOAD,
+            `Linked phase service ${linkedServiceId} has incompatible locationId (${f2Loc} != ${parentLoc})`,
+            { traceId }
+        );
+    }
+
+    // NOTA [AUDIT2-07]: NO se exige allowCombine=true en F2. allowCombine es
+    // una propiedad del servicio PADRE (ya validada en PHASE 0). F2 es un
+    // servicio normal que se usa como segunda fase del flujo dual.
+
     return {
         service,
         phase2Duration,
@@ -431,11 +445,7 @@ async function _validateLinkedPhaseService(linkedPhases, traceId) {
 }
 
 // =============================================================================
-// BLOCK 10 - [AUDIT-RES-03] COMPENSACION DE PERSISTENCIA CMS
-//
-// Borra registros de CitasF2 por pairToken. Se usa como compensateFn del
-// step "PersistCitas" para revertir persistencia parcial si falla la
-// segunda insercion (F2).
+// BLOCK 10 - COMPENSACION DE PERSISTENCIA CMS
 // =============================================================================
 async function _deleteCitasByPairToken(pairToken, traceId) {
     const token = _safeTrim(pairToken);
@@ -471,7 +481,18 @@ async function _deleteCitasByPairToken(pairToken, traceId) {
 }
 
 // =============================================================================
-// BLOCK 11 - SAGA ORCHESTRATOR
+// BLOCK 11 - UTILIDAD: GUID OR NULL
+//
+// [AUDIT2-08] Valida que scheduleId sea GUID valido antes de persistir.
+// =============================================================================
+function _isGuidOrNull(value) {
+    const v = _safeTrim(value);
+    if (!v) return null;
+    return _looksLikeGuid(v) ? v : null;
+}
+
+// =============================================================================
+// BLOCK 12 - SAGA ORCHESTRATOR
 // =============================================================================
 export class BookingSagaOrchestrator {
     constructor(traceId) {
@@ -521,7 +542,7 @@ export class BookingSagaOrchestrator {
 }
 
 // =============================================================================
-// BLOCK 12 - EXECUTE BOOKING SAGA (MAIN FUNCTION)
+// BLOCK 13 - EXECUTE BOOKING SAGA (MAIN FUNCTION)
 // =============================================================================
 export async function executeBookingSaga(unsafePayload) {
     const traceId = unsafePayload?.traceId || makeTraceId("saga");
@@ -551,14 +572,12 @@ export async function executeBookingSaga(unsafePayload) {
         const serviceConfig = serviceRes?.data || {};
         const isDual = serviceConfig.allowCombine === true && !!serviceConfig.linkedPhases;
         const linkedPhases = isDual ? serviceConfig.linkedPhases : null;
+        const parentLocationId = _safeTrim(serviceConfig.locationId || serviceConfig.location);
 
         const requestedResourceId = _safeTrim(unsafePayload?.resourceId || metaCita.resourceId);
         const slotF1Input = unsafePayload?.slotF1 || {};
         const slotF2Input = unsafePayload?.slotF2 || {};
 
-        // [AUDIT-RES-05] Uso consistente de getUtcDateFromMadridLocal via
-        // _normalizeLocalIsoStr. Las fechas locales de Madrid sin zona NO se
-        // interpretan como UTC.
         const f1LocalStart = _normalizeLocalIsoStr(
             slotF1Input.localStartDate || slotF1Input.start || metaCita.f1Start
         );
@@ -594,12 +613,7 @@ export async function executeBookingSaga(unsafePayload) {
                 f2LocalEnd = getMadridLocalStringNoZ(f2EndUtc);
             }
 
-            // [AUDIT-RES-02] Validar servicio F2 antes de cualquier operacion.
-            // Verifica existencia, visibilidad, tipo APPOINTMENT, duracion y
-            // staff disponible en ServiciosCatalogo.
-            await _validateLinkedPhaseService(linkedPhases, traceId);
-
-            // [AUDIT-RES-01] Validar gap maximo entre F1.end y F2.start.
+            await _validateLinkedPhaseService(linkedPhases, parentLocationId, traceId);
             _validateDualGap(f1LocalEnd, f2LocalStart, traceId);
         }
 
@@ -722,9 +736,7 @@ export async function executeBookingSaga(unsafePayload) {
         const validatedSlotF1 = resourceValidation.data.slotF1;
         const validatedSlotF2 = resourceValidation.data.slotF2;
 
-        // [AUDIT-RES-01] Defensa en profundidad: revalidar gap con los slots
-        // devueltos por _resolveStaffForSlotInternal por si hubo drift entre
-        // la validacion inicial y la respuesta del servidor.
+        // Defensa en profundidad: revalidar gap con datos normalizados
         if (isDual && validatedSlotF1 && validatedSlotF2) {
             const f1EndFromValidated = _normalizeLocalIsoStr(
                 validatedSlotF1.localEndDate || validatedSlotF1.endDate || f1LocalEnd
@@ -791,6 +803,15 @@ export async function executeBookingSaga(unsafePayload) {
             }
         );
 
+        // =========================================================================
+        // [AUDIT2-02] CREACION SECUENCIAL F1 -> F2
+        //
+        // Antes se usaba Promise.all. Si F1 fallaba mientras F2 estaba
+        // creando, la saga compensaba antes de que F2 se agregara a
+        // createdBookings, dejando una reserva huerfana en Wix.
+        //
+        // El lock ya garantiza exclusion mutua; no se necesita paralelismo.
+        // =========================================================================
         saga.addStep(
             "CreateBookings",
             async function () {
@@ -809,58 +830,50 @@ export async function executeBookingSaga(unsafePayload) {
                     phone: _safeTrim(unsafePayload?.phone || metaCita.phone || ""),
                 };
 
-                const f1Payload = {
-                    serviceId: serviceId,
+                // [AUDIT2-01] Contrato correcto: createBooking(booking, options)
+                const f1Booking = {
                     bookedEntity: { slot: pristineF1 },
                     contactDetails: contactDetails,
-                    options: { flowControlSettings: { skipAvailabilityValidation: true } },
+                    totalParticipants: 1,
+                };
+                const f1Options = {
+                    flowControlSettings: { skipAvailabilityValidation: true },
                 };
 
                 let bookingF1 = null;
                 let bookingF2 = null;
 
+                // --- F1 ---
+                const resF1 = await _createBookingWithSelectiveElevation(f1Booking, f1Options, traceId);
+                bookingF1 = resF1?.booking || resF1;
+                const f1Id = _validateCreateBookingResponse(bookingF1, "F1", traceId);
+                _checkDoubleBookingFlag(bookingF1, "F1", traceId);
+                createdBookings.push({ bookingId: f1Id, phase: "F1" });
+
+                // --- F2 (solo si dual) ---
                 if (isDual && f2LocalStart && validatedSlotF2) {
-                    const createF1 = async function () {
-                        const res = await _createBookingWithSelectiveElevation(f1Payload, traceId);
-                        bookingF1 = res?.booking || res;
-                        const f1Id = _validateCreateBookingResponse(bookingF1, "F1", traceId);
-                        _checkDoubleBookingFlag(bookingF1, "F1", traceId);
-                        createdBookings.push({ bookingId: f1Id, phase: "F1" });
-                        return bookingF1;
+                    const pristineF2 = await _forceStaffInPristineSlot(
+                        validatedSlotF2, finalResourceId, linkedPhases, serviceConfig.phase2Duration
+                    );
+                    if (!pristineF2) {
+                        throw createBookingError(ERROR_CODES.INVALID_PAYLOAD,
+                            "Failed to build pristine slot F2", { traceId: traceId });
+                    }
+
+                    const f2Booking = {
+                        bookedEntity: { slot: pristineF2 },
+                        contactDetails: contactDetails,
+                        totalParticipants: 1,
+                    };
+                    const f2Options = {
+                        flowControlSettings: { skipAvailabilityValidation: true },
                     };
 
-                    const createF2 = async function () {
-                        await new Promise(function (r) {
-                            setTimeout(r, 400 + Math.random() * 600);
-                        });
-                        const pristineF2 = await _forceStaffInPristineSlot(
-                            validatedSlotF2, finalResourceId, linkedPhases, serviceConfig.phase2Duration
-                        );
-                        if (!pristineF2) {
-                            throw createBookingError(ERROR_CODES.INVALID_PAYLOAD,
-                                "Failed to build pristine slot F2", { traceId: traceId });
-                        }
-                        const f2Payload = {
-                            serviceId: linkedPhases,
-                            bookedEntity: { slot: pristineF2 },
-                            contactDetails: contactDetails,
-                            options: { flowControlSettings: { skipAvailabilityValidation: true } },
-                        };
-                        const res = await _createBookingWithSelectiveElevation(f2Payload, traceId);
-                        bookingF2 = res?.booking || res;
-                        const f2Id = _validateCreateBookingResponse(bookingF2, "F2", traceId);
-                        _checkDoubleBookingFlag(bookingF2, "F2", traceId);
-                        createdBookings.push({ bookingId: f2Id, phase: "F2" });
-                        return bookingF2;
-                    };
-
-                    await Promise.all([createF1(), createF2()]);
-                } else {
-                    const res = await _createBookingWithSelectiveElevation(f1Payload, traceId);
-                    bookingF1 = res?.booking || res;
-                    const f1Id = _validateCreateBookingResponse(bookingF1, "F1", traceId);
-                    _checkDoubleBookingFlag(bookingF1, "F1", traceId);
-                    createdBookings.push({ bookingId: f1Id, phase: "F1" });
+                    const resF2 = await _createBookingWithSelectiveElevation(f2Booking, f2Options, traceId);
+                    bookingF2 = resF2?.booking || resF2;
+                    const f2Id = _validateCreateBookingResponse(bookingF2, "F2", traceId);
+                    _checkDoubleBookingFlag(bookingF2, "F2", traceId);
+                    createdBookings.push({ bookingId: f2Id, phase: "F2" });
                 }
 
                 return {
@@ -926,14 +939,6 @@ export async function executeBookingSaga(unsafePayload) {
             async function () {}
         );
 
-        // =========================================================================
-        // [AUDIT-RES-03] NUEVO STEP: PERSISTCITAS (compensable)
-        //
-        // La persistencia CMS se ejecuta DENTRO de la saga para que un fallo
-        // en el guardado de F2 pueda revertir automaticamente el guardado de
-        // F1. Antes se ejecutaba fuera de la saga y dejaba persistencia
-        // parcial.
-        // =========================================================================
         const paymentStatus = isOnline ? ESTADO_PAGO.PENDING_PAYMENT : ESTADO_PAGO.UNPAID;
         const citaStatus = isOnline ? ESTADO_CITA.PENDING_PAYMENT : ESTADO_CITA.CONFIRMED;
 
@@ -948,10 +953,10 @@ export async function executeBookingSaga(unsafePayload) {
                 const bookingF1Id = createdBookings.find(function (b) { return b.phase === "F1"; })?.bookingId;
                 const bookingF2Id = createdBookings.find(function (b) { return b.phase === "F2"; })?.bookingId;
 
-                // [AUDIT-RES-04] Persistir scheduleId real (antes null)
-                const scheduleIdF1 = _safeTrim(
-                    validatedSlotF1?.scheduleId || validatedSlotF1?.slot?.scheduleId || ""
-                ) || null;
+                // [AUDIT2-08] scheduleId validado como GUID antes de persistir
+                const scheduleIdF1 = _isGuidOrNull(
+                    validatedSlotF1?.scheduleId || validatedSlotF1?.slot?.scheduleId
+                );
 
                 await _persistBooking({
                     bookingId: bookingF1Id,
@@ -979,9 +984,9 @@ export async function executeBookingSaga(unsafePayload) {
                 }, traceId);
 
                 if (isDual && bookingF2Id) {
-                    const scheduleIdF2 = _safeTrim(
-                        validatedSlotF2?.scheduleId || validatedSlotF2?.slot?.scheduleId || ""
-                    ) || null;
+                    const scheduleIdF2 = _isGuidOrNull(
+                        validatedSlotF2?.scheduleId || validatedSlotF2?.slot?.scheduleId
+                    );
 
                     await _persistBooking({
                         bookingId: bookingF2Id,
@@ -1013,15 +1018,13 @@ export async function executeBookingSaga(unsafePayload) {
                     isOnline: isOnline,
                 };
             },
-            // [AUDIT-RES-03] compensateFn: si algo falla despues (p.ej. _completeTransaction),
-            // se borran los registros de CitasF2 persistidos.
             async function () {
                 await _deleteCitasByPairToken(pairToken, traceId);
             }
         );
 
         // =========================================================================
-        // PHASE 5 + PHASE 6
+        // PHASE 5: EXECUTE SAGA
         // =========================================================================
         const sagaStartTime = Date.now();
         try {
@@ -1038,7 +1041,27 @@ export async function executeBookingSaga(unsafePayload) {
                 status: persistStepResult?.citaStatus || citaStatus,
             };
 
-            await _completeTransaction(pairToken, finalResult);
+            // =========================================================================
+            // [AUDIT2-03] _completeTransaction fuera de saga pero con
+            // compensacion explicita si falla. Si _completeTransaction
+            // revienta, deshacemos toda la persistencia y bookings creados.
+            // =========================================================================
+            try {
+                await _completeTransaction(pairToken, finalResult);
+            } catch (completeErr) {
+                log.error("_completeTransaction failed; compensating full saga", {
+                    pairToken,
+                    traceId,
+                    error: completeErr?.message,
+                });
+                try {
+                    await _deleteCitasByPairToken(pairToken, traceId);
+                } catch (_) { /* best effort */ }
+                try {
+                    await _compensateCreatedBookings(createdBookings, traceId);
+                } catch (_) { /* best effort */ }
+                throw completeErr;
+            }
 
             // [FF] Fire-and-forget: no bloquea la respuesta
             const madridDateYMD = f1LocalStart.slice(0, 10);
