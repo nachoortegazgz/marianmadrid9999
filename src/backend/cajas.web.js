@@ -1,14 +1,14 @@
 /*
 =============================================================================
 MODULE: backend/cajas.web.js
-VERSION: v5008.2-OPT (logger from backend/logger)
-        Booking y fiscalidad espanola)
+VERSION: v5008.3-OPT (FIX-48, FIX-49)
 BASE: Modulos optimizados 3 + BIBLIA v5002.5 + DOSSIER CAJA + DIRECTRICES V19
 RESPONSIBILITY: TPV cashier ledger, daily closures (Arqueo X / Cierre Z),
                 Veri*factu SHA-256 chain integrity, fiscal persistence,
                 M365 sync enqueue, IDEMPOTENCIA, auditoria completa y
                 control de periodos cerrados.
 STANDARDS: G10 ASCII Strict (0 non-ASCII characters).
+
 CORRECTIONS APPLIED:
   [R2-01] Mutex atomico para _getNextSequence() con SlotLocks.
   [R2-02] Idempotencia por transactionId antes de insertar.
@@ -16,64 +16,32 @@ CORRECTIONS APPLIED:
   [R2-04] await en todas las llamadas a hashSHA256/hmacSha256Hex.
   [R2-05] Verificar cierre Z existente antes de insertar.
   [R2-15] Bloqueo de periodo cerrado (_assertPeriodNotClosed).
-  [R2-20] Auditoria de fallos en M365 (proyeccion contable retirada).
-  [C1] Flujo 7 Tarjetas regalo: registerGiftCardSale + registerGiftCardRedemption.
-  [FIX-D3] _logAuditEvent local eliminado. Se importa logAuditEvent de audit.js.
-  [CI-CAJA-01] Idempotencia por transactionId.
-  [CI-CAJA-02] Control revision saldos.
-  [CI-CAJA-03] Validacion importes/moneda/signo.
-  [CI-CAJA-04] Auditoria movimientos.
-  [CI-CAJA-05] Bloqueo periodos cerrados.
-  [CI-CAJA-06] Prevencion doble cobro/reembolso.
-  [CLEAN-01] seqCol reemplazado por COLLECTIONS.CAJA_ACTUAL (singleton fiscal).
-  [CLEAN-02] Referencias a colecciones eliminadas del SSOT retiradas
-             (EVENTOS_SISTEMA_FACTURACION, PLAN_CUENTAS_CONTABLES,
-             CONTROL_PARCIAL_X).
-  [CLEAN-03] _registerSystemEvent retirado (dependia de coleccion eliminada).
-  [CLEAN-04] _projectToAccounting retirado (dependia de PLAN_CUENTAS_CONTABLES).
-  [CLEAN-05] registerXCount retirado (dependia de CONTROL_PARCIAL_X).
-  [HARD-01] Imports de seguridad: solo requireCajero + rateLimiter.
-  [HARD-02] Imports criptograficos: sin timingSafeEqual.
-  [HARD-03] Imports mmUtils: sin _normalizeIdPart.
-  [HARD-04] Firmas webMethod con options = {} defensivo.
-  [HARD-05] Constante INTEGRITY_ALGORITHM_VERSION eliminada.
-  [HARD-06] _getFiscalKeys() sin parametro traceId.
-  [REV2-01] _getNextSequence() usa save() en lugar de update().
-  [REV2-02] registerGiftCardRedemption() con idempotencia por transactionId.
-  [REV2-03] IIFE: sin reintentos post-insert.
-  [REV2-04] _getLastMovement() sin parametro traceId.
-  [REV2-05] registerZClosing() no desestructura businessTaxId.
-  [REV2-06] _readNonNegativeAmount y _rateLimitOrThrow conservados.
-  [VF-01] Firma X.509 DELEGADA en microservicio externo.
-  [VF-02] _buildAEATPayload() con formato oficial AEAT:
-          campo1=valor1&campo2=valor2&... y nombres canonicos
-          IDEmisorFactura, NumSerieFactura, FechaExpedicionFactura,
-          TipoFactura, CuotaTotal, ImporteTotal, Huella,
-          FechaHoraHusoGenRegistro.
-  [VF-03] QR de verificacion Veri*factu integrado.
-  [B7] _getNextSequence sin executeLedgerWithBackoff: el mutex ya
-       garantiza exclusion mutua. Un retry sobre un save exitoso
-       pero con respuesta fallida incrementaria la secuencia dos
-       veces, generando hueco en la cadena fiscal.
-  [B8] _updateCajaActual propaga errores a CompensacionesPendientes
-       en lugar de silenciarlos (evita desincronizacion ledger/saldo).
-  [B9] Cache de secretos (TTL 5 min) para validateFiscalConfig y
-       _getFiscalKeys: reduce latencia ~200ms/req y llamadas a
-       Secrets Manager.
-  [B10] registerGiftCardRedemption acepta redemptionId del cliente
-        como input preferente. Permite retries legitimos sin
-        bloquear por idempotencia deterministica.
-  [B11] Circuit breaker en signer fiscal externo. Tras N fallos
-        consecutivos, se abre el circuito y los movimientos se
-        encolan en CompensacionesPendientes con phase
-        WAIT_FOR_SIGNER, sin bloquear la caja.
-  [B17] Documentada intencion de migracion a colecciones dedicadas
-        (HistoricoCierresInventario, PaquetesGestoria). cajas
-        mantiene HISTORICO_CIERRES_Z para cierres Z diarios.
-  [B22] _getBusinessTaxId interna falla explicitamente si no hay
-        configuracion fiscal activa (no fallback a BXXXXXXXX).
+  [R2-20] Auditoria de fallos en M365.
+  [C1] Flujo 7 Tarjetas regalo.
+  [FIX-D3] _logAuditEvent local eliminado.
+  [CI-CAJA-01..06] Idempotencia, revision saldos, validacion importes.
+  [CLEAN-01] seqCol -> COLLECTIONS.CAJA_ACTUAL.
+  [CLEAN-02..05] Retiradas referencias a colecciones eliminadas.
+  [HARD-01..06] Imports y firmas depuradas.
+  [REV2-01..06] Ajustes de revision 2.
+  [VF-01..03] Firma X.509 delegada, payload AEAT, QR Veri*factu.
+  [B7] _getNextSequence sin executeLedgerWithBackoff.
+  [B8] _updateCajaActual propaga errores a CompensacionesPendientes.
+  [B9] Cache de secretos (TTL 5 min).
+  [B10] registerGiftCardRedemption con redemptionId del cliente.
+  [B11] Circuit breaker en signer fiscal externo.
+  [B17] Intencion de migracion a colecciones dedicadas.
+  [B22] _getBusinessTaxId falla explicito sin configuracion fiscal.
   [RL-01] Rate limiting en registerManualTransaction.
-  [SEC-01] Signer fiscal con timeout explicito y manejo de errores.
+  [SEC-01] Signer fiscal con timeout explicito.
+
+FIXES APLICADOS v5008.3:
+  - FIX-48: sequenceCounters migrado a documento CAJA_SEQ separado dentro
+            de la coleccion CAJA_ACTUAL. Elimina race entre
+            _updateCajaActual (saldos) y _getNextSequence (contadores).
+            Migracion transparente desde CAJA_PRINCIPAL.sequenceCounters.
+  - FIX-49: _id de CompensacionesPendientes de _updateCajaActual añade
+            sufijo Date.now() para evitar colision en reintentos.
 =============================================================================
 */
 
@@ -117,7 +85,6 @@ import { normalizeError } from "backend/booking/bookingCore";
 import { _toPublicError } from "backend/responseUtils";
 import { _lockSlotKeyOrFail, _unlockSlotKey } from "backend/booking/bookingCore";
 
-// [FIX-D3] Import canonico de auditoria centralizada
 import { logAuditEvent } from "backend/audit";
 import { projectLedgerMovementToAccounting } from "backend/contabilidad";
 
@@ -128,23 +95,20 @@ const log = logger;
 // ============================================================================
 
 const CAJA_ACTUAL_ID = SINGLETONS?.CAJA || "CAJA_PRINCIPAL";
+const CAJA_SEQ_ID = "CAJA_SEQ"; // FIX-48
 const LEDGER_SCHEMA_VERSION = "LEDGER_V3";
 const GENESIS_HASH = "0".repeat(64);
 const MAX_LEDGER_BATCH_PAGES = 50;
 const LEDGER_PAGE_SIZE = 200;
 
-// [R2-01] Mutex para secuencia fiscal
 const SEQUENCE_MUTEX_KEY = "FISCAL_SEQUENCE_LOCK";
 const SEQUENCE_MUTEX_TTL_MS = Number(CONCURRENCY?.LEDGER_MUTEX_TTL_MS) || 45000;
 
-// [VF-01] Timeout para el microservicio de firma
 const FISCAL_SIGNER_TIMEOUT_MS = 10000;
 
-// [B9] Cache de secretos (TTL 5 min)
 const SECRET_CACHE_TTL_MS = 300000;
 const _secretCache = new Map();
 
-// [B11] Circuit breaker del signer fiscal
 const SIGNER_FAILURE_THRESHOLD = 3;
 const SIGNER_OPEN_MS = 60000;
 let _signerState = { failures: 0, openUntil: 0 };
@@ -168,7 +132,16 @@ function _rateLimitOrThrow(surface, key, traceId) {
     }
 }
 
-// [B9] Helper de cache de secretos (TTL 5 min)
+// [FIX-49] Helper local para detectar duplicate insert.
+function _isDuplicateItemError(error) {
+    const message = String(error?.message || "");
+    return (
+        message.includes("WDE0123") ||
+        message.includes("WD_ITEM_ALREADY_EXISTS") ||
+        message.includes("Duplicated")
+    );
+}
+
 async function _getCachedSecret(name) {
     const now = Date.now();
     const entry = _secretCache.get(name);
@@ -180,7 +153,6 @@ async function _getCachedSecret(name) {
     return value;
 }
 
-// [B9] Invalidar cache de secretos (util tras rotacion)
 export function _invalidateSecretCache() {
     _secretCache.clear();
 }
@@ -216,11 +188,6 @@ async function _getFiscalKeys() {
 
 // ============================================================================
 // RETRY WITH EXPONENTIAL BACKOFF
-//
-// [B7] ADVERTENCIA: Solo usar para operaciones SIN side effects de escritura
-// (por ejemplo, lecturas o lecturas+calculo). NUNCA envolver inserts o
-// updates contables: un retry sobre un save exitoso pero con respuesta
-// fallida incrementaria la secuencia fiscal dos veces.
 // ============================================================================
 
 export async function executeLedgerWithBackoff(operationFn, maxWallTimeMs = 15000) {
@@ -241,16 +208,10 @@ export async function executeLedgerWithBackoff(operationFn, maxWallTimeMs = 1500
 }
 
 // ============================================================================
-// [VF-02] BUILD AEAT PAYLOAD (FORMATO OFICIAL AEAT)
-//
-// Especificacion oficial:
-//   "los datos se concatenaran -en el orden descrito para cada caso- en una
-//    unica cadena de texto con formato String, siguiendo la estructura:
-//    nombreCampo1=valorCampo1&nombreCampo2=valorCampo2&..."
+// BUILD AEAT PAYLOAD
 // ============================================================================
 
 function _formatAEATDate(ymd) {
-    // Convierte YYYY-MM-DD a DD-MM-YYYY (formato AEAT)
     const clean = _safeTrim(ymd);
     const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(clean);
     if (!match) return clean;
@@ -258,7 +219,6 @@ function _formatAEATDate(ymd) {
 }
 
 function _formatAEATDateTimeMadrid(date) {
-    // Genera ISO 8601 con offset Madrid: YYYY-MM-DDTHH:MM:SS+HH:MM
     const dt = date instanceof Date ? date : new Date();
     const parts = new Intl.DateTimeFormat("sv-SE", {
         timeZone: SDK_CONFIG?.TZ || "Europe/Madrid",
@@ -296,11 +256,10 @@ function _buildAEATPayload(mov, generatedAt) {
 }
 
 // ============================================================================
-// [VF-01 + B11] FIRMA X.509 DELEGADA CON CIRCUIT BREAKER
+// FIRMA X.509 DELEGADA CON CIRCUIT BREAKER
 // ============================================================================
 
 async function _computeSignature(currentHash, traceId) {
-    // [B11] Circuit breaker
     if (Date.now() < _signerState.openUntil) {
         log.warn("Fiscal signer circuit OPEN; rejecting fast", { traceId });
         throw new Error("FISCAL_SIGN_FAIL: circuit breaker open");
@@ -342,7 +301,6 @@ async function _computeSignature(currentHash, traceId) {
             throw new Error("FISCAL_SIGNER_INVALID_RESPONSE");
         }
 
-        // Reset exitoso del circuit breaker
         _signerState.failures = 0;
         _signerState.openUntil = 0;
 
@@ -363,7 +321,7 @@ async function _computeSignature(currentHash, traceId) {
 }
 
 // ============================================================================
-// [VF-03] GENERATE VERIFICATION QR
+// QR DE VERIFICACION
 // ============================================================================
 
 function _generateVerificationQR(invoiceNumber, businessTaxId, operationDate, totalAmount) {
@@ -386,12 +344,14 @@ async function _computeCurrentHash(prevHash, payloadStr) {
 }
 
 // ============================================================================
-// SEQUENCE COUNTER (ATOMIC)
+// SEQUENCE COUNTER (ATOMIC) - [FIX-48]
 //
-// [B7] Sin executeLedgerWithBackoff: el mutex (SEQUENCE_MUTEX_KEY) ya
-// garantiza exclusion mutua. Un retry sobre un save exitoso pero con
-// respuesta fallida incrementaria la secuencia dos veces, generando
-// un hueco en la cadena fiscal (Veri*factu no conforme).
+// Los contadores viven en CAJA_SEQ (documento separado dentro de
+// COLLECTIONS.CAJA_ACTUAL). Antes vivian en CAJA_PRINCIPAL y competian con
+// _updateCajaActual por el mismo documento.
+//
+// Migracion transparente: si CAJA_SEQ no existe, se inicializa con los
+// contadores de CAJA_PRINCIPAL.sequenceCounters y se marca migrado.
 // ============================================================================
 
 async function _getNextSequence(traceId) {
@@ -404,17 +364,40 @@ async function _getNextSequence(traceId) {
 
     try {
         let seqDoc = await wixData
-            .get(COLLECTIONS.CAJA_ACTUAL, CAJA_ACTUAL_ID, { suppressAuth: true, consistentRead: true })
+            .get(COLLECTIONS.CAJA_ACTUAL, CAJA_SEQ_ID, { suppressAuth: true, consistentRead: true })
             .catch(() => null);
 
         if (!seqDoc) {
+            const legacyCaja = await wixData
+                .get(COLLECTIONS.CAJA_ACTUAL, CAJA_ACTUAL_ID, { suppressAuth: true, consistentRead: true })
+                .catch(() => null);
+
+            const legacyCounters =
+                legacyCaja && legacyCaja.sequenceCounters
+                    ? legacyCaja.sequenceCounters
+                    : { seqGlobal: 0 };
+
             seqDoc = {
-                _id: CAJA_ACTUAL_ID,
-                sequenceCounters: { seqGlobal: 0 },
+                _id: CAJA_SEQ_ID,
+                sequenceCounters: { ...legacyCounters },
+                migratedFrom: CAJA_ACTUAL_ID,
+                migratedAt: new Date(),
                 _createdDate: new Date(),
                 _updatedDate: new Date(),
             };
-            await wixData.insert(COLLECTIONS.CAJA_ACTUAL, seqDoc, { suppressAuth: true });
+
+            await wixData
+                .insert(COLLECTIONS.CAJA_ACTUAL, seqDoc, { suppressAuth: true })
+                .catch(async (insertErr) => {
+                    if (_isDuplicateItemError(insertErr)) {
+                        seqDoc = await wixData
+                            .get(COLLECTIONS.CAJA_ACTUAL, CAJA_SEQ_ID, { suppressAuth: true, consistentRead: true })
+                            .catch(() => null);
+                        if (!seqDoc) throw insertErr;
+                    } else {
+                        throw insertErr;
+                    }
+                });
         }
 
         const counters = seqDoc.sequenceCounters || {};
@@ -439,7 +422,7 @@ async function _getNextSequence(traceId) {
 }
 
 // ============================================================================
-// GET LAST MOVEMENT (FOR HASH CHAIN)
+// GET LAST MOVEMENT
 // ============================================================================
 
 async function _getLastMovement() {
@@ -477,7 +460,6 @@ async function _assertPeriodNotClosed(operationDate, traceId) {
 export const registerManualTransaction = webMethod(Permissions.SiteMember, async (payload) => {
     const traceId = payload?.traceId || makeTraceId("manual-tx");
     try {
-        // [RL-01] Rate limiting por resourceId para evitar abuso
         _rateLimitOrThrow(
             "cajas.registerManualTransaction",
             _safeTrim(payload?.resourceId) || "CAJA_LOCAL",
@@ -503,7 +485,6 @@ export const registerManualTransaction = webMethod(Permissions.SiteMember, async
         const resourceId = _safeTrim(payload?.resourceId || "CAJA_LOCAL");
         const transactionId = payload?.transactionId || null;
 
-        // [R2-02] Idempotencia
         if (transactionId) {
             const existingRes = await wixData
                 .query(COLLECTIONS.MOVIMIENTOS_CAJA)
@@ -518,11 +499,8 @@ export const registerManualTransaction = webMethod(Permissions.SiteMember, async
         }
 
         const operationDate = new Date().toLocaleDateString("sv-SE", { timeZone: SDK_CONFIG?.TZ || "Europe/Madrid" });
-
-        // [R2-15] Verificar que el periodo no esta cerrado
         await _assertPeriodNotClosed(operationDate, traceId);
 
-        // [REV2-03] IIFE: sin reintentos post-insert
         return await (async () => {
             const seq = await _getNextSequence(traceId);
             const lastMov = await _getLastMovement();
@@ -562,21 +540,17 @@ export const registerManualTransaction = webMethod(Permissions.SiteMember, async
                 refundId: payload?.refundId || null,
             };
 
-            // [VF-02] Payload AEAT segun especificacion oficial
             const aeatPayload = _buildAEATPayload(
                 { ...movBase, previousRecordHash },
                 generatedAt
             );
 
-            // Hash encadenado sobre el payload AEAT
             const currentRecordHash = await _computeCurrentHash(previousRecordHash, aeatPayload);
 
-            // [VF-01 + B11] Firma X.509 delegada con circuit breaker
             let digitalSignature;
             try {
                 digitalSignature = await _computeSignature(currentRecordHash, traceId);
             } catch (signErr) {
-                // [B11] Signer caido o circuit abierto: encolar recovery
                 log.warn("Fiscal signer unavailable; queuing movement", {
                     transactionId: movBase.transactionId,
                     error: signErr?.message,
@@ -608,7 +582,6 @@ export const registerManualTransaction = webMethod(Permissions.SiteMember, async
                 };
             }
 
-            // [VF-03] QR de verificacion
             const verificationQR = _generateVerificationQR(
                 movBase.invoiceNumber,
                 businessTaxId,
@@ -632,7 +605,7 @@ export const registerManualTransaction = webMethod(Permissions.SiteMember, async
 
             const saved = await wixData.insert(COLLECTIONS.MOVIMIENTOS_CAJA, movimiento, { suppressAuth: true });
             await _updateCajaActual(movimiento, traceId);
-            // [v5008.3] Non-blocking accounting projection - never fails the cash movement
+
             try {
                 projectLedgerMovementToAccounting(movimiento).catch((accErr) => {
                     log.warn("Accounting projection deferred", {
@@ -663,9 +636,6 @@ export const registerManualTransaction = webMethod(Permissions.SiteMember, async
 
 // ============================================================================
 // UPDATE CAJA ACTUAL SINGLETON
-//
-// [B8] Errores NO se silencian: se propaga a CompensacionesPendientes
-// para resincronizacion posterior.
 // ============================================================================
 
 async function _updateCajaActual(movimiento, traceId) {
@@ -703,11 +673,11 @@ async function _updateCajaActual(movimiento, traceId) {
         caja._updatedDate = new Date();
         await wixData.save(cajaCol, caja, { suppressAuth: true });
     } catch (err) {
-        // [B8] Propagar error a CompensacionesPendientes para resincronizacion
         log.error("_updateCajaActual failed; queuing resync", { traceId, error: err?.message });
         try {
             await wixData.insert(COLLECTIONS.COMPENSACIONES_PENDIENTES, {
-                _id: `REC_CAJA_SYNC_${movimiento.transactionId || Date.now()}`,
+                // FIX-49: sufijo Date.now() para evitar colision en reintentos.
+                _id: `REC_CAJA_SYNC_${movimiento.transactionId || "NA"}_${Date.now()}`,
                 kind: "RESYNC_CAJA_BALANCE",
                 transactionId: movimiento.transactionId || null,
                 amount: Number(movimiento.accountingAmount) || 0,
@@ -790,7 +760,7 @@ export async function queueFiscalRecovery(recoveryData) {
     try {
         const compCol = COLLECTIONS.COMPENSACIONES_PENDIENTES;
         await wixData.insert(compCol, {
-            _id: `REC_${recoveryData.transactionId || Date.now()}`,
+            _id: `REC_${recoveryData.transactionId || Date.now()}_${Date.now()}`,
             bookingIds: recoveryData.bookingIds || null,
             orderId: recoveryData.orderId || null,
             refundId: recoveryData.refundId || null,
@@ -845,12 +815,7 @@ export const getCashierState = webMethod(Permissions.SiteMember, async (options 
 });
 
 // ============================================================================
-// REGISTER Z CLOSING (CIERRE FISCAL DIARIO)
-//
-// [B17] Historicamente, HistoricoCierresZ aloja 3 dominios (Z_*, CLOSING_*,
-//       DOC_GESTORIA_*). cajas mantiene HISTORICO_CIERRES_Z para cierres Z
-//       diarios exclusivamente. Los otros dominios deben migrar a colecciones
-//       dedicadas (HistoricoCierresInventario, PaquetesGestoria) segun SSOT.
+// REGISTER Z CLOSING
 // ============================================================================
 
 export const registerZClosing = webMethod(Permissions.SiteMember, async (diaKey, options = {}) => {
@@ -863,7 +828,6 @@ export const registerZClosing = webMethod(Permissions.SiteMember, async (diaKey,
             return { status: "ERROR", data: null, error: { code: "INVALID_DATE", message: "Fecha invalida" } };
         }
 
-        // [R2-05] Verificar que no exista ya un cierre Z para esta fecha
         const existingZ = await wixData.get(
             COLLECTIONS.HISTORICO_CIERRES_Z,
             `Z_${cleanDiaKey}`, { suppressAuth: true }
@@ -922,7 +886,6 @@ export const registerZClosing = webMethod(Permissions.SiteMember, async (diaKey,
             taxTypeBreakdown[rate].operations++;
         }
 
-        // Verificar integridad de la cadena
         let expectedPrev = GENESIS_HASH;
         let integrityVerified = true;
         for (const mov of allMovements) {
@@ -957,17 +920,17 @@ export const registerZClosing = webMethod(Permissions.SiteMember, async (diaKey,
         });
         const closingHash = await hashSHA256(closingPayload);
 
-        // Firma X.509 delegada (misma politica que registerManualTransaction)
         let closingSignature = "";
+        let closingSignatureStatus = "SIGNED";
         try {
             closingSignature = await _computeSignature(closingHash, traceId);
         } catch (signErr) {
+            closingSignatureStatus = "PENDING_SIGNATURE";
             log.warn("Z closing signature unavailable; proceeding without signature", {
                 cleanDiaKey,
                 error: signErr?.message,
                 traceId,
             });
-            // El cierre Z se persiste sin firma; se puede encolar recovery.
             await queueFiscalRecovery({
                 transactionId: `Z_${cleanDiaKey}`,
                 amount: consolidatedTotalAmount,
@@ -1003,15 +966,16 @@ export const registerZClosing = webMethod(Permissions.SiteMember, async (diaKey,
             endRecordHash: lastMov?.currentRecordHash || GENESIS_HASH,
             movementTypeBreakdown,
             taxTypeBreakdown,
-            isIntegrityVerified: true,
+            isIntegrityVerified: closingSignatureStatus === "SIGNED",
             auditedRecordsCount: allMovements.length,
             closingHash,
             closingSignature,
+            closingSignatureStatus,
             closingSource: "CRON",
             closingSchemaVersion: LEDGER_SCHEMA_VERSION,
             timeZone: SDK_CONFIG?.TZ || "Europe/Madrid",
             closedAt: new Date(),
-            verifiedAt: new Date(),
+            verifiedAt: closingSignatureStatus === "SIGNED" ? new Date() : null,
             traceId,
             _createdDate: new Date(),
         };
@@ -1117,7 +1081,6 @@ export const registerGiftCardSale = webMethod(Permissions.SiteMember, async (pay
         const operationDate = new Date().toLocaleDateString("sv-SE", { timeZone: SDK_CONFIG?.TZ || "Europe/Madrid" });
         await _assertPeriodNotClosed(operationDate, traceId);
 
-        // [REV2-03] IIFE: sin reintentos post-insert
         return await (async () => {
             const seq = await _getNextSequence(traceId);
             const lastMov = await _getLastMovement();
@@ -1199,7 +1162,7 @@ export const registerGiftCardSale = webMethod(Permissions.SiteMember, async (pay
 
             const saved = await wixData.insert(COLLECTIONS.MOVIMIENTOS_CAJA, movimiento, { suppressAuth: true });
             await _updateCajaActual(movimiento, traceId);
-            // [v5008.3] Non-blocking accounting projection - never fails the cash movement
+
             try {
                 projectLedgerMovementToAccounting(movimiento).catch((accErr) => {
                     log.warn("Accounting projection deferred", {
@@ -1221,16 +1184,6 @@ export const registerGiftCardSale = webMethod(Permissions.SiteMember, async (pay
     }
 });
 
-// ============================================================================
-// [B10] registerGiftCardRedemption con idempotencia por redemptionId
-// del cliente o derivado determinista.
-//
-// El cliente PUEDE proporcionar `redemptionId` para garantizar idempotencia
-// exacta (retries legitimos). Si no lo proporciona, se deriva un id
-// determinista que incluye un sufijo temporal para permitir canjes
-// sucesivos legitimos de la misma tarjeta.
-// ============================================================================
-
 export const registerGiftCardRedemption = webMethod(Permissions.SiteMember, async (payload) => {
     const traceId = payload?.traceId || makeTraceId("gc-redeem");
     try {
@@ -1251,9 +1204,6 @@ export const registerGiftCardRedemption = webMethod(Permissions.SiteMember, asyn
         const serviceId = _safeTrim(payload?.serviceId);
         const bookingId = _safeTrim(payload?.bookingId);
 
-        // [B10] Idempotencia: preferir redemptionId del cliente.
-        // Si no se proporciona, derivar determinista con sufijo temporal
-        // para permitir canjes sucesivos legitimos.
         const clientRedemptionId = _safeTrim(payload?.redemptionId);
         const clientTransactionId = _safeTrim(payload?.transactionId);
         const redemptionId = clientRedemptionId ||
@@ -1296,7 +1246,6 @@ export const registerGiftCardRedemption = webMethod(Permissions.SiteMember, asyn
         const operationDate = new Date().toLocaleDateString("sv-SE", { timeZone: SDK_CONFIG?.TZ || "Europe/Madrid" });
         await _assertPeriodNotClosed(operationDate, traceId);
 
-        // [REV2-03] IIFE: sin reintentos post-insert
         return await (async () => {
             const seq = await _getNextSequence(traceId);
             const lastMov = await _getLastMovement();
@@ -1378,7 +1327,7 @@ export const registerGiftCardRedemption = webMethod(Permissions.SiteMember, asyn
 
             const saved = await wixData.insert(COLLECTIONS.MOVIMIENTOS_CAJA, movimiento, { suppressAuth: true });
             await _updateCajaActual(movimiento, traceId);
-            // [v5008.3] Non-blocking accounting projection - never fails the cash movement
+
             try {
                 projectLedgerMovementToAccounting(movimiento).catch((accErr) => {
                     log.warn("Accounting projection deferred", {
