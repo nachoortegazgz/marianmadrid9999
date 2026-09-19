@@ -257,9 +257,11 @@ export const CAJA_STATUS = Object.freeze({
 });
 
 export const ESTADO_CITA = Object.freeze({
+    PENDING: "PENDING",
     CONFIRMED: "CONFIRMED",
     PENDING_PAYMENT: "PENDING_PAYMENT",
-    CANCELED: "CANCELED",
+    CANCELLED: "CANCELLED",
+    CANCELED: "CANCELLED",
     REFUNDED: "REFUNDED",
 });
 
