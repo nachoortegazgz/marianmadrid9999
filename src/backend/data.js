@@ -1,10 +1,19 @@
 /*
 =============================================================================
 MODULE: backend/data.js
-VERSION: v5008.3-FINAL (hooks SSOT aligned)
+VERSION: v5008.4-FINAL (hooks SSOT aligned)
 BASE: BIBLIA v5002.5 + ESQUEMA CMS v5002.5 + DOSSIER CAJA
 RESPONSIBILITY: Hooks de inmutabilidad y validacion para Wix Data.
 STANDARDS: G10 ASCII Strict.
+
+FIXES APLICADOS v5008.4:
+  - FIX-50: eliminados hooks de EventosSistemaFacturacion (coleccion
+            eliminada del SSOT en CLEAN-02 de cajas.web.js).
+  - FIX-51: HistoricoCierresZ_beforeUpdate permite actualizacion quirurgica
+            UNICAMENTE de campos de firma (closingSignature,
+            closingSignatureStatus, verifiedAt, _updatedDate) para que el
+            recovery fiscal pueda firmar un cierre persistido sin firma.
+            Cualquier otro cambio sigue bloqueado con FISCAL_VIOLATION.
 =============================================================================
 */
 
@@ -22,6 +31,15 @@ const GUID_PATTERN =
 const IMMUTABLE_ENTRY_STATUSES = new Set([
     "POSTED",
     "LOCKED",
+]);
+
+// FIX-51: campos permitidos en update quirurgico de un cierre Z persistido
+// sin firma. El recovery fiscal los rellena tras firmar.
+const ALLOWED_Z_UPDATE_FIELDS = new Set([
+    "closingSignature",
+    "closingSignatureStatus",
+    "verifiedAt",
+    "_updatedDate",
 ]);
 
 // =============================================================================
@@ -78,12 +96,28 @@ export function MovimientosCaja_beforeRemove() {
 
 // =============================================================================
 // BLOQUE 2 - CIERRES Z
+// [FIX-51] Update quirurgico permitido solo para campos de firma.
 // =============================================================================
 
-export function HistoricoCierresZ_beforeUpdate() {
-    _fiscalError(
-        "Modificacion de HistoricoCierresZ prohibida por normativa fiscal"
+export function HistoricoCierresZ_beforeUpdate(item, context) {
+    const previous = context?.original || {};
+    const changes = Object.keys(item || {}).filter((key) => {
+        const before = previous[key];
+        const after = item[key];
+        return String(before) !== String(after);
+    });
+
+    const onlySignatureFields = changes.every((key) =>
+        ALLOWED_Z_UPDATE_FIELDS.has(key)
     );
+
+    if (!onlySignatureFields) {
+        _fiscalError(
+            "Modificacion de HistoricoCierresZ prohibida. Solo se permite actualizar closingSignature/closingSignatureStatus desde recovery."
+        );
+    }
+
+    return item;
 }
 
 export function HistoricoCierresZ_beforeRemove() {
@@ -93,20 +127,12 @@ export function HistoricoCierresZ_beforeRemove() {
 }
 
 // =============================================================================
-// BLOQUE 3 - EVENTOS DEL SISTEMA DE FACTURACION
+// BLOQUE 3 - [FIX-50] HOOKS OBSOLETOS ELIMINADOS
+//
+// EventosSistemaFacturacion fue eliminada del SSOT (CLEAN-02 en cajas.web.js).
+// Los hooks no se ejecutaban porque la coleccion no existe, y contaminaban
+// el archivo. Eliminados: EventosSistemaFacturacion_beforeUpdate / _beforeRemove.
 // =============================================================================
-
-export function EventosSistemaFacturacion_beforeUpdate() {
-    _fiscalError(
-        "Modificacion de EventosSistemaFacturacion prohibida"
-    );
-}
-
-export function EventosSistemaFacturacion_beforeRemove() {
-    _fiscalError(
-        "Borrado de EventosSistemaFacturacion prohibido"
-    );
-}
 
 // =============================================================================
 // BLOQUE 4 - REGISTROS HORARIOS
@@ -329,7 +355,6 @@ export async function LineasAsientoContable_beforeRemove(item) {
     return _validateAccountingLineParent(item);
 }
 
-// [v5008.3] SSOT collection name used by contabilidad.js
 export async function LibroAsientosContablesDetalle_beforeUpdate(item) {
     return _validateAccountingLineParent(item);
 }
@@ -337,7 +362,6 @@ export async function LibroAsientosContablesDetalle_beforeUpdate(item) {
 export async function LibroAsientosContablesDetalle_beforeRemove(item) {
     return _validateAccountingLineParent(item);
 }
-
 
 async function _validateAccountingLineParent(item = {}) {
     const journalEntryId = _safeTrim(
@@ -371,8 +395,9 @@ async function _validateAccountingLineParent(item = {}) {
 // BLOQUE 10 - SECUENCIA DE TICKETS
 // =============================================================================
 
-// [v5008.3] SecuenciaTickets removed from SSOT COLLECTIONS.
-// Keep hook as no-op so CMS residual collection does not crash data layer.
+// DEPRECATED: SecuenciaTickets ya no esta en SSOT COLLECTIONS.
+// No-op para evitar crash si la coleccion residual existe en CMS.
+// Eliminar cuando se confirme que la coleccion se ha borrado.
 export async function SecuenciaTickets_beforeUpdate(item) {
     return item;
 }
