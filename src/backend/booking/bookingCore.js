@@ -334,7 +334,10 @@ export async function getCheckoutUrlSafe(checkoutSessionOrId) {
 // BLOQUE 8 - MUTEX LOCKS (SlotLocks)
 // =============================================================================
 
-const MUTEX_TTL_MS = Number(CONCURRENCY?.MUTEX_TTL_MS) || 300000;
+const MUTEX_TTL_MS = Number(CONCURRENCY?.MUTEX_TTL_MS);
+if (!Number.isFinite(MUTEX_TTL_MS) || MUTEX_TTL_MS <= 0) {
+    throw new Error("MUTEX_TTL_MS must be positive");
+}
 const LOCKS_COL = COLLECTIONS.SLOT_LOCKS;
 
 export function _safeLockId(key) {
@@ -365,7 +368,7 @@ function _buildLockDocument(slotClave, lockOwnerId, ttlMs, existing) {
         ...(existing || {}),
         _id: _safeLockId(slotClave),
         slotKey: String(slotClave),
-        traceId: String(lockOwnerId || makeTraceId("lock")),
+        lockOwnerId: String(lockOwnerId || makeTraceId("lock")),
         expiresAt: new Date(Date.now() + (Number(ttlMs) || MUTEX_TTL_MS)),
         _createdDate: existing?._createdDate ? _toDateSafe(existing._createdDate) || now : now,
         _updatedDate: now,
@@ -386,7 +389,7 @@ export async function _lockSlotKeyOrFail(slotClave, lockOwnerId, ttlMs) {
             return { ok: false, message: error?.message || "Lock acquisition failed" };
         }
         const existing = await _getLock(k);
-        if (existing?.traceId === owner) {
+        if (existing?.lockOwnerId === owner) {
             const renewed = await _renewLock(k, owner, ttlMs);
             return renewed.ok ? { ok: true, renewed: true } : { ok: false, message: "LOCK_RENEWAL_FAILED" };
         }
@@ -409,7 +412,7 @@ export async function _unlockSlotKey(slotClave, lockOwnerId) {
     const owner = String(lockOwnerId || "").trim();
     const existing = await _getLock(slotClave);
     if (!existing) return { ok: true, missing: true };
-    if (!owner || existing.traceId !== owner) return { ok: false, skipped: true };
+    if (!owner || existing.lockOwnerId !== owner) return { ok: false, skipped: true };
     await wixData.remove(LOCKS_COL, existing._id, { suppressAuth: true });
     return { ok: true };
 }
@@ -418,7 +421,7 @@ export async function _renewLock(slotClave, lockOwnerId, ttlMs) {
     try {
         const owner = String(lockOwnerId || "").trim();
         const existing = await _getLock(slotClave);
-        if (!existing || !owner || existing.traceId !== owner) return { ok: false };
+        if (!existing || !owner || existing.lockOwnerId !== owner) return { ok: false };
         await wixData.update(LOCKS_COL, _buildLockDocument(slotClave, owner, ttlMs, existing), { suppressAuth: true });
         return { ok: true };
     } catch (error) {
@@ -434,8 +437,11 @@ export async function _renewLock(slotClave, lockOwnerId, ttlMs) {
 export function _generateSlotKey(serviceId, resourceId, startDate, endDate) {
     const startUtc = startDate instanceof Date ? startDate : getUtcDateFromMadridLocal(startDate);
     const endUtc = endDate instanceof Date ? endDate : getUtcDateFromMadridLocal(endDate);
-    const startEpochMin = startUtc ? Math.floor(startUtc.getTime() / 60000) : 0;
-    const endEpochMin = endUtc ? Math.floor(endUtc.getTime() / 60000) : 0;
+    if (!startUtc || !endUtc || endUtc.getTime() <= startUtc.getTime()) {
+        throw createBookingError(ERROR_CODES.INVALID_DATES, "Invalid slot dates for lock key");
+    }
+    const startEpochMin = Math.floor(startUtc.getTime() / 60000);
+    const endEpochMin = Math.floor(endUtc.getTime() / 60000);
     const raw = String(serviceId || "").trim() + "|" + String(resourceId || "").trim() + "|" + startEpochMin + "|" + endEpochMin;
     const prefix = serviceId ? String(serviceId).slice(0, 8) : "srv";
     const staffPrefix = resourceId ? String(resourceId).slice(0, 8) : "nostaff";
@@ -514,13 +520,13 @@ export async function _initTransaction(pairToken, payloadHash, traceId) {
             if (String(existing.payloadHash || "") !== String(payloadHash || "")) {
                 return { success: false, error: "PAIR_TOKEN_PAYLOAD_MISMATCH" };
             }
-            return { success: true, isNew: false, existing, timeout: true };
+            return { success: false, error: "TRANSACTION_TIMEOUT", existing, timeout: true };
         }
         return { success: false, error: "TRANSACTION_TIMEOUT" };
     }
 }
 
-export async function _completeTransaction(pairToken, result) {
+export async function _completeTransaction(pairToken, result, traceId) {
     const id = String(pairToken || "");
     if (!id) return;
     const existing = await _getTransactionById(id);
@@ -531,6 +537,7 @@ export async function _completeTransaction(pairToken, result) {
         pairToken: id,
         status: "COMPLETED",
         result,
+        ownerTraceId: String(traceId || existing?.ownerTraceId || ""),
         _updatedDate: new Date(),
         _createdDate: existing?._createdDate || new Date(),
     };
