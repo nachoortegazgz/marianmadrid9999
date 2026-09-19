@@ -5,8 +5,10 @@ VERSION: v5007.4-FINAL
 CORRECTIONS: LOG-01 sin global, LOG-03 PII recursiva con enmascarado real
 FIXES APLICADOS v5007.4:
   - FIX-44: import de mmUtils via alias "public/mmUtils" en lugar de ruta
-            relativa "../../public/mmUtils.js". Evita fallo de resolucion
-            en el bundler de Velo.
+            relativa. Evita fallo de resolucion en el bundler de Velo.
+  - FIX-45: sanitizeValue limpia el WeakSet tras procesar cada nodo,
+            evitando falsos positivos [Circular] en objetos referenciados
+            dos veces en ramas distintas (no ciclicas).
 =============================================================================
 */
 import { makeTraceId, _maskEmail, _maskPhone, _maskName } from "public/mmUtils";
