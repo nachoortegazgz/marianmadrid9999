@@ -1205,7 +1205,7 @@ export async function executeBookingSaga(unsafePayload) {
             };
 
             try {
-                await _completeTransaction(pairToken, finalResult);
+                await _completeTransaction(pairToken, finalResult, traceId);
             } catch (completeErr) {
                 log.error("_completeTransaction failed; compensating full saga", {
                     pairToken,
