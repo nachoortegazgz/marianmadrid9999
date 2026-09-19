@@ -1,14 +1,17 @@
 /*
 =============================================================================
 MODULE: backend/citasManager.web.js
-VERSION: v5008.3-ALIGNED
+VERSION: v5008.4-ALIGNED
 RESPONSIBILITY: Booking processing, payment confirmation and rescheduling.
 STANDARDS: G10 ASCII Strict.
 
 FIXES APPLIED (audit v5008.3 / v5008.4 / v5008.5):
   - FIX-15: Validacion de MAX_DUAL_GAP_MINUTES en _revalidateDualInputSlots.
-            Se rechaza cualquier par F1/F2 cuyo gap supere el maximo
-            configurado en SLOT_SEARCH.MAX_DUAL_GAP_MINUTES (fallback 120).
+  - FIX-16: Conversion correcta de fechas locales Madrid a UTC en la
+            validacion temporal de F1/F2. Se usa getUtcDateFromMadridLocal
+            en lugar de new Date(...), que interpretaba el string local
+            sin zona como hora del servidor Wix (UTC), desplazando el
+            calculo del gap hasta +/-2 horas segun DST.
 =============================================================================
 */
 
@@ -32,6 +35,7 @@ import {
   _looksLikeGuid,
   _normalizeLocalIsoStr,
   _readPositiveAmount,
+  getUtcDateFromMadridLocal,
   withTimeout
 } from "public/mmUtils";
 
@@ -948,22 +952,31 @@ async function _revalidateDualInputSlots(
     );
   }
 
-  const f1StartUtc =
-    new Date(
-      slotF1Input.localStartDate
-    );
+  /**
+   * FIX-16: Conversion correcta de hora local Madrid a Date UTC.
+   *
+   * _normalizeLocalIsoStr devuelve strings "YYYY-MM-DDTHH:MM:SS" sin
+   * zona. Usar new Date(...) sobre ese string lo interpretaba como hora
+   * del runtime (habitualmente UTC), desplazando el calculo hasta +/-2
+   * horas segun DST. getUtcDateFromMadridLocal interpreta el string como
+   * hora de Madrid y devuelve el Date UTC correcto (o null si es invalido).
+   */
+  const f1StartUtc = getUtcDateFromMadridLocal(
+    slotF1Input.localStartDate
+  );
 
-  const f1EndUtc =
-    new Date(
-      slotF1Input.localEndDate
-    );
+  const f1EndUtc = getUtcDateFromMadridLocal(
+    slotF1Input.localEndDate
+  );
 
-  const f2StartUtc =
-    new Date(
-      slotF2Input.localStartDate
-    );
+  const f2StartUtc = getUtcDateFromMadridLocal(
+    slotF2Input.localStartDate
+  );
 
   if (
+    !f1StartUtc ||
+    !f1EndUtc ||
+    !f2StartUtc ||
     Number.isNaN(f1StartUtc.getTime()) ||
     Number.isNaN(f1EndUtc.getTime()) ||
     Number.isNaN(f2StartUtc.getTime())
@@ -988,9 +1001,7 @@ async function _revalidateDualInputSlots(
 
   /**
    * FIX-15: Validar que el gap entre F1 y F2 no supere el maximo
-   * permitido. Si el gap es mayor, se rechaza la reserva dual.
-   *
-   * Rango valido: 0 <= gapMinutes <= MAX_DUAL_GAP_MINUTES.
+   * permitido.
    */
   const gapMinutes =
     (f2StartUtc.getTime() - f1EndUtc.getTime()) / 60000;
