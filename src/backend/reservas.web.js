@@ -1,9 +1,16 @@
 /**
  * ============================================================================
  * FILE: backend/reservas.web.js
- * VERSION: v5008.2-ALIGNED
+ * VERSION: v5008.3-ALIGNED-FIXED
  * RESPONSIBILITY: Availability engine, dual slots, staff pairing and caching.
  * STANDARDS: G10 ASCII Strict.
+ *
+ * FIXES APPLIED (audit v5008.2):
+ *  - FIX-1: _resolveServiceIdInternal now validates GUID against ServiciosCatalogo.
+ *  - FIX-2: F2 duration is resolved from the linked service (linkedPhases).
+ *  - FIX-3: revalidateExactAvailabilitySlot validates slot duration vs service.
+ *  - FIX-4: _getResourceIdsFromSlot prioritizes staff resource group.
+ *  - FIX-5: _mapServiceImport2ToUX returns normalized totalDuration.
  * ============================================================================
  */
 
@@ -308,6 +315,11 @@ function _normalizeResourceIds(resourceId, traceId) {
   return [];
 }
 
+/**
+ * FIX-4: Prioriza siempre el grupo de recursos de personal.
+ * Solo acepta resource.id directo como fallback cuando NO hay grupos
+ * disponibles (caso en el que la API ya fue filtrada por includeResourceTypeIds).
+ */
 function _getResourceIdsFromSlot(slot) {
   const normalizedSlot = _normalizeSlotShape(slot);
 
@@ -325,55 +337,44 @@ function _getResourceIdsFromSlot(slot) {
     Array.isArray(normalizedSlot.slot.availableResources)
   ) {
     groups = normalizedSlot.slot.availableResources;
-  } else if (
-    normalizedSlot.resource?.id ||
-    normalizedSlot.resource?._id
-  ) {
-    const id =
-      normalizedSlot.resource.id ||
-      normalizedSlot.resource._id;
-
-    return _looksLikeGuid(String(id))
-      ? [String(id)]
-      : [];
-  } else if (normalizedSlot.resource?.resourceId) {
-    const id = normalizedSlot.resource.resourceId;
-
-    return _looksLikeGuid(String(id))
-      ? [String(id)]
-      : [];
-  } else if (normalizedSlot.resourceId) {
-    return _looksLikeGuid(
-      String(normalizedSlot.resourceId)
-    )
-      ? [String(normalizedSlot.resourceId)]
-      : [];
   }
 
-  const staffGroup = groups.find(
-    (group) =>
-      String(group.resourceTypeId) ===
-      String(STAFF_RESOURCE_TYPE_ID)
-  );
+  if (groups.length > 0) {
+    const staffGroup = groups.find(
+      (group) =>
+        String(group?.resourceTypeId) ===
+        String(STAFF_RESOURCE_TYPE_ID)
+    );
 
-  if (!staffGroup) return [];
+    if (!staffGroup) return [];
 
-  return Array.from(
-    new Set(
-      (staffGroup.resources || [])
-        .map((resource) =>
-          _safeTrim(
-            resource?.id ||
-            resource?._id ||
-            resource?.resourceId
+    return Array.from(
+      new Set(
+        (staffGroup.resources || [])
+          .map((resource) =>
+            _safeTrim(
+              resource?.id ||
+              resource?._id ||
+              resource?.resourceId
+            )
           )
-        )
-        .filter((resourceId) =>
-          _looksLikeGuid(resourceId)
-        )
-    )
+          .filter((resourceId) =>
+            _looksLikeGuid(resourceId)
+          )
+      )
+    );
+  }
+
+  const directId = _safeTrim(
+    normalizedSlot.resource?.id ||
+    normalizedSlot.resource?._id ||
+    normalizedSlot.resource?.resourceId ||
+    normalizedSlot.resourceId
   );
+
+  return _looksLikeGuid(directId) ? [directId] : [];
 }
+
 function _minutesBetweenUtcDates(a, b) {
   if (!(a instanceof Date) || !(b instanceof Date)) {
     return 0;
@@ -618,23 +619,24 @@ export async function _getServiceBySlugOrIdInternal(
   }
 }
 
-export async function _resolveServiceIdInternal(
-  serviceIdReq
-) {
+/**
+ * FIX-1: Ya no acepta GUID sin validar. Siempre pasa por el catálogo
+ * (_getServiceBySlugOrIdInternal) para confirmar existencia y obtener
+ * el serviceId canonico.
+ */
+export async function _resolveServiceIdInternal(serviceIdReq) {
   const raw = _safeTrim(serviceIdReq);
 
   if (!raw) return null;
 
-  if (_looksLikeGuid(raw)) {
-    return raw;
-  }
+  const key = _looksLikeGuid(raw)
+    ? raw
+    : _safeSlugOrId(raw);
 
-  const normalized = _safeSlugOrId(raw);
-
-  if (!normalized) return null;
+  if (!key) return null;
 
   const result =
-    await _getServiceBySlugOrIdInternal(normalized);
+    await _getServiceBySlugOrIdInternal(key);
 
   if (
     result?.status === "SUCCESS" &&
@@ -708,12 +710,51 @@ export async function _mapServiceImport2ToUX(
     )
   ) || 0;
 
-  const phase2Duration = Number(
+  /**
+   * FIX-2: La duracion real de F2 debe proceder del servicio enlazado
+   * (linkedPhases), no de un campo local potencialmente desactualizado.
+   * Si el servicio enlazado no se puede resolver, se conserva el valor
+   * del CMS como fallback controlado.
+   */
+  let phase2Duration = Number(
     _readImport2Field(
       service,
       "phase2Duration"
     )
   ) || 0;
+
+  if (allowCombine && _looksLikeGuid(linkedPhases)) {
+    try {
+      const linkedResult =
+        await _getServiceBySlugOrIdInternal(
+          linkedPhases,
+          traceId
+        );
+
+      if (
+        linkedResult?.status === "SUCCESS" &&
+        linkedResult?.data
+      ) {
+        const linked = linkedResult.data;
+
+        const linkedDuration = Number(
+          linked.phase1Duration ||
+          linked.totalDuration ||
+          linked.metadata?.timing?.estimatedTotal ||
+          0
+        ) || 0;
+
+        if (linkedDuration > 0) {
+          phase2Duration = linkedDuration;
+        }
+      }
+    } catch (_) {
+      log.warn(
+        "FIX-2: No se pudo resolver duracion de F2 desde linkedPhases",
+        { traceId, serviceId, linkedPhases }
+      );
+    }
+  }
 
   const totalDuration = Number(
     _readImport2Field(
@@ -904,7 +945,8 @@ export async function _mapServiceImport2ToUX(
     phase1Duration,
     exposureDuration,
     phase2Duration,
-    totalDuration,
+    // FIX-5: totalDuration normalizado (evita 0 cuando el CMS viene vacio).
+    totalDuration: estimatedTotal,
     hidden,
 
     metadata: {
@@ -936,6 +978,7 @@ export async function _mapServiceImport2ToUX(
     }
   };
 }
+
 export async function getServiceForBookingInternal(
   serviceId,
   traceId = null
@@ -1251,6 +1294,65 @@ export async function revalidateExactAvailabilitySlot({
             "Selected staff is no longer available."
         }
       };
+    }
+
+    /**
+     * FIX-3: Validar que la duracion del slot revalidado coincida con la
+     * duracion esperada del servicio (incluidos addons). Evita aceptar
+     * slots con duraciones inconsistentes cuando hay nativeAddonIds.
+     */
+    const serviceConfig =
+      await _getServiceBySlugOrIdInternal(
+        resolvedServiceId,
+        activeTraceId
+      );
+
+    if (
+      serviceConfig?.status === "SUCCESS" &&
+      serviceConfig?.data
+    ) {
+      const expectedMinutes = Number(
+        serviceConfig.data.metadata?.timing
+          ?.estimatedTotal ||
+        serviceConfig.data.totalDuration ||
+        0
+      );
+
+      if (expectedMinutes > 0) {
+        const startUtc = getUtcDateFromMadridLocal(start);
+        const endUtc = getUtcDateFromMadridLocal(end);
+
+        const actualMinutes =
+          _minutesBetweenUtcDates(startUtc, endUtc);
+
+        if (
+          actualMinutes > 0 &&
+          Math.abs(actualMinutes - expectedMinutes) > 1
+        ) {
+          log.warn(
+            "FIX-3: Slot duration mismatch",
+            {
+              traceId: activeTraceId,
+              serviceId: String(resolvedServiceId),
+              expectedMinutes,
+              actualMinutes,
+              start,
+              end
+            }
+          );
+
+          return {
+            status: "ERROR",
+            data: null,
+            error: {
+              code: "SLOT_DURATION_MISMATCH",
+              message:
+                "Selected slot duration does not match service configuration.",
+              traceId: activeTraceId
+            }
+          };
+        }
+      }
     }
 
     return {
