@@ -1,7 +1,25 @@
 /**
  * MODULE: pages/calendario-2.js
- * VERSION: v5003.3-FUNCTIONAL
+ * VERSION: v5003.6-FUNCTIONAL
  * STANDARDS: G10 ASCII Strict, Velo Native Optimized.
+ *
+ * CORRECTIONS APPLIED (v5003.4):
+ *  - C1..C6 (ver version anterior).
+ *
+ * CORRECTIONS APPLIED (v5003.5):
+ *  - C7: reply() recibe payload como 3er argumento.
+ *  - C8: Eliminada variable local `message` en catch de handleBooking.
+ *
+ * CORRECTIONS APPLIED (v5003.6):
+ *  - C9:  Disponibilidad separada simple vs dual. `getCertifiedDualSlots`
+ *         solo se usa cuando allowCombine === true. Para single se usa
+ *         `getAvailableSlots`.
+ *  - C10: Guard currentService en AVAIL, SELECT y BOOK.
+ *         Respuesta SERVICE_CONTEXT_NOT_READY si aun no esta cargado.
+ *  - C11: Eliminado DEFAULT_SERVICE_IMAGE. imageUrl = "" si no hay real.
+ *  - C12: Filtro de addonIds contra currentService.metadata.addons.
+ *         Se aplica en AVAIL, SELECT y BOOK.
+ *  - C13: Validacion de slotF2 en handleBooking cuando allowCombine.
  */
 
 import wixLocation from "wix-location";
@@ -10,6 +28,7 @@ import wixWindow from "wix-window";
 import {
   getServiceBySlugOrId,
   getAvailableDays,
+  getAvailableSlots,
   getCertifiedDualSlots,
   resolveStaffForSlot
 } from "backend/reservas.web";
@@ -28,13 +47,14 @@ import {
 import { createWidgetBridge } from "public/widgetBridge";
 import { processDualBooking } from "backend/citasManager.web";
 
-const DEFAULT_SERVICE_IMAGE =
-  "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 800'><rect width='1200' height='800' fill='%23e9e2d9'/><circle cx='900' cy='170' r='210' fill='%23d8bea0'/><rect x='105' y='180' width='530' height='450' rx='30' fill='%23f7f3ee'/><text x='160' y='420' fill='%23342b24' font-family='Georgia' font-size='68'>MARIAN</text><text x='160' y='500' fill='%23342b24' font-family='Georgia' font-size='68'>MADRID</text></svg>";
-
 let currentServiceId = null;
 let currentSlugUrl = null;
 let currentService = null;
 let bridge = null;
+
+// =============================================================================
+// PARSEO DE URL
+// =============================================================================
 
 function parseUrlParams() {
   const query = wixLocation.query || {};
@@ -70,6 +90,10 @@ function resolveServiceFromParams(params) {
 
   return null;
 }
+
+// =============================================================================
+// HELPERS DE MENSAJE
+// =============================================================================
 
 function getMessageType(message) {
   return String(
@@ -107,15 +131,58 @@ function getResponseType(type) {
   return type || MESSAGE_TYPES.BOOK;
 }
 
+/**
+ * C12: Filtra addonIds conservando solo los permitidos por el servicio.
+ *
+ * Lee currentService.metadata.addons y acepta tanto `id` como `nativeId`
+ * de cada addon. Devuelve [] si el servicio no expone addons.
+ */
+function filterAllowedAddonIds(service, requestedAddonIds) {
+  if (!Array.isArray(requestedAddonIds) || requestedAddonIds.length === 0) {
+    return [];
+  }
+
+  const addons = Array.isArray(service?.metadata?.addons)
+    ? service.metadata.addons
+    : [];
+
+  if (addons.length === 0) {
+    return [];
+  }
+
+  const allowed = new Set();
+
+  for (const addon of addons) {
+    const id = _safeTrim(addon?.id);
+    if (id) allowed.add(id);
+
+    const nativeId = _safeTrim(addon?.nativeId);
+    if (nativeId) allowed.add(nativeId);
+  }
+
+  return requestedAddonIds
+    .map((id) => _safeTrim(id))
+    .filter((id) => id && allowed.has(id));
+}
+
+// =============================================================================
+// CONTEXTO DE SERVICIO
+// =============================================================================
+
+/**
+ * C2 + C11: Carga y valida el servicio activo.
+ * - Valida serviceId como GUID.
+ * - imageUrl puede ser "" si no hay imagen real (sin data URL fabricado).
+ */
 async function loadServiceContext(params) {
   const lookup = currentServiceId || currentSlugUrl;
-
   const result = await getServiceBySlugOrId(lookup);
 
   if (
     !result ||
     result.status !== "SUCCESS" ||
-    !result.data
+    !result.data ||
+    typeof result.data !== "object"
   ) {
     throw new Error(
       result?.error?.message ||
@@ -123,13 +190,28 @@ async function loadServiceContext(params) {
     );
   }
 
-  currentService = result.data;
+  const serviceId = _safeTrim(
+    result.data.serviceId || currentServiceId
+  );
+
+  if (!_looksLikeGuid(serviceId)) {
+    throw new Error("El servicio no tiene un identificador valido.");
+  }
+
+  currentService = {
+    ...result.data,
+    serviceId
+  };
 
   const metadata = result.data.metadata || {};
+  const imageUrl = _safeTrim(
+    result.data.imageUrl ||
+    metadata.imageUrl ||
+    ""
+  );
 
   return {
-    ...result.data,
-    serviceId: result.data.serviceId || currentServiceId,
+    ...currentService,
     slugUrl: result.data.slugUrl || currentSlugUrl,
     referral: params.referral,
     preselectedAddonIds: params.addonIds,
@@ -139,19 +221,17 @@ async function loadServiceContext(params) {
       metadata.currency ||
       metadata.pricing?.currency ||
       "EUR",
-    imageUrl:
-      result.data.imageUrl ||
-      metadata.imageUrl ||
-      DEFAULT_SERVICE_IMAGE,
+    imageUrl,
     metadata: {
       ...metadata,
-      imageUrl:
-        metadata.imageUrl ||
-        result.data.imageUrl ||
-        DEFAULT_SERVICE_IMAGE
+      imageUrl
     }
   };
 }
+
+// =============================================================================
+// NAVEGACION
+// =============================================================================
 
 async function handleNavigation(payload) {
   const target = _safeTrim(
@@ -176,41 +256,85 @@ async function handleNavigation(payload) {
   return false;
 }
 
+// =============================================================================
+// DISPONIBILIDAD
+// =============================================================================
+
+/**
+ * C9 + C10 + C12: Disponibilidad separada simple vs dual.
+ *  - Guard currentService.
+ *  - addonIds filtrados contra el servicio.
+ *  - `days` vale para ambos modos.
+ *  - `slots` bifurca segun allowCombine.
+ */
 async function handleAvailability(payload, reply) {
+  // C10: guard de contexto.
+  if (!currentService) {
+    reply(
+      MESSAGE_TYPES.AVAIL,
+      createResultError(
+        "SERVICE_CONTEXT_NOT_READY",
+        "El servicio todavía se está cargando."
+      ),
+      payload
+    );
+    return;
+  }
+
   const action = _safeTrim(
     payload.action || ""
   ).toLowerCase();
 
-  const addonIds = Array.isArray(payload.addonIds)
-    ? payload.addonIds
-    : [];
+  // C12: filtrado de addons contra el servicio cargado.
+  const addonIds = filterAllowedAddonIds(
+    currentService,
+    Array.isArray(payload.addonIds) ? payload.addonIds : []
+  );
+
+  const timeoutMs =
+    UI?.FRONTEND_API_TIMEOUT_MS || 60000;
 
   let result;
 
   try {
     if (action === "days") {
       result = await withTimeout(
-        getAvailableDays(
+        () => getAvailableDays(
           currentServiceId || currentSlugUrl,
           payload.resourceId || null,
           Number(payload.year),
           Number(payload.month),
           addonIds
         ),
-        UI?.FRONTEND_API_TIMEOUT_MS || 60000,
+        timeoutMs,
         "getAvailableDays"
       );
     } else if (action === "slots") {
-      result = await withTimeout(
-        getCertifiedDualSlots(
-          currentServiceId || currentSlugUrl,
-          payload.resourceId || null,
-          _safeTrim(payload.dateYMD || ""),
-          addonIds
-        ),
-        UI?.FRONTEND_API_TIMEOUT_MS || 60000,
-        "getCertifiedDualSlots"
-      );
+      if (currentService.allowCombine === true) {
+        // Dual: usa getCertifiedDualSlots.
+        result = await withTimeout(
+          () => getCertifiedDualSlots(
+            currentServiceId || currentSlugUrl,
+            payload.resourceId || null,
+            _safeTrim(payload.dateYMD || ""),
+            addonIds
+          ),
+          timeoutMs,
+          "getCertifiedDualSlots"
+        );
+      } else {
+        // Single: usa getAvailableSlots.
+        result = await withTimeout(
+          () => getAvailableSlots(
+            currentServiceId || currentSlugUrl,
+            payload.resourceId || null,
+            _safeTrim(payload.dateYMD || ""),
+            addonIds
+          ),
+          timeoutMs,
+          "getAvailableSlots"
+        );
+      }
     } else {
       result = createResultError(
         "INVALID_AVAILABILITY_REQUEST",
@@ -238,31 +362,65 @@ async function handleAvailability(payload, reply) {
   );
 }
 
+// =============================================================================
+// SELECCION
+// =============================================================================
+
+/**
+ * C3 + C10 + C12: Validacion de slot y resolucion de staff.
+ */
 async function handleSelection(payload, reply) {
-  const start = _safeTrim(
-    payload.localStartDate || ""
-  );
-
-  if (!start) {
-    const result = createResultError(
-      "INVALID_SLOT",
-      "El horario seleccionado no es valido."
+  // C10: guard de contexto.
+  if (!currentService) {
+    reply(
+      MESSAGE_TYPES.SELECT,
+      createResultError(
+        "SERVICE_CONTEXT_NOT_READY",
+        "El servicio todavía se está cargando."
+      ),
+      payload
     );
-
-    reply(MESSAGE_TYPES.SELECT, result, payload);
     return;
   }
 
+  const start = _safeTrim(
+    payload.localStartDate ||
+    payload.slotF1?.localStartDate ||
+    ""
+  );
+
+  const end = _safeTrim(
+    payload.localEndDate ||
+    payload.slotF1?.localEndDate ||
+    ""
+  );
+
+  if (!start || !end) {
+    reply(
+      MESSAGE_TYPES.SELECT,
+      createResultError(
+        "INVALID_SLOT",
+        "El intervalo seleccionado no es valido."
+      ),
+      payload
+    );
+    return;
+  }
+
+  // C12: filtrado de addons.
+  const addonIds = filterAllowedAddonIds(
+    currentService,
+    Array.isArray(payload.addonIds) ? payload.addonIds : []
+  );
+
   try {
     const result = await withTimeout(
-      resolveStaffForSlot(
+      () => resolveStaffForSlot(
         currentServiceId || currentSlugUrl,
         start,
         payload.resourceId || null,
-        Array.isArray(payload.addonIds)
-          ? payload.addonIds
-          : [],
-        null
+        addonIds,
+        end
       ),
       UI?.FRONTEND_API_TIMEOUT_MS || 60000,
       "resolveStaffForSlot"
@@ -280,17 +438,46 @@ async function handleSelection(payload, reply) {
     reply(
       MESSAGE_TYPES.SELECT,
       createResultError(
-        "STAFF_RESOLVE_FAILED",
-        error?.message ||
-        "No se pudo validar el profesional."
+        error?.code === "TIMEOUT"
+          ? "STAFF_RESOLVE_TIMEOUT"
+          : "STAFF_RESOLVE_FAILED",
+        error?.code === "TIMEOUT"
+          ? "La validacion esta tardando demasiado."
+          : "No se pudo validar el profesional."
       ),
       payload
     );
   }
 }
 
+// =============================================================================
+// RESERVA
+// =============================================================================
+
+/**
+ * C4 + C5 + C7 + C8 + C10 + C12 + C13:
+ * - Guard currentService.
+ * - Fuerza serviceId/slugUrl.
+ * - Valida slotF2 si allowCombine.
+ * - Filtra addonIds.
+ * - reply(payload).
+ * - Mensaje de timeout sin invitar a reenviar.
+ */
 async function handleBooking(message, reply, traceId) {
   const payload = getPayload(message);
+
+  // C10: guard de contexto.
+  if (!currentService) {
+    reply(
+      MESSAGE_TYPES.BOOK,
+      createResultError(
+        "SERVICE_CONTEXT_NOT_READY",
+        "El servicio todavía se está cargando."
+      ),
+      payload
+    );
+    return;
+  }
 
   const bookingData =
     payload.bookingData &&
@@ -302,29 +489,58 @@ async function handleBooking(message, reply, traceId) {
     !bookingData ||
     typeof bookingData !== "object"
   ) {
-    const result = createResultError(
-      "INVALID_BOOKING_PAYLOAD",
-      "Los datos de la reserva no son validos."
+    reply(
+      MESSAGE_TYPES.BOOK,
+      createResultError(
+        "INVALID_BOOKING_PAYLOAD",
+        "Los datos de la reserva no son validos."
+      ),
+      payload
     );
-
-    reply(MESSAGE_TYPES.BOOK, result, message);
     return;
   }
 
+  // C13: validacion de F2 en duales.
+  if (currentService.allowCombine === true) {
+    const f2 = bookingData.slotF2;
+
+    const f2Start = _safeTrim(f2?.localStartDate);
+    const f2End = _safeTrim(f2?.localEndDate);
+
+    if (!f2 || !f2Start || !f2End) {
+      reply(
+        MESSAGE_TYPES.BOOK,
+        createResultError(
+          "INVALID_DUAL_SLOT",
+          "Falta el horario de la segunda fase."
+        ),
+        payload
+      );
+      return;
+    }
+  }
+
+  // C12: filtrado de addons.
+  const rawAddonIds = Array.isArray(bookingData.addonIds)
+    ? bookingData.addonIds
+    : [];
+
+  const addonIds = filterAllowedAddonIds(
+    currentService,
+    rawAddonIds
+  );
+
   const requestPayload = {
     ...bookingData,
-    serviceId:
-      bookingData.serviceId ||
-      currentServiceId,
-    slugUrl:
-      bookingData.slugUrl ||
-      currentSlugUrl,
+    addonIds,
+    serviceId: currentServiceId,
+    slugUrl: currentSlugUrl,
     traceId
   };
 
   try {
     const result = await withTimeout(
-      processDualBooking(requestPayload),
+      () => processDualBooking(requestPayload),
       UI?.FRONTEND_API_TIMEOUT_MS || 60000,
       "processDualBooking"
     );
@@ -339,7 +555,7 @@ async function handleBooking(message, reply, traceId) {
     reply(
       MESSAGE_TYPES.BOOK,
       bookingResult,
-      message
+      payload
     );
 
     const bookingSucceeded =
@@ -366,13 +582,17 @@ async function handleBooking(message, reply, traceId) {
           ? "BOOKING_TIMEOUT"
           : "BOOKING_FAILED",
         timeout
-          ? "La reserva esta tardando demasiado. Intentalo de nuevo."
+          ? "La reserva puede estar procesándose. No la reenvíes todavía."
           : "No se pudo completar la reserva."
       ),
-      message
+      payload
     );
   }
 }
+
+// =============================================================================
+// INICIALIZACION
+// =============================================================================
 
 $w.onReady(async () => {
   const traceId = makeTraceId("calendario");
