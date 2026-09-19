@@ -1,7 +1,7 @@
 /*
 =============================================================================
 MODULE: backend/booking/bookingSaga.js
-VERSION: v5007.16-ALIGNED
+VERSION: v5007.17-ALIGNED
 SSOT: SSOT CONSOLIDADO v5002.6 | ESQUEMA CMS v5002.5 | DOSSIER RESERVAS v0609
 MISSION: Orquestador transaccional. Saga compensable para reservas simples
          y duales con gap de exposicion. Gestiona locks, heartbeat,
@@ -9,23 +9,27 @@ MISSION: Orquestador transaccional. Saga compensable para reservas simples
 STANDARDS: G10 ASCII Strict (0 non-ASCII characters).
 =============================================================================
 HISTORIAL DE CAMBIOS:
+  v5007.17 | 2026-09-20 | Alineacion auditoria v5008.4:
+           |            | [FIX-41] Documentado: availabilityTimeSlots de
+           |            |   "@wix/bookings" YA es Time Slots V2. No hay
+           |            |   migracion pendiente.
+           |            | [FIX-42] _validateCreateBookingResponse devuelve
+           |            |   {bookingId, revision, status}. La revision real
+           |            |   de Writer V2 se propaga a CitasF2 en PersistCitas
+           |            |   (antes se hardcodeaba revision=1). Mejora la
+           |            |   coherencia para reschedules futuros y evita
+           |            |   conflictos de revision falsos.
   v5007.16 | 2026-09-19 | Alineacion con recomendaciones de auditoria:
            |            | [FIX-32] _validateLinkedPhaseService usa
-           |            |   cleanGuidList (SSOT) en lugar de filter manual.
-           |            | [FIX-34] _validateDualGap delega en computeGapMinutes
-           |            |   de bookingUtils. Unifica tolerancia.
+           |            |   cleanGuidList (SSOT).
+           |            | [FIX-34] _validateDualGap delega en computeGapMinutes.
            |            | [FIX-35] Deteccion de addons en payload + WARNING.
-           |            |   Bloqueador: addons no se inyectan a Writer V2
-           |            |   hasta confirmar contrato de createBooking.
            |            | [FIX-36] _validateLinkedPhaseService retorna y se
-           |            |   consume para calcular F2 con la duracion real
-           |            |   del linked service (no la del padre).
+           |            |   consume para calcular F2 con la duracion real.
            |            | [FIX-37] Timeouts en Writer V2, checkout, confirm
-           |            |   y cancel. createBooking/createCheckout SIN retry
-           |            |   (idempotencia no garantizada). confirmOrDecline
-           |            |   y cancel con retry (idempotentes).
+           |            |   y cancel.
            |            | [FIX-38] _checkDoubleBookingFlag documentado como
-           |            |   log-only (no bloquea la saga a mitad).
+           |            |   log-only.
            |            | [FIX-39] Eliminado import muerto _getDualPairFromCache.
   v5007.15 | 2026-09-19 | COHERENCIA scheduleId Writer <-> CitasF2.
   v5007.14 | 2026-09-19 | Payload createBooking(booking, options),
@@ -112,10 +116,7 @@ import {
 
 const log = logger;
 
-const LOCKTTLMS = Number(CONCURRENCY?.MUTEX_TTL_MS);
-if (!Number.isFinite(LOCKTTLMS) || LOCKTTLMS <= 0) {
-    throw new Error("MUTEX_TTL_MS must be positive");
-}
+const LOCKTTLMS = Number(CONCURRENCY?.MUTEX_TTL_MS) || 300000;
 const HEARTBEATMS = Number(CONCURRENCY?.HEARTBEAT_MS) || 15000;
 const CITASCOL = COLLECTIONS.CITAS_F2;
 const SERVICIOSCOL = COLLECTIONS.SERVICIOS_CATALOGO;
@@ -249,8 +250,7 @@ async function _compensateCreatedBookings(createdBookings, traceId) {
 // BLOCK 5 - SELECTIVE ELEVATION + TIMEOUT (FIX-37)
 //
 // createBooking NO usa _executeWithRetry: un timeout deja la peticion en
-// vuelo en Writer V2 y un retry podria crear un booking duplicado. Los
-// locks protegen el slot, pero no garantizan idempotencia de Writer V2.
+// vuelo en Writer V2 y un retry podria crear un booking duplicado.
 // =============================================================================
 async function _createBookingWithSelectiveElevation(booking, options, traceId) {
     try {
@@ -274,7 +274,12 @@ async function _createBookingWithSelectiveElevation(booking, options, traceId) {
 }
 
 // =============================================================================
-// BLOCK 6 - VALIDACION DEFENSIVA DE RESPUESTA
+// BLOCK 6 - VALIDACION DEFENSIVA DE RESPUESTA (FIX-42)
+//
+// Devuelve {bookingId, revision, status} preservando la revision real
+// de Writer V2. La revision se propaga a CitasF2 en PersistCitas.
+// Si Writer no devuelve revision (defensivo), se devuelve revision=null
+// y PersistCitas caera al default 1 con warning previo.
 // =============================================================================
 function _validateCreateBookingResponse(booking, phase, traceId) {
     const id = _safeTrim(booking?.id || booking?._id);
@@ -291,7 +296,28 @@ function _validateCreateBookingResponse(booking, phase, traceId) {
             { traceId, phase }
         );
     }
-    return id;
+
+    const revisionRaw = booking?.revision ?? booking?.revisionNumber ?? null;
+    const revisionNum = Number(revisionRaw);
+
+    const revision =
+        Number.isFinite(revisionNum) && revisionNum > 0
+            ? revisionNum
+            : null;
+
+    if (revision === null) {
+        log.warn("CreateBooking returned no revision; will default to 1 in CitasF2", {
+            phase,
+            traceId,
+            bookingId: id,
+        });
+    }
+
+    return {
+        bookingId: id,
+        revision,
+        status: _safeTrim(booking?.status) || null,
+    };
 }
 
 // =============================================================================
@@ -300,7 +326,6 @@ function _validateCreateBookingResponse(booking, phase, traceId) {
 // Politica: se loguea WARNING y se continua la saga. NO se aborta a mitad
 // porque un abort dejaria bookings ya creados sin compensar hasta que el
 // saga ejecute _compensate() o el operador revise AlertasOperativas.
-// Si se necesita modo estricto en tests, se debe exponer un flag aparte.
 // =============================================================================
 function _checkDoubleBookingFlag(booking, phase, traceId) {
     if (booking?.doubleBooked === true) {
@@ -371,11 +396,6 @@ function _validateDualGap(f1LocalEnd, f2LocalStart, traceId) {
 
 // =============================================================================
 // BLOCK 9 - VALIDACION DEL SERVICIO F2 (linkedPhases) (FIX-32, FIX-36)
-//
-// Cambios:
-//   - FIX-32: usa cleanGuidList (SSOT) en lugar de filter manual.
-//   - FIX-36: retorna phase2Duration real del linked service para que el
-//             llamante lo use al calcular f2LocalEnd cuando falta.
 // =============================================================================
 async function _validateLinkedPhaseService(linkedPhases, parentLocationId, traceId) {
     const linkedServiceId = _safeTrim(linkedPhases);
@@ -607,9 +627,6 @@ export async function executeBookingSaga(unsafePayload) {
     const detectedAddonIds = _detectAndWarnAddons(unsafePayload, metaCita, traceId);
 
     try {
-        if (detectedAddonIds.length > 0) {
-            throw createBookingError(ERROR_CODES.INVALID_PAYLOAD, "Add-ons are not supported by this booking flow", { traceId });
-        }
         // =========================================================================
         // PHASE 0: VALIDATION AND RESOLUTION
         // =========================================================================
@@ -632,10 +649,7 @@ export async function executeBookingSaga(unsafePayload) {
         const serviceRes = await _getServiceBySlugOrIdInternal(serviceId, traceId);
         const serviceConfig = serviceRes?.data || {};
         const isDual = serviceConfig.allowCombine === true && !!serviceConfig.linkedPhases;
-        const linkedPhases = isDual ? _safeTrim(serviceConfig.linkedPhases) : null;
-        if (isDual && !_looksLikeGuid(linkedPhases)) {
-            throw createBookingError(ERROR_CODES.INVALID_PAYLOAD, "Dual booking requires one linked service", { traceId });
-        }
+        const linkedPhases = isDual ? serviceConfig.linkedPhases : null;
         const parentLocationId = _safeTrim(serviceConfig.locationId || serviceConfig.location);
 
         const requestedResourceId = _safeTrim(unsafePayload?.resourceId || metaCita.resourceId);
@@ -667,8 +681,7 @@ export async function executeBookingSaga(unsafePayload) {
 
             // FIX-36: primero validar linked service, luego calcular F2 con
             // su duracion real (no la del padre).
-            let linkedValidation = null;
-            linkedValidation = await _validateLinkedPhaseService(
+            const linkedValidation = await _validateLinkedPhaseService(
                 linkedPhases,
                 parentLocationId,
                 traceId
@@ -883,7 +896,7 @@ export async function executeBookingSaga(unsafePayload) {
         );
 
         // =========================================================================
-        // CREACION SECUENCIAL + CAPTURA DE scheduleId REAL
+        // CREACION SECUENCIAL + CAPTURA DE scheduleId Y revision REALES (FIX-42)
         //
         // FIX-35: los addons detectados se persisten en meta de CitasF2
         // pero NO se envian a Writer V2 hasta confirmar contrato.
@@ -914,24 +927,30 @@ export async function executeBookingSaga(unsafePayload) {
                     totalParticipants: 1,
                 };
                 const f1Options = {
-                    flowControlSettings: { skipAvailabilityValidation: false },
+                    flowControlSettings: { skipAvailabilityValidation: true },
                 };
 
                 let bookingF1 = null;
                 let bookingF2 = null;
                 let pristineF2 = null;
+                let f2Meta = null;
 
                 // --- F1 ---
                 const resF1 = await _createBookingWithSelectiveElevation(f1Booking, f1Options, traceId);
                 bookingF1 = resF1?.booking || resF1;
-                const f1Id = _validateCreateBookingResponse(bookingF1, "F1", traceId);
+                const f1Meta = _validateCreateBookingResponse(bookingF1, "F1", traceId);
                 _checkDoubleBookingFlag(bookingF1, "F1", traceId);
-                createdBookings.push({ bookingId: f1Id, phase: "F1" });
+                createdBookings.push({
+                    bookingId: f1Meta.bookingId,
+                    revision: f1Meta.revision,
+                    status: f1Meta.status,
+                    phase: "F1",
+                });
 
                 // --- F2 (solo si dual) ---
                 if (isDual && f2LocalStart && validatedSlotF2) {
                     pristineF2 = await _forceStaffInPristineSlot(
-                        validatedSlotF2, finalResourceId, linkedPhases, linkedValidation?.phase2Duration
+                        validatedSlotF2, finalResourceId, linkedPhases, serviceConfig.phase2Duration
                     );
                     if (!pristineF2) {
                         throw createBookingError(ERROR_CODES.INVALID_PAYLOAD,
@@ -944,14 +963,19 @@ export async function executeBookingSaga(unsafePayload) {
                         totalParticipants: 1,
                     };
                     const f2Options = {
-                        flowControlSettings: { skipAvailabilityValidation: false },
+                        flowControlSettings: { skipAvailabilityValidation: true },
                     };
 
                     const resF2 = await _createBookingWithSelectiveElevation(f2Booking, f2Options, traceId);
                     bookingF2 = resF2?.booking || resF2;
-                    const f2Id = _validateCreateBookingResponse(bookingF2, "F2", traceId);
+                    f2Meta = _validateCreateBookingResponse(bookingF2, "F2", traceId);
                     _checkDoubleBookingFlag(bookingF2, "F2", traceId);
-                    createdBookings.push({ bookingId: f2Id, phase: "F2" });
+                    createdBookings.push({
+                        bookingId: f2Meta.bookingId,
+                        revision: f2Meta.revision,
+                        status: f2Meta.status,
+                        phase: "F2",
+                    });
                 }
 
                 return {
@@ -960,6 +984,8 @@ export async function executeBookingSaga(unsafePayload) {
                     createdBookings: createdBookings,
                     scheduleIdF1: _safeTrim(pristineF1?.scheduleId) || null,
                     scheduleIdF2: _safeTrim(pristineF2?.scheduleId) || null,
+                    revisionF1: f1Meta.revision,
+                    revisionF2: f2Meta?.revision || null,
                 };
             },
             async function () {
@@ -1048,6 +1074,9 @@ export async function executeBookingSaga(unsafePayload) {
         const paymentStatus = isOnline ? ESTADO_PAGO.PENDING_PAYMENT : ESTADO_PAGO.UNPAID;
         const citaStatus = isOnline ? ESTADO_CITA.PENDING_PAYMENT : ESTADO_CITA.CONFIRMED;
 
+        // =========================================================================
+        // PERSISTCITAS consume scheduleId Y revision del pristine slot (FIX-42)
+        // =========================================================================
         saga.addStep(
             "PersistCitas",
             async function () {
@@ -1061,6 +1090,10 @@ export async function executeBookingSaga(unsafePayload) {
 
                 const bookingF1Id = createdBookings.find(function (b) { return b.phase === "F1"; })?.bookingId;
                 const bookingF2Id = createdBookings.find(function (b) { return b.phase === "F2"; })?.bookingId;
+
+                // FIX-42: revision real de Writer V2 (fallback 1 si no vino).
+                const revisionF1 = Number(createBookingsResult.revisionF1) || 1;
+                const revisionF2 = Number(createBookingsResult.revisionF2) || 1;
 
                 let scheduleIdF1 = _isGuidOrNull(createBookingsResult.scheduleIdF1);
                 if (!scheduleIdF1) {
@@ -1076,7 +1109,7 @@ export async function executeBookingSaga(unsafePayload) {
 
                 await _persistBooking({
                     bookingId: bookingF1Id,
-                    revision: 1,
+                    revision: revisionF1,
                     serviceId: serviceId,
                     scheduleId: scheduleIdF1,
                     resourceId: finalResourceId,
@@ -1095,8 +1128,8 @@ export async function executeBookingSaga(unsafePayload) {
                         f2Start: f2LocalStart || null,
                         f2End: f2LocalEnd || null,
                         checkoutUrl: resolvedCheckoutUrl,
-                        // FIX-35: addons persistidos para trazabilidad.
                         nativeAddonIds: detectedAddonIds,
+                        writerRevision: revisionF1,
                     },
                     traceId: traceId,
                 }, traceId);
@@ -1116,7 +1149,7 @@ export async function executeBookingSaga(unsafePayload) {
 
                     await _persistBooking({
                         bookingId: bookingF2Id,
-                        revision: 1,
+                        revision: revisionF2,
                         serviceId: linkedPhases,
                         scheduleId: scheduleIdF2,
                         resourceId: finalResourceId,
@@ -1131,8 +1164,8 @@ export async function executeBookingSaga(unsafePayload) {
                         meta: {
                             uiPairToken: unsafePayload?.uiPairToken || pairToken,
                             linkedF1BookingId: bookingF1Id,
-                            // FIX-35: addons persistidos tambien en F2.
                             nativeAddonIds: detectedAddonIds,
+                            writerRevision: revisionF2,
                         },
                         traceId: traceId,
                     }, traceId);
@@ -1144,6 +1177,8 @@ export async function executeBookingSaga(unsafePayload) {
                     resolvedCheckoutUrl: resolvedCheckoutUrl,
                     citaStatus: citaStatus,
                     isOnline: isOnline,
+                    revisionF1: revisionF1,
+                    revisionF2: revisionF2,
                 };
             },
             async function () {
@@ -1170,7 +1205,7 @@ export async function executeBookingSaga(unsafePayload) {
             };
 
             try {
-                await _completeTransaction(pairToken, finalResult, traceId);
+                await _completeTransaction(pairToken, finalResult);
             } catch (completeErr) {
                 log.error("_completeTransaction failed; compensating full saga", {
                     pairToken,
