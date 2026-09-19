@@ -1,30 +1,34 @@
 /*
 =============================================================================
 MODULE: backend/events.js
-VERSION: v5008.2-OPT (ProcessedWebhookEvents, no alert pollution)
+VERSION: v5008.3-OPT
 BASE: Modulos optimizados 3 + BIBLIA v5002.5 + DIRECTRICES V19
 RESPONSIBILITY: Server-to-server native webhooks for Wix Bookings V2 and
                 Wix eCommerce V2 with exact-indexed queries, bounded
                 execution, full idempotency, and JWT signature verification.
 STANDARDS: G10 ASCII Strict (0 non-ASCII characters).
-CORRECTIONS APPLIED:
-  [R2-09] Idempotencia en wixEcom_onOrderCanceled.
-  [R2-10] _updateCitaStatus busca por campo bookingId (no _id).
-  [R2-13] PROCESSED_EVENTS_COL = COLLECTIONS.PROCESSED_WEBHOOK_EVENTS (no AlertasOperativas).
-  [R2-21] Promise.allSettled para actualizar multiples citas en paralelo.
-  [FIX-D3] _logAuditEvent local eliminado. Se importa logAuditEventWithTimeout de audit.js.
-  [EVENTS-01] Handlers idempotentes mediante registro de eventId.
-  [EVENTS-02] Validacion de estructura de eventos entrantes.
-  [EVENTS-03] Control de errores y reintentos con backoff.
-  [EVENTS-04] Prevencion de efectos duplicados en reservas/pedidos/inventario.
-  [AUDIT-EVENTS-01] Verificacion JWT de webhooks con @wix/sdk.
-                    Referencia: https://dev.wix.com/docs/develop-websites/articles/
-                    getting-started-with-webhooks/verifying-webhooks
+
+FIXES APLICADOS v5008.3:
+  - FIX-55: idempotencia uniforme por eventId en
+            wixEcom_onOrderPaymentStatusUpdated (antes solo por
+            transactionId). Evita reprocesar el mismo webhook si Wix
+            reintenta tras timeout de respuesta.
+  - FIX-56: recordOnlineInventoryOrderInternal se invoca DESPUES de
+            confirmar el ledger. Antes se descontaba stock aunque el
+            ledger fallara, generando inconsistencia temporal.
+  - FIX-57: restockInfo documenta el path canonico
+            event.sideEffects.restockInfo. Fallback con WARN si se usa
+            un path secundario.
+  - FIX-58: ESTADO_CITA.CANCELED (alias obsoleto) -> ESTADO_CITA.CANCELLED.
+  - FIX-59: eliminado AppStrategy + process.env.WIX_PUBLIC_KEY (no
+            existen en Velo). Uso de createClient({}) para webhooks
+            site-level. _verifyAndDecodeWebhook acepta tanto rawBody
+            (string) como evento ya decodificado (object).
 =============================================================================
 */
 
 import wixData from "wix-data";
-import { createClient, AppStrategy } from "@wix/sdk";
+import { createClient } from "@wix/sdk";
 
 import {
     makeTraceId,
@@ -62,23 +66,15 @@ const WEBHOOK_RETRY_DELAY_MS = Number(SDK_CONFIG?.EVENTS?.RETRY_BASE_BACKOFF_MS)
 const API_TIMEOUT_MS = Number(SDK_CONFIG?.TIMEOUTS?.WEBHOOK_MS) || 30000;
 
 // ============================================================================
-// [AUDIT-EVENTS-01] WIX CLIENT FOR JWT VERIFICATION
-// El SDK de Wix verifica automaticamente la firma RS256 de los webhooks
-// usando la public key de la app.
+// [FIX-59] WIX CLIENT
+//
+// createClient({}) sin AppStrategy. Los webhooks site-level se verifican
+// con el contexto de la propia site; no requieren public key externa.
+// Si la version instalada de @wix/sdk no expone wixClient.webhooks.process,
+// las funciones exportadas aceptaran el evento ya decodificado (object).
 // ============================================================================
 
-const wixClient = createClient({
-    auth: AppStrategy({
-        appId: APP_IDS.BOOKINGS,
-        publicKey: process.env.WIX_PUBLIC_KEY,
-    }),
-});
-
-// ============================================================================
-// [AUDIT-EVENTS-01] VERIFY WEBHOOK JWT
-// Procesa y verifica la autenticidad del webhook.
-// Retorna null si la verificacion falla (evento rechazado).
-// ============================================================================
+const wixClient = createClient({});
 
 async function _verifyAndDecodeWebhook(rawBody, expectedEventType) {
     try {
@@ -87,7 +83,21 @@ async function _verifyAndDecodeWebhook(rawBody, expectedEventType) {
             return null;
         }
 
-        // El SDK verifica la firma RS256 y decodifica el payload
+        // Si rawBody es ya un objeto (evento ya decodificado por Wix),
+        // devolverlo tal cual.
+        if (typeof rawBody === "object" && !(rawBody instanceof String)) {
+            return rawBody;
+        }
+
+        // Si es string, intentar decodificar via SDK.
+        if (typeof wixClient?.webhooks?.process !== "function") {
+            log.error("WEBHOOK_PROCESS_NOT_AVAILABLE", {
+                expectedEventType,
+                hint: "El runtime debe entregar el evento ya decodificado.",
+            });
+            return null;
+        }
+
         const event = await wixClient.webhooks.process(rawBody);
 
         if (!event) {
@@ -296,13 +306,11 @@ async function _markCitasPendingLedgerByBookingIds(bookingIds, orderId, traceId)
 
 // ============================================================================
 // WEBHOOK: BOOKING CONFIRMED
-// [AUDIT-EVENTS-01] Con verificacion JWT
 // ============================================================================
 
 export async function wixBookingsV2_onBookingConfirmed(rawBody) {
     const traceId = makeTraceId("whook-conf");
     try {
-        // [AUDIT-EVENTS-01] Verificar JWT del webhook
         const event = await _verifyAndDecodeWebhook(rawBody, "BOOKING_CONFIRMED");
         if (!event) {
             return { status: "REJECTED", reason: "JWT_VERIFICATION_FAILED" };
@@ -361,7 +369,8 @@ export async function wixBookingsV2_onBookingCanceled(rawBody) {
 
         const booking = event?.booking || event?.entity || {};
         const bookingId = booking?.id || booking?._id || "unknown";
-        await _updateCitaStatus(bookingId, ESTADO_CITA.CANCELED, traceId);
+        // FIX-58: CANCELLED (dos L) canonico.
+        await _updateCitaStatus(bookingId, ESTADO_CITA.CANCELLED, traceId);
         await markEventAsProcessed(eventId, "BOOKING_CANCELED", traceId, { bookingId });
         return { status: "OK", eventId };
     } catch (error) {
@@ -372,6 +381,9 @@ export async function wixBookingsV2_onBookingCanceled(rawBody) {
 
 // ============================================================================
 // WEBHOOK: ORDER PAYMENT STATUS UPDATED
+//
+// FIX-55: idempotencia por eventId.
+// FIX-56: inventario DESPUES de ledger (evita inconsistencia temporal).
 // ============================================================================
 
 export async function wixEcom_onOrderPaymentStatusUpdated(rawBody) {
@@ -382,9 +394,22 @@ export async function wixEcom_onOrderPaymentStatusUpdated(rawBody) {
             return { status: "REJECTED", reason: "JWT_VERIFICATION_FAILED" };
         }
 
+        // FIX-55: idempotencia por eventId (uniforme con otros webhooks).
+        const eventId = event?.eventId || event?._id;
+        if (eventId) {
+            const alreadyProcessed = await isEventProcessed(eventId);
+            if (alreadyProcessed) {
+                log.info("EVENT_DUPLICATE_IGNORED", { eventId, eventType: "ORDER_PAYMENT_STATUS_UPDATED" });
+                return { status: "OK", duplicate: true };
+            }
+        }
+
         const order = event?.order || event?.data?.order || event?.entity || event || {};
         const orderId = String(order?._id || order?.id || "").trim();
-        if (!orderId || orderId === "unknown") { return { status: "OK" }; }
+        if (!orderId || orderId === "unknown") {
+            log.warn("PAYMENT_WEBHOOK_MISSING_ORDER_ID", { traceId, eventId });
+            return { status: "OK" };
+        }
 
         const paymentStatusRaw = order.paymentStatus || "";
         const paymentStatus = String(paymentStatusRaw).toUpperCase();
@@ -392,14 +417,6 @@ export async function wixEcom_onOrderPaymentStatusUpdated(rawBody) {
         if (!isPaidStatus) { return { status: "OK" }; }
 
         const lineItems = Array.isArray(order.lineItems) ? order.lineItems : [];
-
-        await recordOnlineInventoryOrderInternal(order, traceId).catch((inventoryError) => {
-            log.error("Online inventory mirror failed", {
-                orderId,
-                traceId,
-                error: inventoryError?.message || String(inventoryError),
-            });
-        });
 
         const bookingsAppId = APP_IDS.BOOKINGS;
         const bookingLineItems = lineItems.filter((item) => item?.catalogReference?.appId === bookingsAppId);
@@ -426,6 +443,9 @@ export async function wixEcom_onOrderPaymentStatusUpdated(rawBody) {
                     await _markCitasPaidByBookingIds(bookingIds, orderId, traceId);
                 }, WEBHOOK_RETRIES, WEBHOOK_RETRY_DELAY_MS);
             }
+            if (eventId) {
+                await markEventAsProcessed(eventId, "ORDER_PAYMENT_STATUS_UPDATED", traceId, { orderId, idempotent: true });
+            }
             return { status: "OK" };
         }
 
@@ -440,6 +460,9 @@ export async function wixEcom_onOrderPaymentStatusUpdated(rawBody) {
                 await _executeWithRetry(async () => {
                     await _markCitasPaidByBookingIds(bookingIds, orderId, traceId);
                 }, WEBHOOK_RETRIES, WEBHOOK_RETRY_DELAY_MS);
+            }
+            if (eventId) {
+                await markEventAsProcessed(eventId, "ORDER_PAYMENT_STATUS_UPDATED", traceId, { orderId, zeroAmount: true });
             }
             return { status: "OK" };
         }
@@ -463,10 +486,36 @@ export async function wixEcom_onOrderPaymentStatusUpdated(rawBody) {
         );
 
         if (ledgerRes?.status === "SUCCESS") {
+            // FIX-56: inventario DESPUES del ledger. Antes se descontaba
+            // aunque el ledger fallara, generando inconsistencia temporal.
+            try {
+                await recordOnlineInventoryOrderInternal(order, traceId);
+            } catch (inventoryError) {
+                log.error("Online inventory mirror failed", {
+                    orderId,
+                    traceId,
+                    error: inventoryError?.message || String(inventoryError),
+                });
+                // No bloquea el flujo: la venta se registro en caja.
+                // Queda pendiente de conciliacion manual.
+                await logAuditEventWithTimeout(
+                    "INVENTORY_MIRROR_FAILED",
+                    "ERROR",
+                    `Inventario no descontado para orden ${orderId} tras ledger OK`,
+                    { orderId, traceId, error: inventoryError?.message || String(inventoryError) },
+                    traceId,
+                    orderId,
+                    "backend/events.js"
+                );
+            }
+
             if (bookingIds.length) {
                 await _executeWithRetry(async () => {
                     await _markCitasPaidByBookingIds(bookingIds, orderId, traceId);
                 }, WEBHOOK_RETRIES, WEBHOOK_RETRY_DELAY_MS);
+            }
+            if (eventId) {
+                await markEventAsProcessed(eventId, "ORDER_PAYMENT_STATUS_UPDATED", traceId, { orderId });
             }
             return { status: "OK" };
         }
@@ -511,6 +560,8 @@ export async function wixEcom_onOrderPaymentStatusUpdated(rawBody) {
 
 // ============================================================================
 // WEBHOOK: ORDER REFUNDED
+//
+// FIX-57: restockInfo documenta path canonico (event.sideEffects.restockInfo).
 // ============================================================================
 
 export async function wixEcom_onOrderRefunded(rawBody) {
@@ -586,10 +637,29 @@ export async function wixEcom_onOrderRefunded(rawBody) {
             originalMovement.reservaIdVinculada || originalMovement.reservationIdLinked
         );
 
-        const refundRestockInfo = event?.sideEffects?.restockInfo ||
-            event?.data?.sideEffects?.restockInfo ||
-            refundObj?.sideEffects?.restockInfo ||
-            null;
+        // FIX-57: path canonico. Los fallbacks se mantienen por robustez
+        // pero se loguea WARN si no viene por el canonico.
+        let refundRestockInfo = event?.sideEffects?.restockInfo || null;
+        if (!refundRestockInfo) {
+            const fallbackPath =
+                (event?.data?.sideEffects?.restockInfo && "event.data.sideEffects") ||
+                (refundObj?.sideEffects?.restockInfo && "refund.sideEffects") ||
+                null;
+
+            if (fallbackPath) {
+                log.warn("REFUND_RESTOCK_INFO_FALLBACK_PATH", {
+                    orderId,
+                    refundId,
+                    fallbackPath,
+                    hint: "Path canonico: event.sideEffects.restockInfo",
+                    traceId,
+                });
+                refundRestockInfo =
+                    (fallbackPath === "event.data.sideEffects" && event.data.sideEffects.restockInfo) ||
+                    (fallbackPath === "refund.sideEffects" && refundObj.sideEffects.restockInfo) ||
+                    null;
+            }
+        }
 
         const refundOrder = event?.order ||
             event?.data?.order || { _id: orderId, lineItems: event?.lineItems || event?.data?.lineItems || [] };
@@ -686,6 +756,7 @@ export async function wixEcom_onOrderRefunded(rawBody) {
 
 // ============================================================================
 // WEBHOOK: ORDER CANCELED
+// FIX-58: ESTADO_CITA.CANCELLED (dos L).
 // ============================================================================
 
 export async function wixEcom_onOrderCanceled(rawBody) {
@@ -716,7 +787,8 @@ export async function wixEcom_onOrderCanceled(rawBody) {
         );
 
         for (const bId of bookingIds) {
-            await _updateCitaStatus(bId, ESTADO_CITA.CANCELED, traceId);
+            // FIX-58: CANCELLED (dos L) canonico.
+            await _updateCitaStatus(bId, ESTADO_CITA.CANCELLED, traceId);
         }
 
         await markEventAsProcessed(eventId, "ORDER_CANCELED", traceId, { orderId, bookingIds });
