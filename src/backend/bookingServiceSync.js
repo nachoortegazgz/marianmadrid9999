@@ -1,19 +1,27 @@
 /*
 =============================================================================
 MODULE: backend/bookingServiceSync.js
-VERSION: v5007.5-FINAL
+VERSION: v5008.1-FINAL
 BASE: BIBLIA v5002.5 Bloque 12.12 + DIRECTRICES V19
 RESPONSIBILITY: Cola de sincronizacion entre ServiciosCatalogo y Wix Bookings.
 STANDARDS: G10 ASCII Strict.
-CORRECTIONS APPLIED:
-  [BSS-01] _findPendingEquivalent usa .in("status", [...]) en lugar de
-           hasSome (status es escalar, no array). Restaura la deduplicacion
-           de encolados equivalentes.
-  [BSS-02] Retirada funcion huerfana _isProcessingExpired (dead code).
-  [BSS-03] Retirada variable skipped (siempre 0, no aportaba valor).
-  [BSS-04] _syncServiceWithBookings documentado con contrato esperado del
-           handler nativo de Wix Bookings Services V2.
-  [BSS-05] getSyncQueueStatus exportado para observabilidad desde panel admin.
+
+CORRECTIONS APPLIED (v5007.5):
+  [BSS-01] _findPendingEquivalent usa .in() en lugar de hasSome().
+  [BSS-02] Retirada funcion huerfana _isProcessingExpired.
+  [BSS-03] Retirada variable skipped.
+  [BSS-04] _syncServiceWithBookings documentado con contrato esperado.
+  [BSS-05] getSyncQueueStatus exportado para observabilidad.
+
+CORRECTIONS APPLIED (v5008.0):
+  [BSS-06] Helpers consolidados en bookingUtils.js.
+  [BSS-07] _buildDesiredProjection incluye durationRange.
+  [BSS-08] Handler nativo documentado: NUNCA Multi-Service Booking.
+
+CORRECTIONS APPLIED (v5008.1):
+  [BSS-09] Imports de withTimeout y _executeWithRetry preparados.
+           El handler nativo usara el patron retry+timeout consistente
+           con el resto de modulos cuando se implemente.
 =============================================================================
 */
 
@@ -28,7 +36,17 @@ import {
     makeTraceId,
     _safeTrim,
     _looksLikeGuid,
+    _executeWithRetry,
+    withTimeout,
 } from "public/mmUtils";
+
+import {
+    cleanGuid,
+    cleanGuidList,
+    numberOrZero,
+    booleanValue,
+    readDurationRange,
+} from "backend/booking/bookingUtils";
 
 import { logger } from "backend/logger";
 
@@ -47,43 +65,15 @@ const BACKOFF_MS =
 
 const MAX_BATCH_SIZE = 100;
 const PROCESSING_TIMEOUT_MS = 15 * 60 * 1000;
+const SYNC_HANDLER_TIMEOUT_MS =
+    Number(SDK_CONFIG?.TIMEOUTS?.API_MS) || 15000;
 
 // =============================================================================
-// BLOQUE 1 - VALIDACION
-// =============================================================================
-
-function _cleanGuid(value, errorCode) {
-    const clean = _safeTrim(value);
-    if (!clean || !_looksLikeGuid(clean)) {
-        throw new Error(`${errorCode}: GUID invalido o ausente`);
-    }
-    return clean;
-}
-
-function _cleanGuidList(value) {
-    if (!Array.isArray(value)) return [];
-    return Array.from(new Set(
-        value
-        .map((item) => _safeTrim(item))
-        .filter((item) => _looksLikeGuid(item))
-    ));
-}
-
-function _numberOrZero(value) {
-    const number = Number(value);
-    return Number.isFinite(number) && number >= 0 ? number : 0;
-}
-
-function _booleanValue(...values) {
-    return values.some((value) => value === true);
-}
-
-// =============================================================================
-// BLOQUE 2 - PROYECCION DESEADA
+// BLOQUE 1 - PROYECCION DESEADA
 // =============================================================================
 
 function _buildDesiredProjection(item = {}) {
-    const serviceId = _cleanGuid(
+    const serviceId = cleanGuid(
         item.serviceId || item._id,
         "INVALID_SERVICE_ID"
     );
@@ -96,30 +86,41 @@ function _buildDesiredProjection(item = {}) {
         throw new Error("INVALID_LINKED_PHASE_SERVICE_ID: GUID invalido");
     }
 
+    const durationRange = readDurationRange(item);
+
     return {
         serviceId,
         title: _safeTrim(item.title || item.tituloServicio),
         tagLine: _safeTrim(item.tagLine || item.etiquetaServicio),
         description: _safeTrim(item.description || item.descripcionServicio),
-        price: _numberOrZero(item.price ?? item.precioServicio),
+        price: numberOrZero(item.price ?? item.precioServicio),
         currency: _safeTrim(item.currency || item.moneda) || "EUR",
-        totalDuration: _numberOrZero(item.totalDuration),
-        phase1Duration: _numberOrZero(item.phase1Duration),
-        exposureDuration: _numberOrZero(item.exposureDuration),
-        phase2Duration: _numberOrZero(item.phase2Duration),
-        buffer: _numberOrZero(item.buffer),
-        hidden: _booleanValue(item.hidden, item.servicioOculto),
-        onlinePayment: _booleanValue(item.onlinePayment, item.onlinePago),
-        inPersonPayment: _booleanValue(item.inPersonPayment, item.presencialPago),
+        totalDuration: numberOrZero(item.totalDuration),
+        phase1Duration: numberOrZero(item.phase1Duration),
+        exposureDuration: numberOrZero(item.exposureDuration),
+        phase2Duration: numberOrZero(item.phase2Duration),
+        buffer: numberOrZero(item.buffer),
+        hidden: booleanValue(item.hidden, item.servicioOculto),
+        onlinePayment: booleanValue(item.onlinePayment, item.onlinePago),
+        inPersonPayment: booleanValue(item.inPersonPayment, item.presencialPago),
         categoryId: _safeTrim(item.categoryId?._id || item.categoryId),
-        availableStaff: _cleanGuidList(item.availableStaff),
+        availableStaff: cleanGuidList(item.availableStaff),
         linkedPhases: linkedPhases || null,
-        allowCombine: _booleanValue(item.allowCombine, item.permitirCombinar),
+        allowCombine: booleanValue(item.allowCombine, item.permitirCombinar),
+        durationRange: durationRange
+            ? {
+                  min: durationRange.min,
+                  max:
+                      durationRange.max === Infinity
+                          ? null
+                          : durationRange.max,
+              }
+            : null,
     };
 }
 
 // =============================================================================
-// BLOQUE 3 - COLA
+// BLOQUE 2 - COLA
 // =============================================================================
 
 function _buildQueueId(serviceId, payloadHash) {
@@ -128,7 +129,6 @@ function _buildQueueId(serviceId, payloadHash) {
     return `sync_${servicePart}_${hashPart}_${Date.now()}`.slice(0, 190);
 }
 
-// [BSS-01] status es campo escalar: .in() en lugar de hasSome()
 async function _findPendingEquivalent(serviceId, payloadHash) {
     const result = await wixData
         .query(QUEUE_COL)
@@ -233,8 +233,7 @@ export async function enqueueBookingsServiceSync(serviceItem) {
 }
 
 // =============================================================================
-// BLOQUE 4 - RECUPERACION DE ITEMS ATASCADOS
-// [BSS-02] Retirada funcion huerfana _isProcessingExpired (dead code).
+// BLOQUE 3 - RECUPERACION DE ITEMS ATASCADOS
 // =============================================================================
 
 async function _recoverStaleProcessingItems(traceId) {
@@ -269,7 +268,8 @@ async function _recoverStaleProcessingItems(traceId) {
 }
 
 // =============================================================================
-// BLOQUE 5 - SINCRONIZACION NATIVA
+// BLOQUE 4 - SINCRONIZACION NATIVA
+//
 // [BSS-04] Contrato esperado del handler nativo (Wix Bookings Services V2):
 //
 //   await bookingsServices.<method>({
@@ -277,14 +277,12 @@ async function _recoverStaleProcessingItems(traceId) {
 //     ...desiredPayloadProjection,
 //   });
 //
-// Metodos esperados segun contrato publico de Wix Bookings Services V2
-// (https://dev.wix.com/docs/rest/business-solutions/bookings):
-//   - bookingsServices.createService()
-//   - bookingsServices.updateService()
-//   - bookingsServices.deleteService()
+// [BSS-08] REGLA ESTRICTA: NUNCA usar Multi-Service Booking.
+//   El flujo dual (F1 + F2 con gap) NO es soportado por Multi-Service V2.
+//   F1 y F2 se sincronizan como servicios single-service independientes.
 //
-// Hasta confirmar la version instalada, este handler lanza un error
-// controlado que deja el item en cola sin corromper estado.
+// [BSS-09] El handler nativo usara withTimeout + _executeWithRetry
+//   cuando se implemente, consistente con reservas.web.js.
 // =============================================================================
 
 async function _syncServiceWithBookings(item, traceId) {
@@ -293,11 +291,25 @@ async function _syncServiceWithBookings(item, traceId) {
     }
 
     // TODO: sustituir por la llamada nativa cuando se confirme el contrato.
-    // Ejemplo hipotetico:
+    //
+    // Patron esperado:
     //
     //   import { services } from "wix-bookings-services.v2";
+    //   import { elevate } from "wix-auth";
+    //
     //   const elevated = elevate(services.updateService);
-    //   await elevated(item.serviceId, item.desiredPayload);
+    //
+    //   await _executeWithRetry(
+    //     () => withTimeout(
+    //       elevated(item.serviceId, item.desiredPayload),
+    //       SYNC_HANDLER_TIMEOUT_MS,
+    //       "syncServiceWithBookings"
+    //     ),
+    //     2,
+    //     300
+    //   );
+    //
+    // NUNCA usar bookingsServices.createMultiServiceBooking(...).
 
     log.warn("Service sync handler not configured; item left pending", {
         serviceId: item.serviceId,
@@ -308,8 +320,7 @@ async function _syncServiceWithBookings(item, traceId) {
 }
 
 // =============================================================================
-// BLOQUE 6 - PROCESAMIENTO
-// [BSS-03] Retirada variable skipped (siempre 0).
+// BLOQUE 5 - PROCESAMIENTO
 // =============================================================================
 
 export async function processBookingsServiceSyncQueue(options = {}) {
@@ -419,19 +430,12 @@ export async function processBookingsServiceSyncQueue(options = {}) {
 }
 
 // =============================================================================
-// BLOQUE 7 - [BSS-05] OBSERVABILIDAD DE COLA
+// BLOQUE 6 - OBSERVABILIDAD DE COLA
 // =============================================================================
 
-/**
- * Devuelve el estado agregado de la cola de sincronizacion.
- * Util para widgets de panel admin y diagnostico.
- *
- * @param {Object} [options]
- * @param {string} [options.traceId]
- * @returns {Promise<{status, data, error}>}
- */
 export async function getSyncQueueStatus(options = {}) {
     const traceId = _safeTrim(options?.traceId) || makeTraceId("svc-sync-status");
+
     try {
         const [pendingRes, processingRes, failedRes] = await Promise.all([
             wixData.query(QUEUE_COL).eq("status", "PENDING").limit(500).find({ suppressAuth: true }).catch(() => ({ items: [] })),
@@ -448,6 +452,7 @@ export async function getSyncQueueStatus(options = {}) {
                 maxAttempts: MAX_ATTEMPTS,
                 backoffMs: BACKOFF_MS,
                 processingTimeoutMs: PROCESSING_TIMEOUT_MS,
+                syncHandlerTimeoutMs: SYNC_HANDLER_TIMEOUT_MS,
             },
             error: null,
         };
