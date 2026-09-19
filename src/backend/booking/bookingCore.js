@@ -1,9 +1,40 @@
 /*
+=============================================================================
 MODULE: backend/booking/bookingCore.js
-VERSION: v5008.2-OPT (aligned + dead code removed)
-PURPOSE: Atomic primitives for Wix Bookings V2 Writer (simple + dual with gap).
-         Official Create Booking contract only. Zero deprecated APIs.
+VERSION: v5008.3-ALIGNED (aligned + dead code removed + missing exports restored)
+BASE: BIBLIA v5002.5 Bloque 12.2 + MOTOR DE RESERVAS + DIRECTRICES V19
+RESPONSIBILITY: Capa de acceso y primitivas atomicas para reservas.
 STANDARDS: ASCII only. No Node builtins.
+HISTORIAL DE CAMBIOS:
+  v5008.3 | 2026-09-19 | ALINEACION CON AUDITORIA:
+           |            | [CORE-01] Restaurado _getDualPairFromCache
+           |            |   (referenciado por bookingSaga.js). Anadido
+           |            |   DUAL_CACHE_COL.
+           |            | [CORE-02] Restaurados 12 ERROR_CODES faltantes:
+           |            |   INVALID_DATES, STAFF_UNAVAILABLE,
+           |            |   INVALID_SLOT_RECHECK, FISCAL_SIGN_FAIL,
+           |            |   FISCAL_VIOLATION, INVALID_EMPLOYEE,
+           |            |   AUTH_REQUIRED, INVALID_CLOCK_TYPE,
+           |            |   RATE_LIMITED, LOCK_KEY_OR_OWNER_INVALID,
+           |            |   LOCK_EXPIRED_PENDING_CLEANUP.
+           |            | [CORE-03] Restaurados _projectCertifiedSlot y
+           |            |   _projectWriterSlotFromAvailability (usados por
+           |            |   consumidores externos y tests).
+           |            | [CORE-04] Restaurado _extractResourceIdsFromSlot
+           |            |   (usado por reservas.web).
+           |            | [CORE-05] Restaurados _normalizeAddons y _sumAddons
+           |            |   (usados por citasManager).
+           |            | [CORE-06] Restaurado getCertifiedDualSlotsOptimized
+           |            |   (cache pre-warm).
+           |            | [CORE-07] Restaurados _generatePairToken,
+           |            |   _areSlotsCompatible, _auditBookingPrice.
+           |            | [CORE-08] Restaurado _rankResourcesByLoad con .in()
+           |            |   sobre resourceId (auditoria B28; antes .hasSome
+           |            |   sobre campo escalar).
+           |            | [CORE-09] Anadidos imports CITA_FIELDS,
+           |            |   ESTADO_CITA, ESTADO_PAGO para consumidores.
+  v5008.2 | 2026-09-15 | Aligned + dead code removed.
+=============================================================================
 */
 
 import { bookings } from "wix-bookings.v2";
@@ -16,6 +47,9 @@ import {
     COLLECTIONS,
     CONCURRENCY,
     SDK_CONFIG,
+    CITA_FIELDS,
+    ESTADO_CITA,
+    ESTADO_PAGO,
 } from "backend/internalConfig";
 import {
     _safeTrim,
@@ -30,22 +64,41 @@ import {
 
 const log = logger;
 
+// =============================================================================
+// BLOQUE 1 - CODIGOS DE ERROR (25 codigos)
+// =============================================================================
+
 export const ERROR_CODES = Object.freeze({
     INVALID_PAYLOAD: "INVALID_PAYLOAD",
     TOKEN_BUSY: "TOKEN_BUSY",
+    FISCAL_SIGN_FAIL: "FISCAL_SIGN_FAIL",
+    FISCAL_VIOLATION: "FISCAL_VIOLATION",
     BOOKING_CREATION_FAILED: "BOOKING_CREATION_FAILED",
     CHECKOUT_FAILED: "CHECKOUT_FAILED",
+    INVALID_EMPLOYEE: "INVALID_EMPLOYEE",
+    AUTH_REQUIRED: "AUTH_REQUIRED",
     ACCESS_DENIED: "ACCESS_DENIED",
+    INVALID_CLOCK_TYPE: "INVALID_CLOCK_TYPE",
+    RATE_LIMITED: "RATE_LIMITED",
     SLOT_UNAVAILABLE: "SLOT_UNAVAILABLE",
+    STAFF_UNAVAILABLE: "STAFF_UNAVAILABLE",
     SERVICE_NOT_FOUND: "SERVICE_NOT_FOUND",
+    LOCK_KEY_OR_OWNER_INVALID: "LOCK_KEY_OR_OWNER_INVALID",
     LOCK_HELD_BY_ANOTHER_OWNER: "LOCK_HELD_BY_ANOTHER_OWNER",
+    LOCK_EXPIRED_PENDING_CLEANUP: "LOCK_EXPIRED_PENDING_CLEANUP",
     LOCK_RENEWAL_FAILED: "LOCK_RENEWAL_FAILED",
     TRANSACTION_TIMEOUT: "TRANSACTION_TIMEOUT",
     PAIR_TOKEN_PAYLOAD_MISMATCH: "PAIR_TOKEN_PAYLOAD_MISMATCH",
     TRANSACTION_PREVIOUSLY_FAILED: "TRANSACTION_PREVIOUSLY_FAILED",
+    INVALID_SLOT_RECHECK: "INVALID_SLOT_RECHECK",
     DATABASE_ERROR: "DATABASE_ERROR",
+    INVALID_DATES: "INVALID_DATES",
     UNKNOWN_ERROR: "UNKNOWN_ERROR",
 });
+
+// =============================================================================
+// BLOQUE 2 - ELEVATED PROXIES (Bookings V2 + eCommerce)
+// =============================================================================
 
 export const createBookingElevated = elevate(bookings.createBooking);
 export const cancelBookingElevated = elevate(bookings.cancelBooking);
@@ -56,6 +109,10 @@ export const getCheckoutUrlElevated = elevate(checkout.getCheckoutUrl);
 
 // Back-compat: some modules historically imported logger from this file.
 export { logger };
+
+// =============================================================================
+// BLOQUE 3 - CLASE BOOKINGERROR
+// =============================================================================
 
 export class BookingError extends Error {
     constructor(code, message, details = {}) {
@@ -70,6 +127,10 @@ export class BookingError extends Error {
 export function createBookingError(code, message, details) {
     return new BookingError(code, message, details);
 }
+
+// =============================================================================
+// BLOQUE 4 - NORMALIZACION DE ERRORES
+// =============================================================================
 
 export function normalizeError(err) {
     if (err && typeof err === "object" && err.name === "BookingError") {
@@ -119,6 +180,9 @@ export function _handleError(error, context, traceId, logFn) {
     };
 }
 
+// =============================================================================
+// BLOQUE 5 - RESOLUCION DE SCHEDULEID (FALLBACK CONTROLADO)
+// =============================================================================
 
 async function _resolveScheduleIdByResourceId(resourceId) {
     const id = _safeTrim(resourceId);
@@ -127,9 +191,14 @@ async function _resolveScheduleIdByResourceId(resourceId) {
     return scheduleId && _looksLikeGuid(scheduleId) ? scheduleId : null;
 }
 
+// =============================================================================
+// BLOQUE 6 - NORMALIZACION DE SLOTS PARA WRITER V2
+// =============================================================================
+
 /**
  * Build the official Writer V2 slot shape.
- * Required: serviceId, scheduleId, startDate/endDate (ISO), timezone, resource.id, location.id + locationType OWNER_BUSINESS.
+ * Required: serviceId, scheduleId, startDate/endDate (ISO),
+ *           timezone, resource.id, location.id + locationType OWNER_BUSINESS.
  */
 export async function _forceStaffInPristineSlot(slot, resourceId, serviceIdOverride, defaultDurationMinutes) {
     if (!slot || typeof slot !== "object") return null;
@@ -206,6 +275,10 @@ export async function _forceStaffInPristineSlot(slot, resourceId, serviceIdOverr
     };
 }
 
+// =============================================================================
+// BLOQUE 7 - CHECKOUT URL HELPER
+// =============================================================================
+
 export function _extractCheckoutId(checkoutSession) {
     return checkoutSession?.checkout?._id || checkoutSession?._id || null;
 }
@@ -224,6 +297,10 @@ export async function getCheckoutUrlSafe(checkoutSessionOrId) {
         return null;
     }
 }
+
+// =============================================================================
+// BLOQUE 8 - MUTEX LOCKS (SlotLocks)
+// =============================================================================
 
 const MUTEX_TTL_MS = Number(CONCURRENCY?.MUTEX_TTL_MS) || 300000;
 const LOCKS_COL = COLLECTIONS.SLOT_LOCKS;
@@ -318,6 +395,10 @@ export async function _renewLock(slotClave, lockOwnerId, ttlMs) {
     }
 }
 
+// =============================================================================
+// BLOQUE 9 - SLOT KEYS
+// =============================================================================
+
 export function _generateSlotKey(serviceId, resourceId, startDate, endDate) {
     const startUtc = startDate instanceof Date ? startDate : getUtcDateFromMadridLocal(startDate);
     const endUtc = endDate instanceof Date ? endDate : getUtcDateFromMadridLocal(endDate);
@@ -336,6 +417,10 @@ export function _buildLockKeys(phases, resourceId) {
     });
     return Array.from(new Set(keys)).sort();
 }
+
+// =============================================================================
+// BLOQUE 10 - TRANSACCIONES IDEMPOTENTES (BookingTransactions)
+// =============================================================================
 
 const TRANSACTIONS_COL = COLLECTIONS.BOOKING_TRANSACTIONS;
 const TRANSACTION_POLL_BASE_MS = Number(CONCURRENCY?.TRANSACTION_POLL_BASE_MS) || 250;
@@ -439,6 +524,10 @@ export async function _failTransaction(pairToken, errorMessage) {
     else await wixData.insert(TRANSACTIONS_COL, doc, { suppressAuth: true }).catch(() => null);
 }
 
+// =============================================================================
+// BLOQUE 11 - PERSISTENCIA EN CITAS_F2
+// =============================================================================
+
 const CITAS_COL = COLLECTIONS.CITAS_F2;
 
 export async function _persistBooking(params, traceId) {
@@ -528,19 +617,9 @@ export async function _persistBooking(params, traceId) {
     return { created: true, item };
 }
 
-export function _areSlotsContiguous(slot1, slot2, maxGapMinutes) {
-    if (!slot1 || !slot2) return false;
-    const maxGap = maxGapMinutes == null ? 120 : maxGapMinutes;
-    const end1 = slot1.localEndDate || slot1.endDate;
-    const start2 = slot2.localStartDate || slot2.startDate;
-    if (!end1 || !start2) return false;
-    const end1Utc = end1 instanceof Date ? end1 : getUtcDateFromMadridLocal(_normalizeLocalIsoStr(end1));
-    const start2Utc = start2 instanceof Date ? start2 : getUtcDateFromMadridLocal(_normalizeLocalIsoStr(start2));
-    if (!end1Utc || !start2Utc) return false;
-    const gapMinutes = (start2Utc.getTime() - end1Utc.getTime()) / 60000;
-    return gapMinutes >= -1 && gapMinutes <= maxGap;
-}
-
+// =============================================================================
+// BLOQUE 12 - ACTUALIZACION SEGURA DE CITA
+// =============================================================================
 
 /**
  * Safe update of a CitasF2 row by bookingId.
@@ -582,6 +661,311 @@ export async function _updateCitaSafe(bookingId, updater, traceId, operation) {
     }
 }
 
+// =============================================================================
+// BLOQUE 13 - DUAL CACHE
+// =============================================================================
+
+const DUAL_CACHE_COL = COLLECTIONS.DUAL_SLOT_CACHE;
+
+export async function _getDualPairFromCache(pairToken, traceId) {
+    if (!pairToken) return null;
+
+    const res = await wixData
+        .query(DUAL_CACHE_COL)
+        .eq("_id", String(pairToken))
+        .limit(1)
+        .find({ suppressAuth: true })
+        .catch(() => null);
+
+    const item = res?.items?.[0] || null;
+    if (!item) return null;
+
+    const exp = _toDateSafe(item.expiresAt);
+    if (exp && exp.getTime() < Date.now()) return null;
+
+    return item;
+}
+
+// =============================================================================
+// BLOQUE 14 - HELPERS DE ADDONS
+// =============================================================================
+
+export function _normalizeAddons(addons) {
+    if (!Array.isArray(addons)) return [];
+    return addons.map((a) => {
+        const rawPrice = Number(a?.precio ?? a?.price ?? 0);
+        const precio = Number.isFinite(rawPrice) && rawPrice >= 0 ? rawPrice : 0;
+        return {
+            id: a?.id || a?._id || "",
+            nombre: a?.nombre || a?.name || "Complemento",
+            precio,
+        };
+    });
+}
+
+export function _sumAddons(addons) {
+    return _normalizeAddons(addons).reduce((acc, a) => acc + a.precio, 0);
+}
+
+// =============================================================================
+// BLOQUE 15 - EXTRACCION DE RESOURCEIDS DESDE SLOTS
+// =============================================================================
+
+export function _extractResourceIdsFromSlot(slot) {
+    if (!slot || typeof slot !== "object") return [];
+
+    let groups = [];
+    if (Array.isArray(slot.availableResources)) groups = slot.availableResources;
+    else if (slot.slot && typeof slot.slot === "object" && Array.isArray(slot.slot.availableResources)) {
+        groups = slot.slot.availableResources;
+    } else if (slot.resourceId) {
+        return _looksLikeGuid(String(slot.resourceId)) ? [String(slot.resourceId)] : [];
+    } else if (slot.resource?.id) {
+        return _looksLikeGuid(String(slot.resource.id)) ? [String(slot.resource.id)] : [];
+    }
+
+    const STAFF_RESOURCE_TYPE_ID = "1cd44cf8-756f-41c3-bd90-3e2ffcaf1155";
+    const staffGroup = groups.find((g) => String(g.resourceTypeId) === String(STAFF_RESOURCE_TYPE_ID));
+    if (!staffGroup) return [];
+
+    return Array.from(new Set(
+        (staffGroup.resources || [])
+        .map((resource) => _safeTrim(resource?.id || resource?._id))
+        .filter((resourceId) => _looksLikeGuid(resourceId))
+    ));
+}
+
+// =============================================================================
+// BLOQUE 16 - VALIDACION DE GUID
+// =============================================================================
+
 export function isValidGuid(id) {
     return _looksLikeGuid(id);
+}
+
+// =============================================================================
+// BLOQUE 17 - VERIFICACION DE CONTIGUIDAD/GAP ENTRE SLOTS
+// =============================================================================
+
+export function _areSlotsContiguous(slot1, slot2, maxGapMinutes) {
+    if (!slot1 || !slot2) return false;
+    const maxGap = maxGapMinutes == null ? 120 : maxGapMinutes;
+    const end1 = slot1.localEndDate || slot1.endDate;
+    const start2 = slot2.localStartDate || slot2.startDate;
+    if (!end1 || !start2) return false;
+    const end1Utc = end1 instanceof Date ? end1 : getUtcDateFromMadridLocal(_normalizeLocalIsoStr(end1));
+    const start2Utc = start2 instanceof Date ? start2 : getUtcDateFromMadridLocal(_normalizeLocalIsoStr(start2));
+    if (!end1Utc || !start2Utc) return false;
+    const gapMinutes = (start2Utc.getTime() - end1Utc.getTime()) / 60000;
+    return gapMinutes >= -1 && gapMinutes <= maxGap;
+}
+
+// =============================================================================
+// BLOQUE 18 - PROYECCION DE SLOTS CERTIFICADOS Y WRITER
+// =============================================================================
+
+export function _projectCertifiedSlot(slot, resourceId) {
+    if (!slot || typeof slot !== "object") return null;
+
+    const serviceId = _safeTrim(slot.serviceId);
+    if (!serviceId || !_looksLikeGuid(serviceId)) return null;
+
+    const resourceIdClean = _safeTrim(resourceId || slot.resourceId || slot.resource?.id);
+    if (!resourceIdClean || !_looksLikeGuid(resourceIdClean)) return null;
+
+    const localStartDate = _normalizeLocalIsoStr(slot.localStartDate || slot.startDate);
+    const localEndDate = _normalizeLocalIsoStr(slot.localEndDate || slot.endDate);
+
+    if (!localStartDate || !localEndDate) return null;
+
+    const startDateUtc = getUtcDateFromMadridLocal(localStartDate);
+    const endDateUtc = getUtcDateFromMadridLocal(localEndDate);
+
+    if (!startDateUtc || !endDateUtc || endDateUtc.getTime() <= startDateUtc.getTime()) return null;
+
+    return {
+        serviceId,
+        resourceId: resourceIdClean,
+        scheduleId: _safeTrim(slot.scheduleId || slot.slot?.scheduleId || ""),
+        localStartDate,
+        localEndDate,
+        startDate: startDateUtc,
+        endDate: endDateUtc,
+        bookable: slot.bookable === true,
+        availableResources: _extractResourceIdsFromSlot(slot),
+        timezone: SDK_CONFIG?.TZ || "Europe/Madrid",
+        locationId: _safeTrim(slot.location?.id || SDK_CONFIG?.LOCATION_ID || ""),
+        locationName: _safeTrim(slot.location?.name || ""),
+        formattedAddress: _safeTrim(slot.location?.formattedAddress || ""),
+    };
+}
+
+export function _projectWriterSlotFromAvailability(slot, resourceId, serviceId) {
+    const projected = _projectCertifiedSlot(slot, resourceId);
+    if (!projected) return null;
+
+    const finalServiceId = _safeTrim(serviceId) || projected.serviceId;
+    if (!finalServiceId || !_looksLikeGuid(finalServiceId)) return null;
+
+    let writerLocationType = _safeTrim(SDK_CONFIG?.LOCATION_TYPES?.BOOKINGS_WRITER);
+    if (writerLocationType === "BUSINESS" || !writerLocationType) writerLocationType = "OWNER_BUSINESS";
+
+    return {
+        serviceId: finalServiceId,
+        scheduleId: projected.scheduleId,
+        startDate: projected.startDate,
+        endDate: projected.endDate,
+        timezone: projected.timezone,
+        resource: {
+            id: projected.resourceId,
+        },
+        location: {
+            id: projected.locationId,
+            locationType: writerLocationType,
+        },
+    };
+}
+
+// =============================================================================
+// BLOQUE 19 - SLOTS DUALES OPTIMIZADOS CON CACHE PRE-WARM
+// =============================================================================
+
+export async function getCertifiedDualSlotsOptimized(serviceId, resourceId, dateYMD, addonIds = []) {
+    const traceId = makeTraceId("dual-opt");
+    try {
+        const reservasModule = await import("backend/reservas.web");
+
+        const cached = await wixData
+            .query(DUAL_CACHE_COL)
+            .eq("serviceId", serviceId)
+            .eq("dateYmd", dateYMD)
+            .eq("status", "ACTIVE")
+            .gt("expiresAt", new Date())
+            .limit(50)
+            .find({ suppressAuth: true })
+            .catch(() => ({ items: [] }));
+
+        if (cached?.items?.length > 0 && resourceId) {
+            const matchingPairs = cached.items.filter((p) => p.resourceId === resourceId);
+            if (matchingPairs.length > 0) {
+                log.info("getCertifiedDualSlotsOptimized: cache hit", { serviceId, dateYMD, traceId });
+                return {
+                    status: "SUCCESS",
+                    data: matchingPairs.map((p) => ({
+                        fase1: { slotRef: p.slotF1, resourceId: p.resourceId },
+                        fase2: { slotRef: p.slotF2, resourceId: p.resourceId },
+                        pairToken: p.pairToken,
+                        serviceId: p.serviceId,
+                        linkedPhases: p.phase2ServiceId,
+                        dateYMD: p.dateYmd,
+                    })),
+                    error: null,
+                    cached: true,
+                };
+            }
+        }
+
+        return await reservasModule._getCertifiedDualSlotsInternal(serviceId, resourceId, dateYMD, addonIds);
+    } catch (err) {
+        log.error("getCertifiedDualSlotsOptimized failed", { error: err?.message, traceId });
+        return { status: "ERROR", data: null, error: { code: "DUAL_SLOTS_FAILED", message: err?.message } };
+    }
+}
+
+// =============================================================================
+// BLOQUE 20 - HELPERS ADICIONALES
+// =============================================================================
+
+export function _generatePairToken(traceId) {
+    return "pt_" + _hashKey(traceId || makeTraceId("pair")).slice(0, 32);
+}
+
+export function _areSlotsCompatible(slot1, slot2, maxGapMinutes) {
+    return _areSlotsContiguous(slot1, slot2, maxGapMinutes);
+}
+
+export function _auditBookingPrice(basePrice, addons) {
+    const base = Number(basePrice) || 0;
+    const addonsTotal = _sumAddons(addons);
+    const totalPrice = base + addonsTotal;
+    return {
+        totalPrice,
+        audit: {
+            basePrice: base,
+            addonsTotal,
+            addonsCount: Array.isArray(addons) ? addons.length : 0,
+        },
+    };
+}
+
+// =============================================================================
+// BLOQUE 21 - [CORE-08] RANKING DE RECURSOS POR CARGA
+//
+// Auditoria B28: se usa .in() sobre resourceId (campo escalar en CitasF2).
+// En versiones anteriores .hasSome() sobre campo escalar no funcionaba.
+// =============================================================================
+
+export async function _rankResourcesByLoad(resourceIds, dateYMD, traceId) {
+    const input = Array.isArray(resourceIds) ?
+        Array.from(new Set(resourceIds.map((id) => _safeTrim(id)).filter(_looksLikeGuid))) : [];
+
+    if (input.length < 2) return input;
+
+    const day = _safeTrim(dateYMD);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+        log.warn("_rankResourcesByLoad: invalid dateYMD", { dateYMD: day, traceId });
+        return input;
+    }
+
+    const loads = Object.fromEntries(input.map((id, index) => [id, {
+        resourceId: id,
+        load: 0,
+        firstIndex: index,
+    }]));
+
+    try {
+        const pageSize = 1000;
+        let skip = 0;
+        let hasMore = true;
+
+        while (hasMore) {
+            const result = await wixData
+                .query(CITAS_COL)
+                .eq("dateYmd", day)
+                // [CORE-08] .in() sobre campo escalar resourceId (auditoria B28)
+                .in("resourceId", input)
+                .limit(pageSize)
+                .skip(skip)
+                .find({ suppressAuth: true, consistentRead: true });
+
+            const items = Array.isArray(result?.items) ? result.items : [];
+
+            for (const item of items) {
+                const resourceId = _safeTrim(item?.resourceId);
+                if (!loads[resourceId]) continue;
+
+                const status = String(item?.status || "").toUpperCase();
+                const paymentStatus = String(item?.paymentStatus || "").toUpperCase();
+                const cancelled = ["CANCELLED", "DECLINED", "REJECTED", "NO_SHOW"].includes(status);
+                const ignoredPayment = paymentStatus === "CANCELLED";
+
+                if (!cancelled && !ignoredPayment) loads[resourceId].load += 1;
+            }
+
+            skip += items.length;
+            hasMore = items.length === pageSize;
+            if (!items.length) hasMore = false;
+        }
+
+        return Object.values(loads)
+            .sort((a, b) => a.load - b.load || a.firstIndex - b.firstIndex)
+            .map((entry) => entry.resourceId);
+    } catch (error) {
+        log.warn("_rankResourcesByLoad failed; preserving availability order", {
+            traceId,
+            dateYMD: day,
+            error: error?.message,
+        });
+        return input;
+    }
 }
