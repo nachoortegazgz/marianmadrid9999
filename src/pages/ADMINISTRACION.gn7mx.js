@@ -7,11 +7,11 @@
  STANDARDS: G10 ASCII Strict (0 non-ASCII characters), Velo V3 SDK.
  CORRECTIONS:
    - wix-location -> wix-location-frontend (Velo V3)
-   - slugUrl maintained as canonical field (user correction)
+   - slugUrl maintained as canonical field
    - FIX-46: eliminado import registerXCount y accion X_COUNT.
-             registerXCount fue retirado en cajas.web.js [CLEAN-05] porque
-             dependia de la coleccion CONTROL_PARCIAL_X, eliminada del SSOT.
-             El HTML del panel admin debe eliminar el boton correspondiente.
+             registerXCount fue retirado en cajas.web.js [CLEAN-05].
+             ACCION EXTERNA PENDIENTE: el HTML del panel admin debe eliminar
+             el boton "X_COUNT" para evitar dispatch desconocido.
  =============================================================================
  */
  import wixMembersFrontend from "wix-members-frontend";
