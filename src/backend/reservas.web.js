@@ -1,22 +1,24 @@
 /**
  * ============================================================================
  * FILE: backend/reservas.web.js
- * VERSION: v5008.8-ALIGNED
+ * VERSION: v5008.9-FINAL
  * RESPONSIBILITY: Availability engine, dual slots, staff pairing and caching.
  * STANDARDS: G10 ASCII Strict.
  *
- * FIXES APPLIED (audit v5008.3 + v5008.4 + v5008.5 + v5008.6):
- *  - FIX-1 a FIX-14: ver cabecera de versiones anteriores.
- *  - FIX-15 / FIX-16: aplicados en backend/citasManager.web.js.
- *  - FIX-17: Manejo de availabilityConstraints.durationRange.
+ * FIXES HISTORICOS (v5008.3 a v5008.8):
+ *  - FIX-1 a FIX-20: ver cabeceras previas.
  *
- * FIXES APPLIED (v5008.8):
- *  - FIX-18: Nuevo helper _getRequestedAddonContext que resuelve addons
- *            por id o nativeId y devuelve solo nativeAddonIds validos.
- *  - FIX-19: _resolveAddonContextInternal ahora delega en el helper.
- *  - FIX-20: Nueva funcion exportada getAvailableSlots (webMethod) para
- *            disponibilidad single-service. Filtra por bookable, adjunta
- *            serviceId validado y soporta customerChoices para addons.
+ * FIXES APLICADOS (v5008.9):
+ *  - FIX-21: getAvailableSlots rechaza la combinacion durationRange+addons
+ *            ANTES de enviar customerChoices (Wix no lo soporta).
+ *  - FIX-22: getAvailableSlots rechaza servicios duales con SERVICE_IS_DUAL.
+ *  - FIX-23: Consolidacion con bookingUtils.js:
+ *              * cleanGuidList       (era _readOptionalImport2ResourceIds)
+ *              * readDurationRange   (era _readDurationRange)
+ *              * resolveExpectedSlotMinutes (era _resolveExpectedSlotMinutes)
+ *              * resolveLinkedPhase2Duration (era _resolveLinkedPhase2Duration)
+ *  - FIX-24: Eliminadas _resolveAddonContext y _resolveAddonContextPublic
+ *            (dead code).
  * ============================================================================
  */
 
@@ -43,6 +45,13 @@ import {
   withTimeout
 } from "public/mmUtils";
 
+import {
+  cleanGuidList,
+  readDurationRange,
+  resolveExpectedSlotMinutes,
+  resolveLinkedPhase2Duration
+} from "backend/booking/bookingUtils";
+
 import { logger } from "backend/logger";
 import { getStaffDisplayName } from "backend/staff";
 
@@ -56,28 +65,6 @@ function _readImport2Field(item, field) {
     item.data?.[field] ??
     item.fields?.[field] ??
     null
-  );
-}
-
-function _readOptionalImport2ResourceIds(value) {
-  const source = Array.isArray(value) ? value : [];
-
-  return Array.from(
-    new Set(
-      source
-        .map((item) => {
-          if (typeof item === "string") {
-            return _safeTrim(item);
-          }
-
-          return _safeTrim(
-            item?._id ||
-            item?.id ||
-            item?.resourceId
-          );
-        })
-        .filter((id) => _looksLikeGuid(id))
-    )
   );
 }
 
@@ -114,52 +101,6 @@ function _normalizeImport2Addon(addon) {
       0
     ) || 0
   };
-}
-
-/**
- * FIX-17: Extrae durationRange de un item del catalogo.
- */
-function _readDurationRange(item) {
-  if (!item || typeof item !== "object") return null;
-
-  const constraints = _readImport2Field(
-    item,
-    "availabilityConstraints"
-  );
-
-  const candidate =
-    constraints?.durationRange ||
-    _readImport2Field(item, "durationRange") ||
-    null;
-
-  if (!candidate || typeof candidate !== "object") {
-    return null;
-  }
-
-  const rawMin = Number(
-    candidate.minDuration ??
-    candidate.min ??
-    0
-  ) || 0;
-
-  const rawMax = Number(
-    candidate.maxDuration ??
-    candidate.max ??
-    0
-  ) || 0;
-
-  const min = rawMin > 0 ? rawMin : 0;
-  const max = rawMax > 0 ? rawMax : Infinity;
-
-  if (min <= 0 && max === Infinity) {
-    return null;
-  }
-
-  if (max !== Infinity && max <= min) {
-    return null;
-  }
-
-  return { min, max };
 }
 
 const SERVICIOS_COL = COLLECTIONS.SERVICIOS_CATALOGO;
@@ -445,78 +386,6 @@ function _isValidSlotRange(startLocal, endLocal) {
   );
 }
 
-function _resolveExpectedSlotMinutes(serviceConfig) {
-  if (!serviceConfig || typeof serviceConfig !== "object") {
-    return 0;
-  }
-
-  if (serviceConfig.allowCombine === true) {
-    return Number(serviceConfig.phase1Duration || 0) || 0;
-  }
-
-  return (
-    Number(serviceConfig.phase1Duration || 0) ||
-    Number(serviceConfig.totalDuration || 0) ||
-    Number(
-      serviceConfig.metadata?.timing?.estimatedTotal || 0
-    ) ||
-    0
-  );
-}
-
-async function _resolveLinkedPhase2Duration(
-  linkedPhases,
-  traceId,
-  visited = new Set()
-) {
-  const linkedId = _safeTrim(linkedPhases);
-
-  if (!_looksLikeGuid(linkedId)) {
-    return 0;
-  }
-
-  if (visited.has(linkedId)) {
-    log.warn(
-      "FIX-14: Cycle detected in linkedPhases chain",
-      { traceId, linkedId, visited: Array.from(visited) }
-    );
-    return 0;
-  }
-
-  visited.add(linkedId);
-
-  try {
-    const linkedResult =
-      await _getServiceBySlugOrIdInternal(
-        linkedId,
-        traceId
-      );
-
-    if (
-      linkedResult?.status === "SUCCESS" &&
-      linkedResult?.data
-    ) {
-      const linked = linkedResult.data;
-
-      return (
-        Number(linked.phase1Duration || 0) ||
-        Number(linked.totalDuration || 0) ||
-        Number(
-          linked.metadata?.timing?.estimatedTotal || 0
-        ) ||
-        0
-      );
-    }
-  } catch (_) {
-    log.warn(
-      "FIX-7: No se pudo resolver duracion de F2 desde linkedPhases",
-      { traceId, linkedPhases: linkedId }
-    );
-  }
-
-  return 0;
-}
-
 async function _verifyRequiredStaffViaGet({
   serviceId,
   start,
@@ -578,7 +447,7 @@ async function _verifyRequiredStaffViaGet({
     };
   } catch (error) {
     log.warn(
-      "FIX-11/FIX-13: getAvailabilityTimeSlot verification failed",
+      "getAvailabilityTimeSlot verification failed",
       {
         traceId,
         serviceId: String(serviceId),
@@ -599,9 +468,6 @@ async function _verifyRequiredStaffViaGet({
 
 /**
  * FIX-18: Resuelve complementos por id o nativeId.
- *
- * Devuelve los nativeAddonIds validos (GUIDs) y la lista de addons
- * seleccionados para trazabilidad.
  */
 function _getRequestedAddonContext(service, requestedAddonIds) {
   const requested = new Set(
@@ -638,21 +504,11 @@ function _getRequestedAddonContext(service, requestedAddonIds) {
   };
 }
 
-/**
- * FIX-19: _resolveAddonContextInternal ahora delega en _getRequestedAddonContext.
- */
 function _resolveAddonContextInternal(
   service,
   requestedAddonIds
 ) {
   return _getRequestedAddonContext(
-    service,
-    requestedAddonIds
-  );
-}
-
-function _resolveAddonContext(service, requestedAddonIds) {
-  return _resolveAddonContextInternal(
     service,
     requestedAddonIds
   );
@@ -938,13 +794,15 @@ export async function _mapServiceImport2ToUX(
     )
   ) || 0;
 
+  // FIX-23: usa resolveLinkedPhase2Duration de bookingUtils.
   if (allowCombine && _looksLikeGuid(linkedPhases)) {
     const visited = new Set([serviceId]);
 
-    const resolved = await _resolveLinkedPhase2Duration(
+    const resolved = await resolveLinkedPhase2Duration(
       linkedPhases,
       traceId,
-      visited
+      visited,
+      _getServiceBySlugOrIdInternal
     );
 
     if (resolved > 0) {
@@ -1056,7 +914,8 @@ export async function _mapServiceImport2ToUX(
     _readImport2Field(service, "internalNotes")
   ) || null;
 
-  const durationRange = _readDurationRange(service);
+  // FIX-23: usa readDurationRange de bookingUtils.
+  const durationRange = readDurationRange(service);
 
   const estimatedTotal =
     totalDuration ||
@@ -1069,13 +928,10 @@ export async function _mapServiceImport2ToUX(
     ) ||
     30;
 
-  const staffDisponible =
-    _readOptionalImport2ResourceIds(
-      _readImport2Field(
-        service,
-        "availableStaff"
-      )
-    );
+  // FIX-23: usa cleanGuidList de bookingUtils.
+  const staffDisponible = cleanGuidList(
+    _readImport2Field(service, "availableStaff")
+  );
 
   const staffOptions = await Promise.all(
     staffDisponible.map(async (resourceId) => {
@@ -1279,28 +1135,11 @@ export function _toPublicService(service) {
   };
 }
 
-export async function _resolveAddonContextPublic(
-  service,
-  requestedAddonIds
-) {
-  return _resolveAddonContextInternal(
-    service,
-    requestedAddonIds
-  );
-}
-
 /**
- * FIX-20: Disponibilidad single-service.
- *
- * - Valida el servicio y la fecha.
- * - Normaliza resourceId.
- * - Resuelve addons por id/nativeId.
- * - Llama a listAvailabilityTimeSlots con customerChoices si aplica.
- * - Filtra slots bookable y les adjunta el serviceId validado.
- *
- * Nota: confirmar que listAvailabilityTimeSlots acepta customerChoices
- *       para servicios simples con complementos. Si no, se debera
- *       manejar el fallback sin addons.
+ * FIX-20 + FIX-21 + FIX-22: Disponibilidad single-service.
+ *  - Rechaza servicios duales (SERVICE_IS_DUAL).
+ *  - Rechaza durationRange + addons antes de customerChoices.
+ *  - Filtra slots bookable y adjunta serviceId validado.
  */
 export const getAvailableSlots = webMethod(
   Permissions.Anyone,
@@ -1335,6 +1174,28 @@ export const getAvailableSlots = webMethod(
 
       const service = serviceResult.data;
       const serviceId = service.serviceId;
+
+      // FIX-22: getAvailableSlots es solo para servicios single.
+      if (service.allowCombine === true) {
+        log.warn(
+          "FIX-22: getAvailableSlots called for dual service",
+          {
+            traceId,
+            serviceId: String(serviceId)
+          }
+        );
+
+        return {
+          status: "ERROR",
+          data: null,
+          error: {
+            code: "SERVICE_IS_DUAL",
+            message:
+              "Use getCertifiedDualSlots for dual services."
+          }
+        };
+      }
+
       const requestedResourceId =
         _normalizeResourceIds(resourceId, traceId);
 
@@ -1343,6 +1204,32 @@ export const getAvailableSlots = webMethod(
           service,
           addonIds
         );
+
+      // FIX-21: durationRange + addons no soportado por Wix.
+      if (
+        addonContext.nativeAddonIds.length > 0 &&
+        service.durationRange
+      ) {
+        log.warn(
+          "FIX-21: durationRange + addons combination not supported",
+          {
+            traceId,
+            serviceId: String(serviceId),
+            durationRange: service.durationRange,
+            addonCount: addonContext.nativeAddonIds.length
+          }
+        );
+
+        return {
+          status: "ERROR",
+          data: null,
+          error: {
+            code: "DURATION_RANGE_WITH_ADDONS_NOT_SUPPORTED",
+            message:
+              "Services with a duration range cannot be combined with addons."
+          }
+        };
+      }
 
       const ymd = _safeTrim(dateYMD);
 
@@ -1520,7 +1407,7 @@ export async function revalidateExactAvailabilitySlot({
       serviceDurationRange
     ) {
       log.warn(
-        "FIX-17: durationRange + addons combination not supported",
+        "durationRange + addons combination not supported",
         {
           traceId: activeTraceId,
           serviceId: String(resolvedServiceId),
@@ -1752,7 +1639,7 @@ export async function revalidateExactAvailabilitySlot({
 
         if (belowMin || aboveMax) {
           log.warn(
-            "FIX-17: Slot duration out of range",
+            "Slot duration out of range",
             {
               traceId: activeTraceId,
               serviceId: String(resolvedServiceId),
@@ -1776,8 +1663,9 @@ export async function revalidateExactAvailabilitySlot({
           };
         }
       } else {
+        // FIX-23: usa resolveExpectedSlotMinutes de bookingUtils.
         const expectedMinutes =
-          _resolveExpectedSlotMinutes(config);
+          resolveExpectedSlotMinutes(config);
 
         if (expectedMinutes > 0) {
           if (
@@ -1785,7 +1673,7 @@ export async function revalidateExactAvailabilitySlot({
             Math.abs(actualMinutes - expectedMinutes) > 1
           ) {
             log.warn(
-              "FIX-6: Slot duration mismatch",
+              "Slot duration mismatch",
               {
                 traceId: activeTraceId,
                 serviceId: String(resolvedServiceId),
