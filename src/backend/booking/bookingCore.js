@@ -1,27 +1,26 @@
 /*
 =============================================================================
 MODULE: backend/booking/bookingCore.js
-VERSION: v5008.5-ALIGNED3 (coherencia scheduleId Writer<->CitasF2)
+VERSION: v5008.6-FINAL
 BASE: BIBLIA v5002.5 Bloque 12.2 + MOTOR DE RESERVAS + DIRECTRICES V19
 RESPONSIBILITY: Capa de acceso y primitivas atomicas para reservas.
 STANDARDS: ASCII only. No Node builtins.
 HISTORIAL DE CAMBIOS:
+  v5008.6 | 2026-09-20 | Alineacion final:
+           |            | [FIX-32] _extractResourceIdsFromSlot usa
+           |            |   API.STAFF_RESOURCE_TYPE_ID (SSOT) en lugar de
+           |            |   GUID hardcoded.
+           |            | [FIX-33] _areSlotsContiguous delega en
+           |            |   computeGapMinutes de bookingUtils. Unifica
+           |            |   tolerancia con bookingSaga y citasManager.
+           |            | [FIX-43] Fallback de lectura lockOwnerId ||
+           |            |   traceId en _getLock y chequeos de owner. Los
+           |            |   locks creados antes del rename (campo traceId)
+           |            |   siguen funcionando sin ventana de downtime.
   v5008.5 | 2026-09-19 | COHERENCIA scheduleId Writer<->CitasF2:
-           |            | [CORE-16] Nuevo export
-           |            |   _resolveScheduleIdForResource(resourceId,
-           |            |   sourceSlot). Devuelve el scheduleId con el
-           |            |   mismo fallback que _forceStaffInPristineSlot
-           |            |   (slot.scheduleId -> slot.slot.scheduleId ->
-           |            |   slot.schedule.id -> slot.resource.scheduleId ->
-           |            |   getStaffScheduleId(resourceId)). Uso: el Saga
-           |            |   deriva el scheduleId ANTES de persistir, para
-           |            |   garantizar que sea exactamente el mismo que
-           |            |   se envio a Writer V2.
-           |            | [CORE-17] getCertifiedDualSlotsOptimized()
-           |            |   filtra items del cache por coherencia
-           |            |   (serviceId, resourceId, phase2ServiceId,
-           |            |   status=ACTIVE) antes de devolver. Antes solo
-           |            |   filtraba por resourceId y confiaba en la query.
+           |            | [CORE-16] _resolveScheduleIdForResource.
+           |            | [CORE-17] getCertifiedDualSlotsOptimized
+           |            |   filtra por coherencia del cache.
   v5008.4 | 2026-09-19 | Date range, scheduleId obligatorio, cache
            |            | validaciones, imports no usados retirados.
   v5008.3 | 2026-09-19 | Restauracion de exports faltantes.
@@ -39,6 +38,7 @@ import {
     COLLECTIONS,
     CONCURRENCY,
     SDK_CONFIG,
+    API,
 } from "backend/internalConfig";
 import {
     _safeTrim,
@@ -50,8 +50,14 @@ import {
     _hashKey,
     _normalizeLocalIsoStr,
 } from "public/mmUtils";
+import {
+    computeGapMinutes,
+} from "backend/booking/bookingUtils";
 
 const log = logger;
+
+// FIX-32: STAFF_RESOURCE_TYPE_ID via SSOT.
+const STAFF_RESOURCE_TYPE_ID = API.STAFF_RESOURCE_TYPE_ID;
 
 // =============================================================================
 // BLOQUE 1 - CODIGOS DE ERROR (25 codigos)
@@ -332,6 +338,11 @@ export async function getCheckoutUrlSafe(checkoutSessionOrId) {
 
 // =============================================================================
 // BLOQUE 8 - MUTEX LOCKS (SlotLocks)
+//
+// FIX-43: compatibilidad con documentos previos al rename traceId ->
+// lockOwnerId. Los chequeos leen `lockOwnerId || traceId` para que los
+// locks creados por versiones anteriores sigan siendo renovables y
+// liberables.
 // =============================================================================
 
 const MUTEX_TTL_MS = Number(CONCURRENCY?.MUTEX_TTL_MS);
@@ -355,6 +366,15 @@ async function _getLock(slotClave) {
     if (!item) return null;
     if (item.expiresAt) item.expiresAt = _toDateSafe(item.expiresAt);
     return item;
+}
+
+/**
+ * FIX-43: lee el owner del lock aceptando tanto `lockOwnerId` (nuevo) como
+ * `traceId` (legacy). Devuelve string vacio si no hay ninguno.
+ */
+function _getLockOwnerId(lock) {
+    if (!lock || typeof lock !== "object") return "";
+    return _safeTrim(lock.lockOwnerId || lock.traceId || "");
 }
 
 function _isDuplicateItemError(error) {
@@ -389,7 +409,8 @@ export async function _lockSlotKeyOrFail(slotClave, lockOwnerId, ttlMs) {
             return { ok: false, message: error?.message || "Lock acquisition failed" };
         }
         const existing = await _getLock(k);
-        if (existing?.lockOwnerId === owner) {
+        const currentOwner = _getLockOwnerId(existing);
+        if (currentOwner === owner) {
             const renewed = await _renewLock(k, owner, ttlMs);
             return renewed.ok ? { ok: true, renewed: true } : { ok: false, message: "LOCK_RENEWAL_FAILED" };
         }
@@ -412,7 +433,8 @@ export async function _unlockSlotKey(slotClave, lockOwnerId) {
     const owner = String(lockOwnerId || "").trim();
     const existing = await _getLock(slotClave);
     if (!existing) return { ok: true, missing: true };
-    if (!owner || existing.lockOwnerId !== owner) return { ok: false, skipped: true };
+    const currentOwner = _getLockOwnerId(existing);
+    if (!owner || currentOwner !== owner) return { ok: false, skipped: true };
     await wixData.remove(LOCKS_COL, existing._id, { suppressAuth: true });
     return { ok: true };
 }
@@ -421,7 +443,9 @@ export async function _renewLock(slotClave, lockOwnerId, ttlMs) {
     try {
         const owner = String(lockOwnerId || "").trim();
         const existing = await _getLock(slotClave);
-        if (!existing || !owner || existing.lockOwnerId !== owner) return { ok: false };
+        if (!existing) return { ok: false };
+        const currentOwner = _getLockOwnerId(existing);
+        if (!owner || currentOwner !== owner) return { ok: false };
         await wixData.update(LOCKS_COL, _buildLockDocument(slotClave, owner, ttlMs, existing), { suppressAuth: true });
         return { ok: true };
     } catch (error) {
@@ -786,6 +810,8 @@ export function _sumAddons(addons) {
 
 // =============================================================================
 // BLOQUE 15 - EXTRACCION DE RESOURCEIDS DESDE SLOTS
+//
+// FIX-32: STAFF_RESOURCE_TYPE_ID via API.STAFF_RESOURCE_TYPE_ID (SSOT).
 // =============================================================================
 
 export function _extractResourceIdsFromSlot(slot) {
@@ -801,7 +827,6 @@ export function _extractResourceIdsFromSlot(slot) {
         return _looksLikeGuid(String(slot.resource.id)) ? [String(slot.resource.id)] : [];
     }
 
-    const STAFF_RESOURCE_TYPE_ID = "1cd44cf8-756f-41c3-bd90-3e2ffcaf1155";
     const staffGroup = groups.find((g) => String(g.resourceTypeId) === String(STAFF_RESOURCE_TYPE_ID));
     if (!staffGroup) return [];
 
@@ -822,6 +847,11 @@ export function isValidGuid(id) {
 
 // =============================================================================
 // BLOQUE 17 - VERIFICACION DE CONTIGUIDAD/GAP ENTRE SLOTS
+//
+// FIX-33: delega en computeGapMinutes de bookingUtils (SSOT de la
+// tolerancia). Se mantiene la tolerancia de -1 min para solapamiento por
+// redondeo, que se calcula con la diferencia directa antes de invocar el
+// helper canonico.
 // =============================================================================
 
 export function _areSlotsContiguous(slot1, slot2, maxGapMinutes) {
@@ -830,11 +860,20 @@ export function _areSlotsContiguous(slot1, slot2, maxGapMinutes) {
     const end1 = slot1.localEndDate || slot1.endDate;
     const start2 = slot2.localStartDate || slot2.startDate;
     if (!end1 || !start2) return false;
+
     const end1Utc = end1 instanceof Date ? end1 : getUtcDateFromMadridLocal(_normalizeLocalIsoStr(end1));
     const start2Utc = start2 instanceof Date ? start2 : getUtcDateFromMadridLocal(_normalizeLocalIsoStr(start2));
     if (!end1Utc || !start2Utc) return false;
-    const gapMinutes = (start2Utc.getTime() - end1Utc.getTime()) / 60000;
-    return gapMinutes >= -1 && gapMinutes <= maxGap;
+
+    const rawDiffMinutes = (start2Utc.getTime() - end1Utc.getTime()) / 60000;
+
+    // Solapamiento tolerado: -1 min por redondeo.
+    if (rawDiffMinutes < -1) return false;
+
+    // Gap canonico: computeGapMinutes devuelve 0 si start2 < end1.
+    const gapMinutes = computeGapMinutes(end1Utc, start2Utc);
+
+    return gapMinutes <= maxGap;
 }
 
 // =============================================================================
@@ -925,7 +964,6 @@ export async function getCertifiedDualSlotsOptimized(serviceId, resourceId, date
             .catch(() => ({ items: [] }));
 
         if (cached?.items?.length > 0 && resourceId) {
-            // [CORE-17] Filtrado por coherencia: serviceId, resourceId, phase2ServiceId
             const matchingPairs = cached.items.filter((p) => {
                 const sameService = _safeTrim(p.serviceId) === _safeTrim(serviceId);
                 const sameResource = _safeTrim(p.resourceId) === _safeTrim(resourceId);
