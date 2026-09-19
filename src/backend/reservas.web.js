@@ -1,35 +1,23 @@
 /**
  * ============================================================================
  * FILE: backend/reservas.web.js
- * VERSION: v5008.6-ALIGNED
+ * VERSION: v5008.7-ALIGNED
  * RESPONSIBILITY: Availability engine, dual slots, staff pairing and caching.
  * STANDARDS: G10 ASCII Strict.
  *
- * FIXES APPLIED (audit v5008.3 + v5008.4 + v5008.5):
- *  - FIX-1: _resolveServiceIdInternal valida GUID contra ServiciosCatalogo.
- *  - FIX-2: F2 resuelve su duracion desde linkedPhases.
- *  - FIX-3: revalidateExactAvailabilitySlot valida duracion vs servicio.
- *  - FIX-4: _getResourceIdsFromSlot prioriza grupo de recursos de personal.
- *  - FIX-5: _mapServiceImport2ToUX devuelve totalDuration normalizado.
- *  - FIX-6: Validacion de duracion phase-aware (F1 no se compara contra
- *            estimatedTotal del flujo dual completo).
- *  - FIX-7: Duracion real de F2 centralizada en _resolveLinkedPhase2Duration.
- *  - FIX-8: requiredResourceId validado con _looksLikeGuid antes de usarlo.
- *  - FIX-9: Eliminadas constantes/imports no usados.
- *  - FIX-10: Fallback seguro para LOCATION_TS.locationType.
- *  - FIX-11: Verificacion de staff concreto via getAvailabilityTimeSlot
- *            cuando se usa List API (addons) y hay >10 recursos.
- *
- * AUDIT v5008.5 BLOCKERS:
- *  - FIX-12: LOCATION_TS.locationType se normaliza. Si el config trae
- *            "BUSINESS" o vacio, se fuerza "OWNER_BUSINESS" (valor
- *            canonico de Time Slots V2).
- *  - FIX-13: La verificacion Get del staff requerido se ejecuta SIEMPRE
- *            que exista requiredResourceId, sin depender de que List
- *            haya devuelto un slot. Get pasa a ser fuente autoritativa.
- *  - FIX-14: Proteccion contra auto-enlace y ciclos indirectos en
- *            linkedPhases. Se lanza error en auto-enlace y se detectan
- *            ciclos con un set de visitados.
+ * FIXES APPLIED (audit v5008.3 + v5008.4 + v5008.5 + v5008.6):
+ *  - FIX-1 a FIX-14: ver cabecera de versiones anteriores.
+ *  - FIX-15 / FIX-16: aplicados en backend/citasManager.web.js.
+ *  - FIX-17: Manejo de availabilityConstraints.durationRange.
+ *            * Nuevo helper _readDurationRange().
+ *            * _mapServiceImport2ToUX expone durationRange { min, max }.
+ *            * Validacion de duracion en revalidateExactAvailabilitySlot
+ *              ahora soporta dos modos:
+ *                - Modo range: min <= actualMinutes <= max.
+ *                - Modo fijo: comparacion exacta phase-aware (FIX-6).
+ *            * Se rechaza DURATION_RANGE_WITH_ADDONS_NOT_SUPPORTED cuando
+ *              un servicio con duration range intenta usar addons (Wix no
+ *              soporta customerChoices con durationRange).
  * ============================================================================
  */
 
@@ -129,6 +117,62 @@ function _normalizeImport2Addon(addon) {
   };
 }
 
+/**
+ * FIX-17: Extrae durationRange de un item del catalogo.
+ *
+ * Soporta multiples formas por robustez ante variaciones del CMS:
+ *   - availabilityConstraints.durationRange.{minDuration, maxDuration}
+ *   - availabilityConstraints.durationRange.{min, max}
+ *   - durationRange.{minDuration, maxDuration}
+ *   - durationRange.{min, max}
+ *
+ * Devuelve null si no hay configuracion de rango valida.
+ * Devuelve { min, max } con min>=0 y max>min, o max=Infinity si solo
+ * se configura min.
+ */
+function _readDurationRange(item) {
+  if (!item || typeof item !== "object") return null;
+
+  const constraints = _readImport2Field(
+    item,
+    "availabilityConstraints"
+  );
+
+  const candidate =
+    constraints?.durationRange ||
+    _readImport2Field(item, "durationRange") ||
+    null;
+
+  if (!candidate || typeof candidate !== "object") {
+    return null;
+  }
+
+  const rawMin = Number(
+    candidate.minDuration ??
+    candidate.min ??
+    0
+  ) || 0;
+
+  const rawMax = Number(
+    candidate.maxDuration ??
+    candidate.max ??
+    0
+  ) || 0;
+
+  const min = rawMin > 0 ? rawMin : 0;
+  const max = rawMax > 0 ? rawMax : Infinity;
+
+  if (min <= 0 && max === Infinity) {
+    return null;
+  }
+
+  if (max !== Infinity && max <= min) {
+    return null;
+  }
+
+  return { min, max };
+}
+
 const SERVICIOS_COL = COLLECTIONS.SERVICIOS_CATALOGO;
 
 const WATCHDOG_TIMEOUT_MS = SDK_CONFIG.TIMEOUTS.WATCHDOG_MS;
@@ -139,14 +183,6 @@ const DIAS_LIMITE = SLOT_SEARCH.DIAS_LIMITE;
 const CACHE_MAX_SIZE = SDK_CONFIG.CACHE.MAX_ENTRIES;
 const STAFF_RESOURCE_TYPE_ID = API.STAFF_RESOURCE_TYPE_ID;
 
-/**
- * FIX-12: Normalizacion estricta de locationType.
- *
- * Time Slots V2 usa "OWNER_BUSINESS" como valor canonico para locations
- * de tipo business. Si el config trae "BUSINESS" (valor invalido) o esta
- * vacio, se fuerza "OWNER_BUSINESS". Cualquier otro valor no vacio se
- * respeta tal cual.
- */
 const CONFIGURED_LOCATION_TYPE = _safeTrim(
   SDK_CONFIG.LOCATION_TYPES?.TIME_SLOTS
 );
@@ -335,9 +371,6 @@ function _normalizeResourceIds(resourceId, traceId) {
   return [];
 }
 
-/**
- * FIX-4: Prioriza siempre el grupo de recursos de personal.
- */
 function _getResourceIdsFromSlot(slot) {
   const normalizedSlot = _normalizeSlotShape(slot);
 
@@ -424,7 +457,8 @@ function _isValidSlotRange(startLocal, endLocal) {
 }
 
 /**
- * FIX-6: Helper phase-aware para calcular la duracion esperada de un slot.
+ * FIX-6: Helper phase-aware para calcular la duracion esperada de un slot
+ * cuando el servicio NO usa durationRange.
  */
 function _resolveExpectedSlotMinutes(serviceConfig) {
   if (!serviceConfig || typeof serviceConfig !== "object") {
@@ -445,15 +479,6 @@ function _resolveExpectedSlotMinutes(serviceConfig) {
   );
 }
 
-/**
- * FIX-7 + FIX-14: Resolucion centralizada de la duracion real de F2.
- *
- * Proteccion contra ciclos:
- *  - `visited` es un Set con los serviceId ya resueltos en la cadena.
- *  - Si el linkedPhases ya esta en `visited`, se aborta y se devuelve 0.
- *  - El propio serviceId que llama debe estar en `visited` antes de
- *    invocar este helper (lo hace _mapServiceImport2ToUX).
- */
 async function _resolveLinkedPhase2Duration(
   linkedPhases,
   traceId,
@@ -507,13 +532,6 @@ async function _resolveLinkedPhase2Duration(
   return 0;
 }
 
-/**
- * FIX-11 + FIX-13: Verifica la disponibilidad de un staff concreto
- * mediante getAvailabilityTimeSlot + resourceTypes.
- *
- * Se ejecuta SIEMPRE que exista requiredResourceId, sin depender de que
- * List haya devuelto un slot. Get es la fuente autoritativa.
- */
 async function _verifyRequiredStaffViaGet({
   serviceId,
   start,
@@ -808,9 +826,6 @@ export async function _getServiceBySlugOrIdInternal(
   }
 }
 
-/**
- * FIX-1: Ya no acepta GUID sin validar.
- */
 export async function _resolveServiceIdInternal(serviceIdReq) {
   const raw = _safeTrim(serviceIdReq);
 
@@ -883,10 +898,6 @@ export async function _mapServiceImport2ToUX(
     );
   }
 
-  /**
-   * FIX-14: Auto-enlace explicito. Un servicio no puede apuntarse a si
-   * mismo como fase enlazada; seria una recursion infinita.
-   */
   if (
     allowCombine &&
     _looksLikeGuid(linkedPhases) &&
@@ -918,12 +929,6 @@ export async function _mapServiceImport2ToUX(
     )
   ) || 0;
 
-  /**
-   * FIX-7 + FIX-14: Resolucion de la duracion real de F2 con proteccion
-   * de ciclos. El propio serviceId entra en `visited` antes de resolver
-   * el linkedPhases, de modo que si F2 enlaza de vuelta a F1 la recursion
-   * se corta de inmediato.
-   */
   if (allowCombine && _looksLikeGuid(linkedPhases)) {
     const visited = new Set([serviceId]);
 
@@ -1042,6 +1047,9 @@ export async function _mapServiceImport2ToUX(
     _readImport2Field(service, "internalNotes")
   ) || null;
 
+  // FIX-17: extraccion de durationRange desde el catalogo.
+  const durationRange = _readDurationRange(service);
+
   const estimatedTotal =
     totalDuration ||
     (
@@ -1130,6 +1138,9 @@ export async function _mapServiceImport2ToUX(
     totalDuration: estimatedTotal,
     hidden,
 
+    // FIX-17: expuesto para validacion de duracion.
+    durationRange,
+
     metadata: {
       titulo: title,
       tituloServicio: title,
@@ -1155,7 +1166,8 @@ export async function _mapServiceImport2ToUX(
       timing: {
         estimatedTotal,
         totalDuration: estimatedTotal
-      }
+      },
+      durationRange
     }
   };
 }
@@ -1326,6 +1338,51 @@ export async function revalidateExactAvailabilitySlot({
       )
     ).sort();
 
+    /**
+     * FIX-17: pre-carga del serviceConfig para detectar durationRange
+     * antes de hacer las llamadas a la API de disponibilidad.
+     *
+     * Si el servicio usa durationRange Y se intentan addons, se rechaza
+     * porque Wix no soporta customerChoices con durationRange.
+     */
+    const earlyServiceConfig =
+      await _getServiceBySlugOrIdInternal(
+        resolvedServiceId,
+        activeTraceId
+      );
+
+    const serviceDurationRange =
+      earlyServiceConfig?.status === "SUCCESS" &&
+      earlyServiceConfig?.data?.durationRange
+        ? earlyServiceConfig.data.durationRange
+        : null;
+
+    if (
+      normalizedAddonIds.length > 0 &&
+      serviceDurationRange
+    ) {
+      log.warn(
+        "FIX-17: durationRange + addons combination not supported",
+        {
+          traceId: activeTraceId,
+          serviceId: String(resolvedServiceId),
+          durationRange: serviceDurationRange,
+          addonCount: normalizedAddonIds.length
+        }
+      );
+
+      return {
+        status: "ERROR",
+        data: null,
+        error: {
+          code: "DURATION_RANGE_WITH_ADDONS_NOT_SUPPORTED",
+          message:
+            "Services with a duration range cannot be combined with addons.",
+          traceId: activeTraceId
+        }
+      };
+    }
+
     let rawSlot = null;
 
     if (normalizedAddonIds.length > 0) {
@@ -1429,14 +1486,6 @@ export async function revalidateExactAvailabilitySlot({
       rawSlot = result?.timeSlot || null;
     }
 
-    /**
-     * FIX-13: Si hay staff requerido, la verificacion Get se ejecuta
-     * SIEMPRE, independientemente de que List haya devuelto o no un slot.
-     * Get pasa a ser la fuente autoritativa.
-     *
-     * Si no hay staff requerido y List no devolvio slot, se devuelve
-     * SLOT_UNAVAILABLE de inmediato.
-     */
     if (requiredResourceId) {
       const verification =
         await _verifyRequiredStaffViaGet({
@@ -1520,43 +1569,48 @@ export async function revalidateExactAvailabilitySlot({
     }
 
     /**
-     * FIX-6: Validacion de duracion phase-aware.
+     * FIX-6 + FIX-17: Validacion de duracion.
+     *
+     * Dos modos:
+     *  - Modo range (durationRange configurado): valida que la duracion
+     *    real del slot caiga dentro de [min, max]. Wix deriva la duracion
+     *    de las fechas del request, por lo que la comparacion exacta
+     *    contra phase1Duration/totalDuration no aplica.
+     *  - Modo fijo (sin durationRange): comparacion exacta phase-aware.
      */
-    const serviceConfig =
-      await _getServiceBySlugOrIdInternal(
-        resolvedServiceId,
-        activeTraceId
-      );
-
     if (
-      serviceConfig?.status === "SUCCESS" &&
-      serviceConfig?.data
+      earlyServiceConfig?.status === "SUCCESS" &&
+      earlyServiceConfig?.data
     ) {
-      const expectedMinutes =
-        _resolveExpectedSlotMinutes(
-          serviceConfig.data
-        );
+      const config = earlyServiceConfig.data;
+      const startUtc = getUtcDateFromMadridLocal(start);
+      const endUtc = getUtcDateFromMadridLocal(end);
+      const actualMinutes =
+        _minutesBetweenUtcDates(startUtc, endUtc);
 
-      if (expectedMinutes > 0) {
-        const startUtc = getUtcDateFromMadridLocal(start);
-        const endUtc = getUtcDateFromMadridLocal(end);
+      const durationRange = config.durationRange;
 
-        const actualMinutes =
-          _minutesBetweenUtcDates(startUtc, endUtc);
+      if (
+        durationRange &&
+        actualMinutes > 0
+      ) {
+        const { min, max } = durationRange;
 
-        if (
-          actualMinutes > 0 &&
-          Math.abs(actualMinutes - expectedMinutes) > 1
-        ) {
+        const belowMin =
+          min > 0 && actualMinutes < min;
+
+        const aboveMax =
+          max !== Infinity && actualMinutes > max;
+
+        if (belowMin || aboveMax) {
           log.warn(
-            "FIX-6: Slot duration mismatch",
+            "FIX-17: Slot duration out of range",
             {
               traceId: activeTraceId,
               serviceId: String(resolvedServiceId),
-              allowCombine:
-                serviceConfig.data.allowCombine === true,
-              expectedMinutes,
               actualMinutes,
+              min,
+              max,
               start,
               end
             }
@@ -1566,12 +1620,47 @@ export async function revalidateExactAvailabilitySlot({
             status: "ERROR",
             data: null,
             error: {
-              code: "SLOT_DURATION_MISMATCH",
+              code: "SLOT_DURATION_OUT_OF_RANGE",
               message:
-                "Selected slot duration does not match service configuration.",
+                "Selected slot duration is out of the allowed range.",
               traceId: activeTraceId
             }
           };
+        }
+      } else {
+        const expectedMinutes =
+          _resolveExpectedSlotMinutes(config);
+
+        if (expectedMinutes > 0) {
+          if (
+            actualMinutes > 0 &&
+            Math.abs(actualMinutes - expectedMinutes) > 1
+          ) {
+            log.warn(
+              "FIX-6: Slot duration mismatch",
+              {
+                traceId: activeTraceId,
+                serviceId: String(resolvedServiceId),
+                allowCombine:
+                  config.allowCombine === true,
+                expectedMinutes,
+                actualMinutes,
+                start,
+                end
+              }
+            );
+
+            return {
+              status: "ERROR",
+              data: null,
+              error: {
+                code: "SLOT_DURATION_MISMATCH",
+                message:
+                  "Selected slot duration does not match service configuration.",
+                traceId: activeTraceId
+              }
+            };
+          }
         }
       }
     }
