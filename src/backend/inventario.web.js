@@ -1,7 +1,7 @@
 /*
 =============================================================================
 MODULE: backend/inventario.web.js
-VERSION: v5007.3-FINAL
+VERSION: v5007.4-FINAL
 BASE: BIBLIA v5002.5 Bloque 12.14 + DOSSIER CAJA Flujos 4,5,13,14,15
 RESPONSIBILITY: Dashboard de inventario, cola de conciliacion Wix,
                 movimiento seguro de inventario, y cierre de inventario
@@ -10,15 +10,20 @@ STANDARDS: G10 ASCII Strict (0 non-ASCII characters).
            Idempotencia por movementToken.
            Conciliacion con Wix Stores V1.
 CORRECTIONS APPLIED:
-  [INV-01] movementToken como clave de idempotencia.
-  [INV-02] stockBefore/stockAfter para trazabilidad.
-  [INV-03] needsWixReconciliation cuando aplica.
-  [INV-04] recordOnlineInventoryOrderInternal para webhooks eCommerce.
-  [INV-05] recordOnlineInventoryRefundInternal para reembolsos.
+  [INV-01..05] movementToken, stockBefore/After, needsWixReconciliation,
+               recordOnlineInventoryOrder/Refund.
   [FIX-C3] generateInventoryClosing + listInventoryClosings.
-  [FIX-D1] _stableSerialize importado de mmUtils.js.
-  [FIX-D2] normalizeError importado de bookingCore.js.
-  [FIX-D3] logAuditEvent importado de audit.js.
+  [FIX-D1..D3] Imports correctos.
+
+FIXES APLICADOS v5007.4:
+  - FIX-52: generateInventoryClosing usa try/catch por insert. Registros
+            ya existentes se cuentan como idempotentes. Si algun insert
+            falla por causa no-idempotente, se aborta y se registra audit
+            INVENTORY_CLOSING_PARTIAL.
+  - FIX-53: fallo explicito si SECRETS.FISCAL_KEY no esta disponible.
+            Antes se persistia el cierre sin firma silenciosamente.
+  - FIX-54: getInventoryDashboard usa contains en lugar de hasSome.
+            hasSome no matchea sobre campos escalares (productName string).
 =============================================================================
 */
 
@@ -64,13 +69,14 @@ export const getInventoryDashboard = webMethod(Permissions.SiteMember, async (op
     await requireCajero(traceId);
 
     const limit = Math.min(Number(options?.limit) || 50, 200);
-    const query = wixData.query(INVENTARIO_COL).eq("active", true);
+    let query = wixData.query(INVENTARIO_COL).eq("active", true);
 
     if (options?.category) {
-      query.eq("category", options.category);
+      query = query.eq("category", options.category);
     }
     if (options?.search) {
-      query.hasSome("productName", [options.search]);
+      // FIX-54: contains en lugar de hasSome (productName es escalar).
+      query = query.contains("productName", _safeTrim(options.search));
     }
 
     const res = await query
@@ -130,7 +136,6 @@ export const getInventoryReconciliationQueue = webMethod(Permissions.SiteMember,
 
 // =============================================================================
 // BLOQUE 3 - RECORD INVENTORY MOVEMENT SAFE
-// [INV-01] movementToken como clave de idempotencia
 // =============================================================================
 
 export async function recordInventoryMovementSafe(sku, movementType, quantity, meta = {}) {
@@ -223,7 +228,6 @@ export async function recordInventoryMovementSafe(sku, movementType, quantity, m
 
 // =============================================================================
 // BLOQUE 4 - RECORD ONLINE INVENTORY ORDER
-// [INV-04] Llamado desde events.js wixEcom_onOrderPaymentStatusUpdated
 // =============================================================================
 
 export async function recordOnlineInventoryOrderInternal(order, traceId) {
@@ -262,7 +266,6 @@ export async function recordOnlineInventoryOrderInternal(order, traceId) {
 
 // =============================================================================
 // BLOQUE 5 - RECORD ONLINE INVENTORY REFUND
-// [INV-05] Llamado desde events.js wixEcom_onOrderRefunded
 // =============================================================================
 
 export async function recordOnlineInventoryRefundInternal(order, refundObj, restockInfo, traceId) {
@@ -303,8 +306,7 @@ export async function recordOnlineInventoryRefundInternal(order, refundObj, rest
 }
 
 // =============================================================================
-// BLOQUE 6 - [FIX-C3] GENERAR CIERRE DE INVENTARIO VALORADO
-// DOSSIER CAJA S20 - Fotografia valorada del inventario al cierre de ejercicio
+// BLOQUE 6 - GENERAR CIERRE DE INVENTARIO VALORADO
 // =============================================================================
 
 export const generateInventoryClosing = webMethod(Permissions.Admin, async (options = {}) => {
@@ -346,11 +348,17 @@ export const generateInventoryClosing = webMethod(Permissions.Admin, async (opti
       return { status: "ERROR", data: null, error: { code: "NO_STOCK_ITEMS", message: "No hay articulos activos en inventario" } };
     }
 
-    let fiscalKey = "";
-    try {
-      fiscalKey = await getSecret(SECRETS.FISCAL_KEY);
-    } catch (_) {
-      fiscalKey = "";
+    // FIX-53: fallo explicito si no hay fiscal key activa.
+    const fiscalKey = await getSecret(SECRETS.FISCAL_KEY).catch(() => "");
+    if (!fiscalKey) {
+      return {
+        status: "ERROR",
+        data: null,
+        error: {
+          code: "FISCAL_KEY_UNAVAILABLE",
+          message: "No se puede generar un cierre valorado sin clave fiscal activa",
+        },
+      };
     }
 
     const closingRecords = [];
@@ -375,8 +383,8 @@ export const generateInventoryClosing = webMethod(Permissions.Admin, async (opti
         unitCost,
         stockValue,
       });
-      const closingHash = fiscalKey ? await hashSHA256(recordPayload) : "";
-      const closingSignature = fiscalKey && closingHash ? await hmacSha256Hex(fiscalKey, closingHash) : "";
+      const closingHash = await hashSHA256(recordPayload);
+      const closingSignature = await hmacSha256Hex(fiscalKey, closingHash);
 
       const closingRecord = {
         _id: closingId,
@@ -402,15 +410,52 @@ export const generateInventoryClosing = webMethod(Permissions.Admin, async (opti
       closingRecords.push(closingRecord);
     }
 
+    // FIX-52: try/catch por insert. Idempotencia sobre retry.
+    let createdCount = 0;
+    let idempotentCount = 0;
+    const failedRecords = [];
+
     for (const record of closingRecords) {
-      await wixData.insert(CIERRE_INV_COL, record, { suppressAuth: true });
+      try {
+        await wixData.insert(CIERRE_INV_COL, record, { suppressAuth: true });
+        createdCount += 1;
+      } catch (insertErr) {
+        const message = String(insertErr?.message || "");
+        const isDuplicate = /Duplicated|WDE0123|ALREADY_EXISTS/.test(message);
+        if (isDuplicate) {
+          idempotentCount += 1;
+        } else {
+          failedRecords.push({ sku: record.sku, error: message });
+        }
+      }
+    }
+
+    if (failedRecords.length > 0) {
+      await logAuditEvent(
+        "INVENTORY_CLOSING_PARTIAL",
+        "ERROR",
+        `Cierre de inventario incompleto: ${failedRecords.length} SKUs fallaron`,
+        { fiscalYear, closingType, failedCount: failedRecords.length, failedRecords: failedRecords.slice(0, 10), traceId },
+        traceId,
+        `CLOSING_${fiscalYear}`,
+        "backend/inventario.web.js"
+      );
+
+      return {
+        status: "ERROR",
+        data: null,
+        error: {
+          code: "INVENTORY_CLOSING_PARTIAL",
+          message: `Cierre incompleto: ${failedRecords.length} SKUs fallaron. Reintenta la operacion.`,
+        },
+      };
     }
 
     await logAuditEvent(
       "INVENTORY_CLOSING_GENERATED",
       "INFO",
       `Cierre de inventario generado: ${fiscalYear} ${closingType}`,
-      { fiscalYear, closingType, totalItems: closingRecords.length, totalStockValue, traceId },
+      { fiscalYear, closingType, createdCount, idempotentCount, totalStockValue, traceId },
       traceId,
       `CLOSING_${fiscalYear}`,
       "backend/inventario.web.js"
@@ -423,6 +468,8 @@ export const generateInventoryClosing = webMethod(Permissions.Admin, async (opti
         closingType,
         closingDate,
         totalItems: closingRecords.length,
+        createdCount,
+        idempotentCount,
         totalStockValue: _roundMoney(totalStockValue),
         closingIds: closingRecords.map((r) => r._id),
       },
@@ -436,7 +483,7 @@ export const generateInventoryClosing = webMethod(Permissions.Admin, async (opti
 });
 
 // =============================================================================
-// BLOQUE 7 - [FIX-C3] LISTAR CIERRES DE INVENTARIO
+// BLOQUE 7 - LISTAR CIERRES DE INVENTARIO
 // =============================================================================
 
 export const listInventoryClosings = webMethod(Permissions.SiteMember, async (options = {}) => {
