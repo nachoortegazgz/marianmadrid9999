@@ -112,7 +112,10 @@ import {
 
 const log = logger;
 
-const LOCKTTLMS = Number(CONCURRENCY?.MUTEX_TTL_MS) || 300000;
+const LOCKTTLMS = Number(CONCURRENCY?.MUTEX_TTL_MS);
+if (!Number.isFinite(LOCKTTLMS) || LOCKTTLMS <= 0) {
+    throw new Error("MUTEX_TTL_MS must be positive");
+}
 const HEARTBEATMS = Number(CONCURRENCY?.HEARTBEAT_MS) || 15000;
 const CITASCOL = COLLECTIONS.CITAS_F2;
 const SERVICIOSCOL = COLLECTIONS.SERVICIOS_CATALOGO;
@@ -604,6 +607,9 @@ export async function executeBookingSaga(unsafePayload) {
     const detectedAddonIds = _detectAndWarnAddons(unsafePayload, metaCita, traceId);
 
     try {
+        if (detectedAddonIds.length > 0) {
+            throw createBookingError(ERROR_CODES.INVALID_PAYLOAD, "Add-ons are not supported by this booking flow", { traceId });
+        }
         // =========================================================================
         // PHASE 0: VALIDATION AND RESOLUTION
         // =========================================================================
@@ -626,7 +632,10 @@ export async function executeBookingSaga(unsafePayload) {
         const serviceRes = await _getServiceBySlugOrIdInternal(serviceId, traceId);
         const serviceConfig = serviceRes?.data || {};
         const isDual = serviceConfig.allowCombine === true && !!serviceConfig.linkedPhases;
-        const linkedPhases = isDual ? serviceConfig.linkedPhases : null;
+        const linkedPhases = isDual ? _safeTrim(serviceConfig.linkedPhases) : null;
+        if (isDual && !_looksLikeGuid(linkedPhases)) {
+            throw createBookingError(ERROR_CODES.INVALID_PAYLOAD, "Dual booking requires one linked service", { traceId });
+        }
         const parentLocationId = _safeTrim(serviceConfig.locationId || serviceConfig.location);
 
         const requestedResourceId = _safeTrim(unsafePayload?.resourceId || metaCita.resourceId);
@@ -658,7 +667,8 @@ export async function executeBookingSaga(unsafePayload) {
 
             // FIX-36: primero validar linked service, luego calcular F2 con
             // su duracion real (no la del padre).
-            const linkedValidation = await _validateLinkedPhaseService(
+            let linkedValidation = null;
+            linkedValidation = await _validateLinkedPhaseService(
                 linkedPhases,
                 parentLocationId,
                 traceId
@@ -904,7 +914,7 @@ export async function executeBookingSaga(unsafePayload) {
                     totalParticipants: 1,
                 };
                 const f1Options = {
-                    flowControlSettings: { skipAvailabilityValidation: true },
+                    flowControlSettings: { skipAvailabilityValidation: false },
                 };
 
                 let bookingF1 = null;
@@ -921,7 +931,7 @@ export async function executeBookingSaga(unsafePayload) {
                 // --- F2 (solo si dual) ---
                 if (isDual && f2LocalStart && validatedSlotF2) {
                     pristineF2 = await _forceStaffInPristineSlot(
-                        validatedSlotF2, finalResourceId, linkedPhases, serviceConfig.phase2Duration
+                        validatedSlotF2, finalResourceId, linkedPhases, linkedValidation?.phase2Duration
                     );
                     if (!pristineF2) {
                         throw createBookingError(ERROR_CODES.INVALID_PAYLOAD,
@@ -934,7 +944,7 @@ export async function executeBookingSaga(unsafePayload) {
                         totalParticipants: 1,
                     };
                     const f2Options = {
-                        flowControlSettings: { skipAvailabilityValidation: true },
+                        flowControlSettings: { skipAvailabilityValidation: false },
                     };
 
                     const resF2 = await _createBookingWithSelectiveElevation(f2Booking, f2Options, traceId);
@@ -1160,7 +1170,7 @@ export async function executeBookingSaga(unsafePayload) {
             };
 
             try {
-                await _completeTransaction(pairToken, finalResult);
+                await _completeTransaction(pairToken, finalResult, traceId);
             } catch (completeErr) {
                 log.error("_completeTransaction failed; compensating full saga", {
                     pairToken,
