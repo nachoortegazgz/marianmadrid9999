@@ -1,7 +1,7 @@
 /**
  * ============================================================================
  * FILE: backend/reservas.web.js
- * VERSION: v5008.7-ALIGNED
+ * VERSION: v5008.8-ALIGNED
  * RESPONSIBILITY: Availability engine, dual slots, staff pairing and caching.
  * STANDARDS: G10 ASCII Strict.
  *
@@ -9,15 +9,14 @@
  *  - FIX-1 a FIX-14: ver cabecera de versiones anteriores.
  *  - FIX-15 / FIX-16: aplicados en backend/citasManager.web.js.
  *  - FIX-17: Manejo de availabilityConstraints.durationRange.
- *            * Nuevo helper _readDurationRange().
- *            * _mapServiceImport2ToUX expone durationRange { min, max }.
- *            * Validacion de duracion en revalidateExactAvailabilitySlot
- *              ahora soporta dos modos:
- *                - Modo range: min <= actualMinutes <= max.
- *                - Modo fijo: comparacion exacta phase-aware (FIX-6).
- *            * Se rechaza DURATION_RANGE_WITH_ADDONS_NOT_SUPPORTED cuando
- *              un servicio con duration range intenta usar addons (Wix no
- *              soporta customerChoices con durationRange).
+ *
+ * FIXES APPLIED (v5008.8):
+ *  - FIX-18: Nuevo helper _getRequestedAddonContext que resuelve addons
+ *            por id o nativeId y devuelve solo nativeAddonIds validos.
+ *  - FIX-19: _resolveAddonContextInternal ahora delega en el helper.
+ *  - FIX-20: Nueva funcion exportada getAvailableSlots (webMethod) para
+ *            disponibilidad single-service. Filtra por bookable, adjunta
+ *            serviceId validado y soporta customerChoices para addons.
  * ============================================================================
  */
 
@@ -119,16 +118,6 @@ function _normalizeImport2Addon(addon) {
 
 /**
  * FIX-17: Extrae durationRange de un item del catalogo.
- *
- * Soporta multiples formas por robustez ante variaciones del CMS:
- *   - availabilityConstraints.durationRange.{minDuration, maxDuration}
- *   - availabilityConstraints.durationRange.{min, max}
- *   - durationRange.{minDuration, maxDuration}
- *   - durationRange.{min, max}
- *
- * Devuelve null si no hay configuracion de rango valida.
- * Devuelve { min, max } con min>=0 y max>min, o max=Infinity si solo
- * se configura min.
  */
 function _readDurationRange(item) {
   if (!item || typeof item !== "object") return null;
@@ -456,10 +445,6 @@ function _isValidSlotRange(startLocal, endLocal) {
   );
 }
 
-/**
- * FIX-6: Helper phase-aware para calcular la duracion esperada de un slot
- * cuando el servicio NO usa durationRange.
- */
 function _resolveExpectedSlotMinutes(serviceConfig) {
   if (!serviceConfig || typeof serviceConfig !== "object") {
     return 0;
@@ -612,34 +597,58 @@ async function _verifyRequiredStaffViaGet({
   }
 }
 
-function _resolveAddonContextInternal(
-  service,
-  requestedAddonIds
-) {
-  const requested = Array.isArray(requestedAddonIds)
-    ? requestedAddonIds
-        .map((id) => _safeTrim(id))
-        .filter(Boolean)
-    : [];
+/**
+ * FIX-18: Resuelve complementos por id o nativeId.
+ *
+ * Devuelve los nativeAddonIds validos (GUIDs) y la lista de addons
+ * seleccionados para trazabilidad.
+ */
+function _getRequestedAddonContext(service, requestedAddonIds) {
+  const requested = new Set(
+    (Array.isArray(requestedAddonIds)
+      ? requestedAddonIds
+      : []
+    )
+      .map((id) => _safeTrim(id))
+      .filter(Boolean)
+  );
 
   const addons = Array.isArray(service?.metadata?.addons)
     ? service.metadata.addons
     : [];
 
-  const selected = requested.length > 0
-    ? addons.filter((addon) =>
-        requested.includes(String(addon.id))
-      )
-    : [];
+  const selected = addons.filter((addon) => {
+    const id = _safeTrim(addon?.id);
+    const nativeId = _safeTrim(addon?.nativeId);
+
+    return requested.has(id) || requested.has(nativeId);
+  });
 
   return {
-    nativeAddonIds: selected
-      .map((addon) =>
-        _safeTrim(addon.nativeId || addon.id)
+    nativeAddonIds: Array.from(
+      new Set(
+        selected
+          .map((addon) =>
+            _safeTrim(addon?.nativeId || addon?.id)
+          )
+          .filter((id) => _looksLikeGuid(id))
       )
-      .filter((id) => _looksLikeGuid(id)),
+    ),
     addons: selected
   };
+}
+
+/**
+ * FIX-19: _resolveAddonContextInternal ahora delega en _getRequestedAddonContext.
+ */
+function _resolveAddonContextInternal(
+  service,
+  requestedAddonIds
+) {
+  return _getRequestedAddonContext(
+    service,
+    requestedAddonIds
+  );
 }
 
 function _resolveAddonContext(service, requestedAddonIds) {
@@ -1047,7 +1056,6 @@ export async function _mapServiceImport2ToUX(
     _readImport2Field(service, "internalNotes")
   ) || null;
 
-  // FIX-17: extraccion de durationRange desde el catalogo.
   const durationRange = _readDurationRange(service);
 
   const estimatedTotal =
@@ -1138,7 +1146,6 @@ export async function _mapServiceImport2ToUX(
     totalDuration: estimatedTotal,
     hidden,
 
-    // FIX-17: expuesto para validacion de duracion.
     durationRange,
 
     metadata: {
@@ -1282,6 +1289,164 @@ export async function _resolveAddonContextPublic(
   );
 }
 
+/**
+ * FIX-20: Disponibilidad single-service.
+ *
+ * - Valida el servicio y la fecha.
+ * - Normaliza resourceId.
+ * - Resuelve addons por id/nativeId.
+ * - Llama a listAvailabilityTimeSlots con customerChoices si aplica.
+ * - Filtra slots bookable y les adjunta el serviceId validado.
+ *
+ * Nota: confirmar que listAvailabilityTimeSlots acepta customerChoices
+ *       para servicios simples con complementos. Si no, se debera
+ *       manejar el fallback sin addons.
+ */
+export const getAvailableSlots = webMethod(
+  Permissions.Anyone,
+  async (
+    serviceIdOrSlug,
+    resourceId,
+    dateYMD,
+    addonIds = []
+  ) => {
+    const traceId = makeTraceId("available-slots");
+
+    try {
+      const serviceResult =
+        await _getServiceBySlugOrIdInternal(
+          serviceIdOrSlug,
+          traceId
+        );
+
+      if (
+        serviceResult?.status !== "SUCCESS" ||
+        !serviceResult.data?.serviceId
+      ) {
+        return {
+          status: "ERROR",
+          data: null,
+          error: {
+            code: "SERVICE_NOT_FOUND",
+            message: "Service not found."
+          }
+        };
+      }
+
+      const service = serviceResult.data;
+      const serviceId = service.serviceId;
+      const requestedResourceId =
+        _normalizeResourceIds(resourceId, traceId);
+
+      const addonContext =
+        _resolveAddonContextInternal(
+          service,
+          addonIds
+        );
+
+      const ymd = _safeTrim(dateYMD);
+
+      if (!_isValidMadridYmd(ymd)) {
+        return {
+          status: "ERROR",
+          data: null,
+          error: {
+            code: "INVALID_DATE",
+            message: "Invalid booking date."
+          }
+        };
+      }
+
+      const payload = {
+        serviceId: String(serviceId),
+        fromLocalDate: `${ymd}T00:00:00`,
+        toLocalDate: `${ymd}T23:59:59`,
+        timeZone: SDK_CONFIG.TZ,
+        bookable: true,
+        locations: [LOCATION_TS],
+        includeResourceTypeIds: [
+          STAFF_RESOURCE_TYPE_ID
+        ]
+      };
+
+      if (requestedResourceId.length > 0) {
+        payload.resourceTypes = [
+          {
+            resourceTypeId: STAFF_RESOURCE_TYPE_ID,
+            resourceIds: requestedResourceId
+          }
+        ];
+      }
+
+      if (addonContext.nativeAddonIds.length > 0) {
+        payload.customerChoices = {
+          addOnIds: addonContext.nativeAddonIds
+        };
+      }
+
+      const result = await _executeWithRetry(
+        () =>
+          withTimeout(
+            availabilityTimeSlots.listAvailabilityTimeSlots(
+              payload
+            ),
+            WATCHDOG_TIMEOUT_MS,
+            "getAvailableSlots"
+          ),
+        2,
+        300
+      );
+
+      const timeSlots = Array.isArray(
+        result?.timeSlots
+      )
+        ? result.timeSlots
+        : [];
+
+      const slots = timeSlots
+        .filter((slot) => slot?.bookable === true)
+        .map((slot) =>
+          _attachServiceId(
+            slot,
+            serviceId,
+            traceId,
+            "getAvailableSlots"
+          )
+        )
+        .filter(Boolean);
+
+      return {
+        status: "SUCCESS",
+        data: {
+          slots,
+          serviceId,
+          dateYMD: ymd,
+          resourceId:
+            requestedResourceId[0] || null
+        },
+        error: null
+      };
+    } catch (error) {
+      log.warn("getAvailableSlots failed", {
+        traceId,
+        serviceIdOrSlug: _safeTrim(serviceIdOrSlug),
+        dateYMD: _safeTrim(dateYMD),
+        message: error?.message
+      });
+
+      return {
+        status: "ERROR",
+        data: null,
+        error: {
+          code: "AVAILABLE_SLOTS_FAILED",
+          message:
+            "Could not load available slots."
+        }
+      };
+    }
+  }
+);
+
 export async function revalidateExactAvailabilitySlot({
   serviceId,
   localStartDate,
@@ -1338,13 +1503,6 @@ export async function revalidateExactAvailabilitySlot({
       )
     ).sort();
 
-    /**
-     * FIX-17: pre-carga del serviceConfig para detectar durationRange
-     * antes de hacer las llamadas a la API de disponibilidad.
-     *
-     * Si el servicio usa durationRange Y se intentan addons, se rechaza
-     * porque Wix no soporta customerChoices con durationRange.
-     */
     const earlyServiceConfig =
       await _getServiceBySlugOrIdInternal(
         resolvedServiceId,
@@ -1568,16 +1726,6 @@ export async function revalidateExactAvailabilitySlot({
       };
     }
 
-    /**
-     * FIX-6 + FIX-17: Validacion de duracion.
-     *
-     * Dos modos:
-     *  - Modo range (durationRange configurado): valida que la duracion
-     *    real del slot caiga dentro de [min, max]. Wix deriva la duracion
-     *    de las fechas del request, por lo que la comparacion exacta
-     *    contra phase1Duration/totalDuration no aplica.
-     *  - Modo fijo (sin durationRange): comparacion exacta phase-aware.
-     */
     if (
       earlyServiceConfig?.status === "SUCCESS" &&
       earlyServiceConfig?.data
