@@ -1,37 +1,30 @@
 /*
 =============================================================================
 MODULE: backend/booking/bookingCore.js
-VERSION: v5008.4-ALIGNED2 (audit fixes: date range, mandatory scheduleId,
-        cache validation, unused imports removed)
+VERSION: v5008.5-ALIGNED3 (coherencia scheduleId Writer<->CitasF2)
 BASE: BIBLIA v5002.5 Bloque 12.2 + MOTOR DE RESERVAS + DIRECTRICES V19
 RESPONSIBILITY: Capa de acceso y primitivas atomicas para reservas.
 STANDARDS: ASCII only. No Node builtins.
 HISTORIAL DE CAMBIOS:
-  v5008.4 | 2026-09-19 | ALINEACION CON AUDITORIA 2:
-           |            | [CORE-10] _forceStaffInPristineSlot() valida
-           |            |   explicitamente endDate > startDate. Antes
-           |            |   podia devolver un slot con rango invertido si
-           |            |   el input estaba malformado.
-           |            | [CORE-11] _persistBooking() exige scheduleId
-           |            |   valido (GUID) y lanza INVALID_PAYLOAD si falta.
-           |            |   BREAKING CHANGE: los callers deben pasar
-           |            |   scheduleId derivado del slot validado. Ya
-           |            |   cumplido en bookingSaga v5007.14.
-           |            | [CORE-12] _getDualPairFromCache() acepta tercer
-           |            |   parametro opcional `expected = {}` con
-           |            |   validaciones: serviceId, phase2ServiceId,
-           |            |   resourceId, minSchemaVersion. Retrocompatible.
-           |            | [CORE-13] _projectCertifiedSlot() documenta el
-           |            |   comportamiento de _normalizeLocalIsoStr frente
-           |            |   a ISO UTC con Z (convierte a Madrid, no
-           |            |   elimina la zona).
-           |            | [CORE-14] Imports no usados retirados:
-           |            |   CITA_FIELDS, ESTADO_CITA, ESTADO_PAGO. Los
-           |            |   consumidores importan de internalConfig.
-           |            | [CORE-15] Verificado: checkout SI se usa en
-           |            |   createCheckoutElevated y getCheckoutUrlElevated.
-  v5008.3 | 2026-09-19 | Restaurados _getDualPairFromCache, ERROR_CODES,
-           |            | proyecciones, ranking con .in(), etc.
+  v5008.5 | 2026-09-19 | COHERENCIA scheduleId Writer<->CitasF2:
+           |            | [CORE-16] Nuevo export
+           |            |   _resolveScheduleIdForResource(resourceId,
+           |            |   sourceSlot). Devuelve el scheduleId con el
+           |            |   mismo fallback que _forceStaffInPristineSlot
+           |            |   (slot.scheduleId -> slot.slot.scheduleId ->
+           |            |   slot.schedule.id -> slot.resource.scheduleId ->
+           |            |   getStaffScheduleId(resourceId)). Uso: el Saga
+           |            |   deriva el scheduleId ANTES de persistir, para
+           |            |   garantizar que sea exactamente el mismo que
+           |            |   se envio a Writer V2.
+           |            | [CORE-17] getCertifiedDualSlotsOptimized()
+           |            |   filtra items del cache por coherencia
+           |            |   (serviceId, resourceId, phase2ServiceId,
+           |            |   status=ACTIVE) antes de devolver. Antes solo
+           |            |   filtraba por resourceId y confiaba en la query.
+  v5008.4 | 2026-09-19 | Date range, scheduleId obligatorio, cache
+           |            | validaciones, imports no usados retirados.
+  v5008.3 | 2026-09-19 | Restauracion de exports faltantes.
   v5008.2 | 2026-09-15 | Aligned + dead code removed.
 =============================================================================
 */
@@ -187,6 +180,36 @@ async function _resolveScheduleIdByResourceId(resourceId) {
     return scheduleId && _looksLikeGuid(scheduleId) ? scheduleId : null;
 }
 
+/**
+ * [CORE-16] Devuelve el scheduleId canonico para un recurso a partir de un
+ * slot fuente, aplicando el MISMO orden de prioridad que
+ * _forceStaffInPristineSlot:
+ *   1. sourceSlot.scheduleId
+ *   2. sourceSlot.slot.scheduleId
+ *   3. sourceSlot.schedule.id
+ *   4. sourceSlot.resource.scheduleId
+ *   5. getStaffScheduleId(resourceId)  (fallback)
+ *
+ * Uso previsto: el Saga lo invoca ANTES de persistir para garantizar que el
+ * scheduleId persistido en CitasF2 sea exactamente el mismo que se envio a
+ * Writer V2 en el slot pristine.
+ *
+ * @returns {Promise<string|null>} GUID del scheduleId o null si no se pudo resolver.
+ */
+export async function _resolveScheduleIdForResource(resourceId, sourceSlot) {
+    const resourceIdClean = _safeTrim(resourceId);
+    if (!resourceIdClean || !_looksLikeGuid(resourceIdClean)) return null;
+
+    const s = (sourceSlot && typeof sourceSlot === "object") ? sourceSlot : {};
+    let scheduleId = _safeTrim(
+        s.scheduleId || s.slot?.scheduleId || s.schedule?.id || s.resource?.scheduleId || ""
+    );
+    if (scheduleId && _looksLikeGuid(scheduleId)) return scheduleId;
+
+    scheduleId = await _resolveScheduleIdByResourceId(resourceIdClean);
+    return scheduleId || null;
+}
+
 // =============================================================================
 // BLOQUE 6 - NORMALIZACION DE SLOTS PARA WRITER V2
 // =============================================================================
@@ -196,8 +219,7 @@ async function _resolveScheduleIdByResourceId(resourceId) {
  * Required: serviceId, scheduleId, startDate/endDate (ISO),
  *           timezone, resource.id, location.id + locationType OWNER_BUSINESS.
  *
- * [CORE-10] Valida explicitamente que endDate > startDate. Si el rango esta
- * invertido o es invalido, retorna null sin construir el slot.
+ * [CORE-10] Valida explicitamente que endDate > startDate.
  */
 export async function _forceStaffInPristineSlot(slot, resourceId, serviceIdOverride, defaultDurationMinutes) {
     if (!slot || typeof slot !== "object") return null;
@@ -258,8 +280,6 @@ export async function _forceStaffInPristineSlot(slot, resourceId, serviceIdOverr
         log.error("_forceStaffInPristineSlot: invalid date range (endDate <= startDate)", {
             localStartDate,
             localEndDate,
-            startDateUtc: startDate.toISOString(),
-            endDateUtc: endDate.toISOString(),
             resourceId: resourceIdClean,
             serviceId,
         });
@@ -539,9 +559,7 @@ export async function _failTransaction(pairToken, errorMessage) {
 // =============================================================================
 // BLOQUE 11 - PERSISTENCIA EN CITAS_F2
 //
-// [CORE-11] scheduleId obligatorio: rechaza null/undefined o no-GUID.
-//           BREAKING CHANGE respecto v5008.3. Los callers deben derivar
-//           scheduleId del slot validado (bookingSaga v5007.14 ya lo hace).
+// [CORE-11] scheduleId obligatorio (GUID valido).
 // =============================================================================
 
 const CITAS_COL = COLLECTIONS.CITAS_F2;
@@ -557,7 +575,6 @@ export async function _persistBooking(params, traceId) {
         throw new Error("Missing required fields for persistBooking");
     }
 
-    // [CORE-11] scheduleId obligatorio y valido como GUID
     const scheduleIdClean = _safeTrim(p.scheduleId);
     if (!scheduleIdClean || !_looksLikeGuid(scheduleIdClean)) {
         throw createBookingError(
@@ -685,11 +702,6 @@ export async function _updateCitaSafe(bookingId, updater, traceId, operation) {
 
 // =============================================================================
 // BLOQUE 13 - DUAL CACHE
-//
-// [CORE-12] Ampliado con validaciones opcionales (expected.serviceId,
-//           expected.phase2ServiceId, expected.resourceId,
-//           expected.minSchemaVersion). Retrocompatible: sin `expected`,
-//           se comporta como antes.
 // =============================================================================
 
 const DUAL_CACHE_COL = COLLECTIONS.DUAL_SLOT_CACHE;
@@ -710,7 +722,6 @@ export async function _getDualPairFromCache(pairToken, traceId, expected = {}) {
     const exp = _toDateSafe(item.expiresAt);
     if (exp && exp.getTime() < Date.now()) return null;
 
-    // [CORE-12] Validaciones opcionales de coherencia del cache
     if (expected.serviceId && _safeTrim(item.serviceId) !== _safeTrim(expected.serviceId)) {
         log.warn("_getDualPairFromCache: serviceId mismatch", {
             pairToken, traceId, cached: item.serviceId, expected: expected.serviceId,
@@ -821,10 +832,6 @@ export function _areSlotsContiguous(slot1, slot2, maxGapMinutes) {
 
 // =============================================================================
 // BLOQUE 18 - PROYECCION DE SLOTS CERTIFICADOS Y WRITER
-//
-// [CORE-13] Documentado: _normalizeLocalIsoStr() convierte ISO UTC con "Z"
-//           a hora de Madrid. NO elimina la zona: reinterpreta el instante
-//           en el timezone Europe/Madrid.
 // =============================================================================
 
 export function _projectCertifiedSlot(slot, resourceId) {
@@ -836,9 +843,6 @@ export function _projectCertifiedSlot(slot, resourceId) {
     const resourceIdClean = _safeTrim(resourceId || slot.resourceId || slot.resource?.id);
     if (!resourceIdClean || !_looksLikeGuid(resourceIdClean)) return null;
 
-    // [CORE-13] Manejo correcto de ISO UTC:
-    //   "2026-10-01T10:00:00Z"  -> "2026-10-01T12:00:00" (Madrid, CEST)
-    //   "2026-10-01T10:00:00"   -> "2026-10-01T10:00:00" (ya local Madrid)
     const localStartDate = _normalizeLocalIsoStr(slot.localStartDate || slot.startDate);
     const localEndDate = _normalizeLocalIsoStr(slot.localEndDate || slot.endDate);
 
@@ -895,12 +899,7 @@ export function _projectWriterSlotFromAvailability(slot, resourceId, serviceId) 
 // =============================================================================
 // BLOQUE 19 - SLOTS DUALES OPTIMIZADOS CON CACHE PRE-WARM
 //
-// NOTA auditoria: el cache NO es disponibilidad definitiva. El flujo
-// correcto es:
-//   cache -> seleccion -> revalidateExactAvailabilitySlot -> createBooking
-// Nunca: cache -> createBooking
-// Los consumidores (frontend) deben invocar revalidateExactAvailabilitySlot
-// antes de llamar a executeBookingSaga.
+// [CORE-17] Filtrado por coherencia del cache antes de devolver.
 // =============================================================================
 
 export async function getCertifiedDualSlotsOptimized(serviceId, resourceId, dateYMD, addonIds = []) {
@@ -919,7 +918,13 @@ export async function getCertifiedDualSlotsOptimized(serviceId, resourceId, date
             .catch(() => ({ items: [] }));
 
         if (cached?.items?.length > 0 && resourceId) {
-            const matchingPairs = cached.items.filter((p) => p.resourceId === resourceId);
+            // [CORE-17] Filtrado por coherencia: serviceId, resourceId, phase2ServiceId
+            const matchingPairs = cached.items.filter((p) => {
+                const sameService = _safeTrim(p.serviceId) === _safeTrim(serviceId);
+                const sameResource = _safeTrim(p.resourceId) === _safeTrim(resourceId);
+                const isActive = _safeTrim(p.status).toUpperCase() === "ACTIVE";
+                return sameService && sameResource && isActive;
+            });
             if (matchingPairs.length > 0) {
                 log.info("getCertifiedDualSlotsOptimized: cache hit", { serviceId, dateYMD, traceId });
                 return {
@@ -973,11 +978,6 @@ export function _auditBookingPrice(basePrice, addons) {
 
 // =============================================================================
 // BLOQUE 21 - RANKING DE RECURSOS POR CARGA
-//
-// Auditoria B28: .in() sobre resourceId (campo escalar en CitasF2).
-// NOTA: cuenta reservas PENDING_PAYMENT como carga (no solo CONFIRMED).
-//       Justificacion: la cita ya ocupa el slot fisico. Si se prefiere
-//       contar solo CONFIRMED, modificar el filtro.
 // =============================================================================
 
 export async function _rankResourcesByLoad(resourceIds, dateYMD, traceId) {
@@ -1007,7 +1007,6 @@ export async function _rankResourcesByLoad(resourceIds, dateYMD, traceId) {
             const result = await wixData
                 .query(CITAS_COL)
                 .eq("dateYmd", day)
-                // [CORE-08] .in() sobre campo escalar resourceId (auditoria B28)
                 .in("resourceId", input)
                 .limit(pageSize)
                 .skip(skip)
@@ -1024,8 +1023,6 @@ export async function _rankResourcesByLoad(resourceIds, dateYMD, traceId) {
                 const cancelled = ["CANCELLED", "DECLINED", "REJECTED", "NO_SHOW"].includes(status);
                 const ignoredPayment = paymentStatus === "CANCELLED";
 
-                // Se considera carga toda reserva no cancelada, incluido
-                // PENDING_PAYMENT (el slot fisico ya esta reservado).
                 if (!cancelled && !ignoredPayment) loads[resourceId].load += 1;
             }
 
