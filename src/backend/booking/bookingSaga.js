@@ -1,72 +1,37 @@
 /*
 =============================================================================
 MODULE: backend/booking/bookingSaga.js
-VERSION: v5007.14-SSOT (Auditoria 2: payload createBooking, secuencial F1->F2,
-        compensacion completa, parseo de meta, SLOT_SEARCH top-level)
+VERSION: v5007.15-SSOT (coherencia scheduleId Writer <-> CitasF2)
 SSOT: SSOT CONSOLIDADO v5002.6 | ESQUEMA CMS v5002.5 | DOSSIER RESERVAS v0609
 MISSION: Orquestador transaccional. Saga compensable para reservas simples
          y duales con gap de exposicion. Gestiona locks, heartbeat,
          idempotencia triple capa y creacion SECUENCIAL F1 -> F2.
 STANDARDS: G10 ASCII Strict (0 non-ASCII characters).
 =============================================================================
-INVENTARIO DE FUNCIONES:
-  [EXPORT] _normalizePersistedMeta(meta)
-  [INTERNAL] _resolveStablePairToken({...})
-  [INTERNAL] _bestEffortUnlockAll(lockKeys, lockOwnerId)
-  [INTERNAL] _compensateCreatedBookings(createdBookings, traceId)
-  [INTERNAL] _createBookingWithSelectiveElevation(booking, options, traceId)
-  [INTERNAL] _validateCreateBookingResponse(booking, phase, traceId)
-  [INTERNAL] _checkDoubleBookingFlag(booking, phase, traceId)
-  [INTERNAL] _validateDualGap(f1LocalEnd, f2LocalStart, traceId)
-  [INTERNAL] _validateLinkedPhaseService(linkedPhases, parentLocationId, traceId)
-  [INTERNAL] _deleteCitasByPairToken(pairToken, traceId)
-  [INTERNAL] _isGuidOrNull(value)
-  [CLASS]  BookingSagaOrchestrator
-  [EXPORT] executeBookingSaga(unsafePayload)
-=============================================================================
 HISTORIAL DE CAMBIOS:
-  v5007.14 | 2026-09-19 | AUDITORIA 2 APLICADA:
-           |            | [AUDIT2-01] Contrato createBooking corregido:
-           |            |   separacion en (booking, options) segun SDK
-           |            |   wix-bookings.v2. booking incluye
-           |            |   { bookedEntity, contactDetails, totalParticipants: 1 }.
-           |            |   options incluye { flowControlSettings }.
-           |            |   Aplicado a F1 y F2.
-           |            | [AUDIT2-02] Creacion SECUENCIAL F1 -> F2 (antes
-           |            |   Promise.all). Evita reservas huerfanas si F1
-           |            |   falla mientras F2 esta creando. El lock ya
-           |            |   garantiza exclusion; no se necesita paralelismo.
-           |            | [AUDIT2-03] _completeTransaction envuelto en
-           |            |   try/catch con compensacion explicita:
-           |            |   _deleteCitasByPairToken + _compensateCreatedBookings.
-           |            |   Evita persistencia parcial si falla la
-           |            |   finalizacion de la transaccion.
-           |            | [AUDIT2-04] _normalizePersistedMeta() corregido:
-           |            |   parsea strings ANTES de validar tipo object.
-           |            | [AUDIT2-05] SLOT_SEARCH importado como top-level
-           |            |   (no SDK_CONFIG.SLOT_SEARCH). MAX_DUAL_GAP_MINUTES
-           |            |   leido de SLOT_SEARCH.MAX_DUAL_GAP_MINUTES.
-           |            | [AUDIT2-06] Verificado: ERROR_CODES.INVALID_DATES
-           |            |   y ERROR_CODES.STAFF_UNAVAILABLE existen en
-           |            |   bookingCore.js Bloque 1.
-           |            | [AUDIT2-07] _validateLinkedPhaseService() ampliado:
-           |            |   verifica locationId compatible con el servicio
-           |            |   padre y documenta allowCombine.
-           |            | [AUDIT2-08] scheduleId validado como GUID antes
-           |            |   de persistir (_isGuidOrNull).
-           |            | [AUDIT2-09] Documentacion: creado SECUENCIAL, no
-           |            |   paralelo. Deuda tecnica pairToken documentada.
-  v5007.13 | 2026-09-19 | AUDITORIA 1: gap maximo, validacion F2,
-           |            | persistencia compensable, scheduleId real.
-  v5007.12 | 2026-09-15 | W1 retirado checkout no usado, FF fire-and-forget.
-  v5007.8 | 2026-09-15 | AUDITORIA APLICADA: skipAvailabilityValidation,
+  v5007.15 | 2026-09-19 | COHERENCIA scheduleId:
+           |            | [AUDIT2-10] El step CreateBookings ahora captura
+           |            |   pristineF1.scheduleId y pristineF2.scheduleId
+           |            |   (mismos que se enviaron a Writer V2) y los
+           |            |   retorna al saga. El step PersistCitas los
+           |            |   consume y, si faltan, aplica el mismo
+           |            |   fallback via _resolveScheduleIdForResource.
+           |            |   Garantiza que el scheduleId de Writer V2 y el
+           |            |   de CitasF2 sean EXACTAMENTE el mismo GUID.
+  v5007.14 | 2026-09-19 | Payload createBooking(booking, options),
+           |            | secuencial F1->F2, compensacion completa,
+           |            | parseo de meta, SLOT_SEARCH top-level.
+  v5007.13 | 2026-09-19 | Gap maximo, validacion F2, persistencia
+           |            | compensable, scheduleId real.
+  v5007.12 | 2026-09-15 | W1, FF, AUDIT-BOOKING-01/02, PATCH-04..09.
+  v5007.8 | 2026-09-15 | AUDITORIA: skipAvailabilityValidation,
            |            | _createBookingWithSelectiveElevation.
-  v5007.7 | 2026-09-14 | FIX EDITOR RESIDUAL: strings con guiones bajos.
-  v5007.6 | 2026-09-14 | FIX EDITOR: restauracion de _ y *.
+  v5007.7 | 2026-09-14 | FIX EDITOR RESIDUAL.
+  v5007.6 | 2026-09-14 | FIX EDITOR.
   v5007.5 | 2026-09-14 | Alineacion SSOT v5002.6.
-  v5007.4 | 2026-09-14 | Fix HAL-S1. HAL-S2..S12.
-  v5007.3 | 2026-09-10 | FIX A5: import _extractCheckoutId.
-  v5002.5 | 2026-09-10 | Fix S-01: linkedPhases primaria de F2.
+  v5007.4 | 2026-09-14 | HAL-S1..S12.
+  v5007.3 | 2026-09-10 | FIX A5.
+  v5002.5 | 2026-09-10 | Fix S-01.
   v5002.3 | 2026-09-06 | Version inicial.
 =============================================================================
 */
@@ -112,6 +77,7 @@ import {
     _failTransaction,
     _persistBooking,
     _forceStaffInPristineSlot,
+    _resolveScheduleIdForResource,
     _buildLockKeys,
     _getDualPairFromCache,
     createBookingError,
@@ -142,10 +108,6 @@ const MAX_DUAL_GAP_MINUTES =
 
 // =============================================================================
 // BLOCK 1 - DETERMINISTIC PAIR TOKEN
-//
-// [AUDIT-RES-08 / AUDIT2-09] Deuda tecnica: pairToken derivado de
-// email+servicio+horarios. La verificacion de propiedad se delega al
-// consumidor (citasManager._assertBookingOwner).
 // =============================================================================
 function _resolveStablePairToken({ serviceId, resourceId, f1Start, f2Start, email, existingPairToken }) {
     const existing = _safeTrim(existingPairToken);
@@ -164,9 +126,6 @@ function _resolveStablePairToken({ serviceId, resourceId, f1Start, f2Start, emai
 
 // =============================================================================
 // BLOCK 2 - PERSISTED META NORMALIZATION
-//
-// [AUDIT2-04] CORREGIDO: parsea strings ANTES de validar tipo object.
-// Version anterior retornaba {} directamente para strings sin parsear.
 // =============================================================================
 export function _normalizePersistedMeta(meta) {
     if (!meta) return {};
@@ -252,9 +211,6 @@ async function _compensateCreatedBookings(createdBookings, traceId) {
 
 // =============================================================================
 // BLOCK 5 - SELECTIVE ELEVATION
-//
-// [AUDIT2-01] Corregido: createBooking(booking, options) segun SDK
-// wix-bookings.v2.
 // =============================================================================
 async function _createBookingWithSelectiveElevation(booking, options, traceId) {
     try {
@@ -354,10 +310,6 @@ function _validateDualGap(f1LocalEnd, f2LocalStart, traceId) {
 
 // =============================================================================
 // BLOCK 9 - VALIDACION DEL SERVICIO F2 (linkedPhases)
-//
-// [AUDIT2-07] Ampliado: valida locationId compatible con el servicio padre
-// y documenta la no-exigencia de allowCombine en F2 (es el padre quien
-// debe tener allowCombine=true).
 // =============================================================================
 async function _validateLinkedPhaseService(linkedPhases, parentLocationId, traceId) {
     const linkedServiceId = _safeTrim(linkedPhases);
@@ -422,7 +374,6 @@ async function _validateLinkedPhaseService(linkedPhases, parentLocationId, trace
         );
     }
 
-    // [AUDIT2-07] Verificacion de locationId compatible
     const parentLoc = _safeTrim(parentLocationId);
     const f2Loc = _safeTrim(service.locationId || service.location);
     if (parentLoc && f2Loc && parentLoc !== f2Loc) {
@@ -433,15 +384,7 @@ async function _validateLinkedPhaseService(linkedPhases, parentLocationId, trace
         );
     }
 
-    // NOTA [AUDIT2-07]: NO se exige allowCombine=true en F2. allowCombine es
-    // una propiedad del servicio PADRE (ya validada en PHASE 0). F2 es un
-    // servicio normal que se usa como segunda fase del flujo dual.
-
-    return {
-        service,
-        phase2Duration,
-        availableStaff,
-    };
+    return { service, phase2Duration, availableStaff };
 }
 
 // =============================================================================
@@ -482,8 +425,6 @@ async function _deleteCitasByPairToken(pairToken, traceId) {
 
 // =============================================================================
 // BLOCK 11 - UTILIDAD: GUID OR NULL
-//
-// [AUDIT2-08] Valida que scheduleId sea GUID valido antes de persistir.
 // =============================================================================
 function _isGuidOrNull(value) {
     const v = _safeTrim(value);
@@ -736,7 +677,6 @@ export async function executeBookingSaga(unsafePayload) {
         const validatedSlotF1 = resourceValidation.data.slotF1;
         const validatedSlotF2 = resourceValidation.data.slotF2;
 
-        // Defensa en profundidad: revalidar gap con datos normalizados
         if (isDual && validatedSlotF1 && validatedSlotF2) {
             const f1EndFromValidated = _normalizeLocalIsoStr(
                 validatedSlotF1.localEndDate || validatedSlotF1.endDate || f1LocalEnd
@@ -804,13 +744,12 @@ export async function executeBookingSaga(unsafePayload) {
         );
 
         // =========================================================================
-        // [AUDIT2-02] CREACION SECUENCIAL F1 -> F2
+        // [AUDIT2-10] CREACION SECUENCIAL + CAPTURA DE scheduleId REAL
         //
-        // Antes se usaba Promise.all. Si F1 fallaba mientras F2 estaba
-        // creando, la saga compensaba antes de que F2 se agregara a
-        // createdBookings, dejando una reserva huerfana en Wix.
-        //
-        // El lock ya garantiza exclusion mutua; no se necesita paralelismo.
+        // Se captura pristineF1.scheduleId y pristineF2.scheduleId (los
+        // mismos GUID que se enviaron a Writer V2) y se retornan al saga.
+        // PersistCitas los consume para persistir en CitasF2 el MISMO
+        // scheduleId que se envio a Writer V2.
         // =========================================================================
         saga.addStep(
             "CreateBookings",
@@ -830,7 +769,6 @@ export async function executeBookingSaga(unsafePayload) {
                     phone: _safeTrim(unsafePayload?.phone || metaCita.phone || ""),
                 };
 
-                // [AUDIT2-01] Contrato correcto: createBooking(booking, options)
                 const f1Booking = {
                     bookedEntity: { slot: pristineF1 },
                     contactDetails: contactDetails,
@@ -842,6 +780,7 @@ export async function executeBookingSaga(unsafePayload) {
 
                 let bookingF1 = null;
                 let bookingF2 = null;
+                let pristineF2 = null;
 
                 // --- F1 ---
                 const resF1 = await _createBookingWithSelectiveElevation(f1Booking, f1Options, traceId);
@@ -852,7 +791,7 @@ export async function executeBookingSaga(unsafePayload) {
 
                 // --- F2 (solo si dual) ---
                 if (isDual && f2LocalStart && validatedSlotF2) {
-                    const pristineF2 = await _forceStaffInPristineSlot(
+                    pristineF2 = await _forceStaffInPristineSlot(
                         validatedSlotF2, finalResourceId, linkedPhases, serviceConfig.phase2Duration
                     );
                     if (!pristineF2) {
@@ -876,10 +815,13 @@ export async function executeBookingSaga(unsafePayload) {
                     createdBookings.push({ bookingId: f2Id, phase: "F2" });
                 }
 
+                // [AUDIT2-10] Captura de scheduleId real del pristine slot
                 return {
                     bookingF1: bookingF1,
                     bookingF2: bookingF2,
                     createdBookings: createdBookings,
+                    scheduleIdF1: _safeTrim(pristineF1?.scheduleId) || null,
+                    scheduleIdF2: _safeTrim(pristineF2?.scheduleId) || null,
                 };
             },
             async function () {
@@ -942,6 +884,9 @@ export async function executeBookingSaga(unsafePayload) {
         const paymentStatus = isOnline ? ESTADO_PAGO.PENDING_PAYMENT : ESTADO_PAGO.UNPAID;
         const citaStatus = isOnline ? ESTADO_CITA.PENDING_PAYMENT : ESTADO_CITA.CONFIRMED;
 
+        // =========================================================================
+        // [AUDIT2-10] PERSISTCITAS consume scheduleId del pristine slot
+        // =========================================================================
         saga.addStep(
             "PersistCitas",
             async function () {
@@ -950,13 +895,24 @@ export async function executeBookingSaga(unsafePayload) {
                     .find((s) => s.name === checkoutStepName)?.result || null;
                 const resolvedCheckoutUrl = checkoutStepResult?.checkoutUrl || null;
 
+                const createBookingsResult = saga.completedSteps
+                    .find((s) => s.name === "CreateBookings")?.result || {};
+
                 const bookingF1Id = createdBookings.find(function (b) { return b.phase === "F1"; })?.bookingId;
                 const bookingF2Id = createdBookings.find(function (b) { return b.phase === "F2"; })?.bookingId;
 
-                // [AUDIT2-08] scheduleId validado como GUID antes de persistir
-                const scheduleIdF1 = _isGuidOrNull(
-                    validatedSlotF1?.scheduleId || validatedSlotF1?.slot?.scheduleId
-                );
+                // [AUDIT2-10] scheduleIdF1 desde el pristine slot (mismo enviado a Writer V2)
+                let scheduleIdF1 = _isGuidOrNull(createBookingsResult.scheduleIdF1);
+                if (!scheduleIdF1) {
+                    scheduleIdF1 = await _resolveScheduleIdForResource(finalResourceId, validatedSlotF1);
+                }
+                if (!scheduleIdF1) {
+                    throw createBookingError(
+                        ERROR_CODES.INVALID_PAYLOAD,
+                        "Unable to resolve scheduleId for F1 (no value from pristine slot or staff fallback)",
+                        { traceId, bookingId: bookingF1Id }
+                    );
+                }
 
                 await _persistBooking({
                     bookingId: bookingF1Id,
@@ -984,9 +940,17 @@ export async function executeBookingSaga(unsafePayload) {
                 }, traceId);
 
                 if (isDual && bookingF2Id) {
-                    const scheduleIdF2 = _isGuidOrNull(
-                        validatedSlotF2?.scheduleId || validatedSlotF2?.slot?.scheduleId
-                    );
+                    let scheduleIdF2 = _isGuidOrNull(createBookingsResult.scheduleIdF2);
+                    if (!scheduleIdF2) {
+                        scheduleIdF2 = await _resolveScheduleIdForResource(finalResourceId, validatedSlotF2);
+                    }
+                    if (!scheduleIdF2) {
+                        throw createBookingError(
+                            ERROR_CODES.INVALID_PAYLOAD,
+                            "Unable to resolve scheduleId for F2 (no value from pristine slot or staff fallback)",
+                            { traceId, bookingId: bookingF2Id }
+                        );
+                    }
 
                     await _persistBooking({
                         bookingId: bookingF2Id,
@@ -1041,11 +1005,7 @@ export async function executeBookingSaga(unsafePayload) {
                 status: persistStepResult?.citaStatus || citaStatus,
             };
 
-            // =========================================================================
-            // [AUDIT2-03] _completeTransaction fuera de saga pero con
-            // compensacion explicita si falla. Si _completeTransaction
-            // revienta, deshacemos toda la persistencia y bookings creados.
-            // =========================================================================
+            // Compensacion si falla _completeTransaction (fuera de saga)
             try {
                 await _completeTransaction(pairToken, finalResult);
             } catch (completeErr) {
