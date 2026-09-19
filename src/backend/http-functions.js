@@ -1,7 +1,7 @@
 /*
 =============================================================================
 MODULE: backend/http-functions.js
-VERSION: v5007.3-FINAL
+VERSION: v5007.4-FINAL
 BASE: BIBLIA v5002.5 Bloque 12.13 + DIRECTRICES V19
 RESPONSIBILITY: Endpoints HTTP expuestos. Webhook M365 con validacion HMAC.
 STANDARDS: G10 ASCII Strict (0 non-ASCII characters).
@@ -9,6 +9,9 @@ CORRECTIONS APPLIED:
   [HTTP-01] Validacion HMAC con timingSafeEqual.
   [HTTP-02] Respuesta JSON uniforme.
   [HTTP-03] Rate limiting en el borde.
+  [FIX-47] Eliminado import inexistente "wix-crypto". Se usa hmacSha256Hex
+           de backend/securityEngine (Web Crypto API). El modulo "wix-crypto"
+           no existe en Velo y rompia el webhook M365 en el primer request.
 =============================================================================
 */
 
@@ -17,7 +20,7 @@ import { getSecret } from "wix-secrets-backend";
 import { SECRETS } from "backend/mmSecrets";
 import { makeTraceId } from "public/mmUtils";
 import { logger } from "backend/logger";
-import { timingSafeEqual } from "backend/securityEngine";
+import { timingSafeEqual, hmacSha256Hex } from "backend/securityEngine";
 import { rateLimiter } from "backend/security";
 
 const log = logger;
@@ -34,17 +37,20 @@ async function _validateHMACSignature(request, bodyString, traceId) {
       return false;
     }
 
-    const providedSignature = request.headers?.["x-m365-signature"] ||
-      request.headers?.["X-M365-Signature"] || "";
+    const providedSignature =
+      request.headers?.["x-m365-signature"] ||
+      request.headers?.["X-M365-Signature"] ||
+      "";
 
     if (!providedSignature) return false;
 
-    const { createHmac } = await import("wix-crypto");
-    const hmac = createHmac("sha256", secret);
-    hmac.update(bodyString);
-    const expectedSignature = hmac.digest("hex");
+    // FIX-47: usa hmacSha256Hex de securityEngine (Web Crypto API).
+    const expectedSignature = await hmacSha256Hex(secret, bodyString);
 
-    return timingSafeEqual(providedSignature, expectedSignature);
+    return timingSafeEqual(
+      String(providedSignature).toLowerCase(),
+      String(expectedSignature).toLowerCase()
+    );
   } catch (err) {
     log.error("_validateHMACSignature failed", { error: err?.message, traceId });
     return false;
