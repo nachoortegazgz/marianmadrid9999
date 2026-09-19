@@ -1,585 +1,321 @@
 /*
 =============================================================================
-MODULE: public/mmUtils.js
-VERSION: v5007.6-FUNCTIONAL
-=============================================================================
+MODULE: backend/booking/bookingUtils.js
+VERSION: v5008.2-FINAL
+BASE: v5002.6 + consolidacion de helpers compartidos
+STANDARDS: G10 ASCII Strict
 
-FIX APLICADO (v5007.6):
-  - withTimeout acepta tanto una promesa como una fabrica (funcion que
-    devuelve una promesa). Si recibe una funcion, la invoca dentro del
-    Promise y captura excepciones sincronas. Retrocompatible.
+RESPONSIBILITY: Helpers compartidos entre reservas, citas, bookingSaga y
+                bookingCore. Elimina duplicacion y garantiza coherencia.
+
+FIXES APLICADOS:
+  - FIX-18: cleanGuid, cleanGuidList (unificado).
+  - FIX-26: numberOrZero, booleanValue.
+  - FIX-16: toUtcRange (conversion Madrid -> UTC).
+  - FIX-17: validateSlotDuration (dual mode: range o fijo).
+
+COMPATIBILIDAD:
+  - Conserva las firmas de v5002.6 para no romper consumidores actuales.
+  - resolveLinkedPhase2Duration mantiene el patron (linkedId, traceId,
+    visited, resolver).
 =============================================================================
 */
 
-const MADRID_TZ = "Europe/Madrid";
-const ZERO_HASH = "0".repeat(64);
+import {
+    _safeTrim,
+    _looksLikeGuid,
+    _normalizeLocalIsoStr,
+    getUtcDateFromMadridLocal,
+} from "public/mmUtils";
 
-const GUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { logger } from "backend/logger";
 
-export const MESSAGE_TYPES = Object.freeze({
-  READY: "MM_READY",
-  CONTEXT: "MM_CONTEXT",
-  AVAIL: "MM_AVAIL",
-  SELECT: "MM_SELECT",
-  BOOK: "MM_BOOK",
-  NAV: "MM_NAV"
-});
+const log = logger;
 
-export const URLS = Object.freeze({
-  SERVICIOS: "/reserva-online",
-  CALENDARIO_2: "/booking-calendar/calendario-2",
-  PRIVACY_POLICY: "/politica-de-privacidad"
-});
+// =============================================================================
+// BLOQUE 1 - GUID Y COERCION
+// =============================================================================
 
-export const UI = Object.freeze({
-  HANDSHAKE_TIMEOUT_MS: 30000,
-  CONTEXT_TIMEOUT_MS: 30000,
-  FRONTEND_API_TIMEOUT_MS: 60000
-});
+export function cleanGuid(value, errorCode = "INVALID_GUID") {
+    const clean = _safeTrim(value);
 
-export function makeTraceId(prefix = "op") {
-  const rawPrefix =
-    typeof prefix === "string" && prefix.length > 0 ? prefix : "op";
-  const safePrefix =
-    rawPrefix.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 24) || "op";
-  return `${safePrefix}_${Date.now().toString(36)}_${Math.random()
-    .toString(36)
-    .slice(2, 11)}`;
-}
-
-export function _generateUUID() {
-  if (
-    typeof crypto !== "undefined" &&
-    typeof crypto.randomUUID === "function"
-  ) {
-    return crypto.randomUUID();
-  }
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(
-    /[xy]/g,
-    (character) => {
-      const randomValue = Math.floor(Math.random() * 16);
-      const value =
-        character === "x" ? randomValue : (randomValue & 0x3) | 0x8;
-      return value.toString(16);
+    if (!clean || !_looksLikeGuid(clean)) {
+        throw new Error(`${errorCode}: GUID invalido o ausente`);
     }
-  );
+
+    return clean;
 }
 
-export function _safeTrim(value) {
-  if (value === null || value === undefined) return "";
-  try {
-    return String(value).trim();
-  } catch {
-    return "";
-  }
+export function cleanGuidList(value) {
+    const source = Array.isArray(value)
+        ? value
+        : typeof value === "string"
+            ? value.split(",")
+            : [];
+
+    return Array.from(
+        new Set(
+            source
+                .map((item) => {
+                    if (typeof item === "string") {
+                        return _safeTrim(item);
+                    }
+
+                    return _safeTrim(
+                        item?.resourceId ||
+                        item?.id ||
+                        item?._id
+                    );
+                })
+                .filter((id) => _looksLikeGuid(id))
+        )
+    );
 }
 
-export function _cleanText(value, maxLength = 500) {
-  const text = _safeTrim(value);
-  if (!text) return "";
-  const safeLength =
-    Number.isFinite(maxLength) && maxLength > 0
-      ? Math.floor(maxLength)
-      : 500;
-  return text.replace(/\s+/g, " ").slice(0, safeLength);
+export function numberOrZero(value) {
+    const number = Number(value);
+
+    return Number.isFinite(number) && number >= 0
+        ? number
+        : 0;
 }
 
-export function _safeSlugOrId(value) {
-  const text = _safeTrim(value);
-  if (!text) return "";
-  return text
-    .toLowerCase()
-    .replace(/\s+/g, "-")
-    .replace(/[^a-z0-9-]/g, "")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 120);
+export function booleanValue(...values) {
+    return values.some((value) => value === true);
 }
 
-export function _normType(type) {
-  return _safeTrim(type).toUpperCase();
+// =============================================================================
+// BLOQUE 2 - GAP Y UTC RANGES
+// =============================================================================
+
+export function computeGapMinutes(f1EndUtc, f2StartUtc) {
+    if (
+        !(f1EndUtc instanceof Date) ||
+        !(f2StartUtc instanceof Date)
+    ) {
+        return 0;
+    }
+
+    const milliseconds =
+        f2StartUtc.getTime() - f1EndUtc.getTime();
+
+    return Math.max(
+        0,
+        Math.round(milliseconds / 60000)
+    );
 }
 
-export function _looksLikeGuid(value) {
-  return typeof value === "string" && GUID_PATTERN.test(value.trim());
+export function toUtcRange(startLocal, endLocal) {
+    const startUtc = getUtcDateFromMadridLocal(
+        _normalizeLocalIsoStr(startLocal)
+    );
+
+    const endUtc = getUtcDateFromMadridLocal(
+        _normalizeLocalIsoStr(endLocal)
+    );
+
+    if (!startUtc || !endUtc) {
+        return null;
+    }
+
+    if (endUtc.getTime() <= startUtc.getTime()) {
+        return null;
+    }
+
+    return { startUtc, endUtc };
 }
 
-export function normalizeIdPart(value, maxLength = 100) {
-  const text = _safeTrim(value);
-  if (!text) return "";
-  const safeLength =
-    Number.isFinite(maxLength) && maxLength > 0
-      ? Math.floor(maxLength)
-      : 100;
-  return text.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, safeLength);
+// =============================================================================
+// BLOQUE 3 - DURATION RANGE
+// =============================================================================
+
+export function readDurationRange(item) {
+    const constraints =
+        item?.availabilityConstraints ||
+        item?.data?.availabilityConstraints ||
+        item?.fields?.availabilityConstraints;
+
+    const range =
+        constraints?.durationRange ||
+        item?.durationRange ||
+        item?.data?.durationRange ||
+        item?.fields?.durationRange;
+
+    if (!range || typeof range !== "object") {
+        return null;
+    }
+
+    const min = Number(
+        range.minDuration ??
+        range.min ??
+        0
+    ) || 0;
+
+    const rawMax = Number(
+        range.maxDuration ??
+        range.max ??
+        0
+    ) || 0;
+
+    const max = rawMax > 0 ? rawMax : Infinity;
+
+    if (min <= 0 && max === Infinity) {
+        return null;
+    }
+
+    if (max !== Infinity && max <= min) {
+        return null;
+    }
+
+    return { min, max };
 }
 
-export const _normalizeIdPart = normalizeIdPart;
+// =============================================================================
+// BLOQUE 4 - DURACION EFECTIVA
+// =============================================================================
 
-export function _isValidEmail(email) {
-  const value = _safeTrim(email);
-  if (!value || value.length > 254) return false;
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+export function resolveExpectedSlotMinutes(serviceConfig) {
+    if (!serviceConfig) {
+        return 0;
+    }
+
+    if (serviceConfig.allowCombine === true) {
+        return Number(
+            serviceConfig.phase1Duration || 0
+        ) || 0;
+    }
+
+    return (
+        Number(serviceConfig.phase1Duration || 0) ||
+        Number(serviceConfig.totalDuration || 0) ||
+        Number(
+            serviceConfig.metadata?.timing?.estimatedTotal || 0
+        ) ||
+        0
+    );
 }
 
-export function _safeEmail(email) {
-  const value = _safeTrim(email);
-  return _isValidEmail(value) ? value.toLowerCase() : "";
-}
-
-export function _safePhone(phone) {
-  const value = _safeTrim(phone);
-  if (!value) return "";
-  return value.replace(/\s+/g, "").replace(/[^\d+]/g, "");
-}
-
-export function _extractRelationalId(value) {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "string") return _safeTrim(value);
-  if (typeof value === "object") {
-    return _safeTrim(value._id || value.id || value.itemId);
-  }
-  return "";
-}
-
-export function _roundMoney(value) {
-  const amount = Number(value);
-  if (!Number.isFinite(amount)) return 0;
-  return Math.round((amount + Number.EPSILON) * 100) / 100;
-}
-
-export function _readPositiveAmount(value) {
-  const amount = Number(value);
-  if (!Number.isFinite(amount) || amount <= 0) return null;
-  return _roundMoney(amount);
-}
-
-export function _readNonNegativeAmount(value) {
-  const amount = Number(value);
-  if (!Number.isFinite(amount) || amount < 0) return null;
-  return _roundMoney(amount);
-}
-
-export function _toDateSafe(value) {
-  if (value === null || value === undefined) return null;
-  if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? null : value;
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? null : date;
-  }
-  if (typeof value === "string") {
-    const text = value.trim();
-    if (!text) return null;
-    const date = new Date(text);
-    return Number.isNaN(date.getTime()) ? null : date;
-  }
-  return null;
-}
-
-export function _readDate(value) {
-  const date = _toDateSafe(value);
-  if (!date) return null;
-  try {
-    return date.toLocaleDateString("sv-SE", { timeZone: MADRID_TZ });
-  } catch {
-    return null;
-  }
-}
-
-function _formatMadridDateParts(date) {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: MADRID_TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false
-  }).formatToParts(date);
-
-  const get = (type) =>
-    parts.find((part) => part.type === type)?.value || "";
-
-  let hour = get("hour");
-  if (hour === "24") hour = "00";
-
-  return {
-    year: get("year"),
-    month: get("month"),
-    day: get("day"),
-    hour: hour.padStart(2, "0"),
-    minute: get("minute").padStart(2, "0"),
-    second: get("second").padStart(2, "0")
-  };
-}
-
-function _isValidLocalDateTime(year, month, day, hour, minute, second) {
-  const date = new Date(
-    Date.UTC(year, month - 1, day, hour, minute, second)
-  );
-  return (
-    date.getUTCFullYear() === year &&
-    date.getUTCMonth() === month - 1 &&
-    date.getUTCDate() === day &&
-    date.getUTCHours() === hour &&
-    date.getUTCMinutes() === minute &&
-    date.getUTCSeconds() === second
-  );
-}
-
-export function _normalizeLocalIsoStr(value) {
-  const text = _safeTrim(value);
-  if (!text) return "";
-
-  const localMatch =
-    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/.exec(text);
-
-  if (localMatch) {
-    const year = Number(localMatch[1]);
-    const month = Number(localMatch[2]);
-    const day = Number(localMatch[3]);
-    const hour = Number(localMatch[4]);
-    const minute = Number(localMatch[5]);
-    const second = Number(localMatch[6]);
+export async function resolveLinkedPhase2Duration(
+    linkedServiceId,
+    traceId,
+    visited = new Set(),
+    resolver
+) {
+    const linkedId = _safeTrim(linkedServiceId);
 
     if (
-      !_isValidLocalDateTime(year, month, day, hour, minute, second)
+        !_looksLikeGuid(linkedId) ||
+        typeof resolver !== "function"
     ) {
-      return "";
+        return 0;
     }
 
-    return `${String(year).padStart(4, "0")}-${String(month).padStart(
-      2,
-      "0"
-    )}-${String(day).padStart(2, "0")}T${String(hour).padStart(
-      2,
-      "0"
-    )}:${String(minute).padStart(2, "0")}:${String(second).padStart(
-      2,
-      "0"
-    )}`;
-  }
+    if (visited.has(linkedId)) {
+        log.warn(
+            "Cycle detected in linkedPhases chain",
+            { traceId, linkedId, visited: Array.from(visited) }
+        );
+        return 0;
+    }
 
-  const date = _toDateSafe(text);
-  if (!date) return "";
+    visited.add(linkedId);
 
-  try {
-    const parts = _formatMadridDateParts(date);
-    return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}`;
-  } catch {
-    return "";
-  }
-}
-
-export function getUtcDateFromMadridLocal(localValue) {
-  const normalized = _normalizeLocalIsoStr(localValue);
-  if (!normalized) return null;
-
-  const [datePart, timePart] = normalized.split("T");
-  const [year, month, day] = datePart.split("-").map(Number);
-  const [hour, minute, second] = timePart.split(":").map(Number);
-
-  const targetUtc = Date.UTC(
-    year,
-    month - 1,
-    day,
-    hour,
-    minute,
-    second
-  );
-
-  let guess = new Date(targetUtc);
-
-  for (let index = 0; index < 4; index += 1) {
-    const parts = _formatMadridDateParts(guess);
-    const madridAsUtc = Date.UTC(
-      Number(parts.year),
-      Number(parts.month) - 1,
-      Number(parts.day),
-      Number(parts.hour),
-      Number(parts.minute),
-      Number(parts.second)
+    const result = await resolver(
+        linkedId,
+        traceId
     );
 
-    const difference = targetUtc - madridAsUtc;
-    if (Math.abs(difference) < 1000) break;
-    guess = new Date(guess.getTime() + difference);
-  }
-
-  return guess;
-}
-
-export function getMadridLocalStringNoZ(value) {
-  const date = _toDateSafe(value);
-  if (!date) return "";
-  try {
-    const parts = _formatMadridDateParts(date);
-    return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}`;
-  } catch {
-    return "";
-  }
-}
-
-export function _stableSerialize(value) {
-  const seen = new WeakSet();
-
-  function serialize(current) {
-    if (current === null || current === undefined) return "null";
-    if (typeof current === "string") return JSON.stringify(current);
-    if (typeof current === "number" || typeof current === "boolean") {
-      return JSON.stringify(current);
-    }
-    if (typeof current === "bigint") return JSON.stringify(`${current}n`);
-    if (typeof current !== "object") return "null";
-    if (seen.has(current)) return JSON.stringify("[Circular]");
-    seen.add(current);
-    if (current instanceof Date) return JSON.stringify(current.toISOString());
-    if (Array.isArray(current)) {
-      return `[${current.map((item) => serialize(item)).join(",")}]`;
-    }
-    const keys = Object.keys(current).sort();
-    return `{${keys
-      .map((key) => `${JSON.stringify(key)}:${serialize(current[key])}`)
-      .join(",")}}`;
-  }
-
-  return serialize(value);
-}
-
-export function _hashKey(input) {
-  const text = _safeTrim(input);
-  if (!text) return ZERO_HASH;
-
-  let hash1 = 0xdeadbeef;
-  let hash2 = 0x41c6ce57;
-
-  for (let index = 0; index < text.length; index += 1) {
-    const character = text.charCodeAt(index);
-    hash1 = Math.imul(hash1 ^ character, 2654435761);
-    hash2 = Math.imul(hash2 ^ character, 1597334677);
-  }
-
-  hash1 = Math.imul(hash1 ^ (hash1 >>> 16), 2246822507);
-  hash1 ^= Math.imul(hash2 ^ (hash2 >>> 13), 3266489909);
-  hash2 = Math.imul(hash2 ^ (hash2 >>> 16), 2246822507);
-  hash2 ^= Math.imul(hash1 ^ (hash1 >>> 13), 3266489909);
-
-  const combined = 4294967296 * (2097151 & hash2) + (hash1 >>> 0);
-  return combined.toString(16).padStart(16, "0").repeat(4).slice(0, 64);
-}
-
-export function _maskEmail(email) {
-  const value = _safeTrim(email);
-  const separatorIndex = value.indexOf("@");
-  if (separatorIndex <= 0 || separatorIndex === value.length - 1) {
-    return "";
-  }
-  const local = value.slice(0, separatorIndex);
-  const domain = value.slice(separatorIndex + 1);
-  return `${local.charAt(0)}${"*".repeat(
-    Math.max(3, local.length - 1)
-  )}@${domain}`;
-}
-
-export function _maskPhone(phone) {
-  const value = _safeTrim(phone).replace(/\s+/g, "");
-  if (value.length < 4) return "";
-  return `${"*".repeat(value.length - 4)}${value.slice(-4)}`;
-}
-
-export function _maskName(name) {
-  const value = _safeTrim(name);
-  if (!value) return "";
-  return value
-    .split(/\s+/)
-    .map((word) =>
-      word.length <= 1
-        ? word
-        : `${word.charAt(0)}${"*".repeat(word.length - 1)}`
-    )
-    .join(" ");
-}
-
-export function _maskIp(ip) {
-  const value = _safeTrim(ip);
-  if (!value) return "";
-  const parts = value.split(".");
-  if (parts.length !== 4) return value;
-  return `${parts[0]}.${parts[1]}.*.*`;
-}
-
-/**
- * FIX v5007.6: withTimeout acepta promesa o fabrica.
- *
- * - Si recibe una promesa: comportamiento clasico (retrocompatible).
- * - Si recibe una funcion (fabrica): la invoca dentro del Promise, de modo
- *   que el timeout cubra TODA la ejecucion, incluida la parte sincrona.
- * - Si la fabrica lanza sincronamente, se rechaza con el timer limpio.
- *
- * @param {Promise|Function} promiseOrFactory
- * @param {number} timeoutMs
- * @param {string} [label]
- * @returns {Promise}
- */
-export function withTimeout(
-  promiseOrFactory,
-  timeoutMs,
-  label = "operation"
-) {
-  const isFactory = typeof promiseOrFactory === "function";
-
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    if (isFactory) {
-      return Promise.resolve().then(promiseOrFactory);
-    }
-    return promiseOrFactory;
-  }
-
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      const error = new Error(
-        `TIMEOUT: ${label} exceeded ${timeoutMs}ms`
-      );
-      error.code = "TIMEOUT";
-      reject(error);
-    }, timeoutMs);
-
-    let promise;
-    try {
-      promise = isFactory ? promiseOrFactory() : promiseOrFactory;
-    } catch (syncError) {
-      clearTimeout(timer);
-      reject(syncError);
-      return;
+    if (
+        result?.status !== "SUCCESS" ||
+        !result?.data
+    ) {
+        return 0;
     }
 
-    Promise.resolve(promise).then(
-      (result) => {
-        clearTimeout(timer);
-        resolve(result);
-      },
-      (error) => {
-        clearTimeout(timer);
-        reject(error);
-      }
+    const service = result.data;
+
+    return (
+        Number(service.phase1Duration || 0) ||
+        Number(service.totalDuration || 0) ||
+        Number(service.metadata?.timing?.estimatedTotal || 0) ||
+        0
     );
-  });
 }
 
-export async function _executeWithRetry(
-  operation,
-  retries = 3,
-  baseDelayMs = 500
-) {
-  if (typeof operation !== "function") {
-    throw new TypeError("operation must be a function");
-  }
+// =============================================================================
+// BLOQUE 5 - VALIDACION DE DURACION DE SLOT
+// =============================================================================
 
-  const safeRetries = Math.max(0, Math.floor(Number(retries) || 0));
-  const safeBaseDelay = Math.max(0, Number(baseDelayMs) || 0);
+export function validateSlotDuration({
+    serviceConfig,
+    startLocal,
+    endLocal,
+}) {
+    const result = {
+        ok: true,
+        code: null,
+        actualMinutes: 0,
+        expectedMinutes: null,
+        min: null,
+        max: null,
+    };
 
-  let lastError;
-
-  for (let attempt = 0; attempt <= safeRetries; attempt += 1) {
-    try {
-      return await operation();
-    } catch (error) {
-      lastError = error;
-      if (attempt >= safeRetries) break;
-
-      const delay = Math.min(
-        safeBaseDelay * 2 ** attempt + Math.random() * safeBaseDelay,
-        30000
-      );
-
-      await new Promise((resolve) => setTimeout(resolve, delay));
+    if (!serviceConfig || typeof serviceConfig !== "object") {
+        return result;
     }
-  }
 
-  throw lastError;
+    const startUtc = getUtcDateFromMadridLocal(
+        _normalizeLocalIsoStr(startLocal)
+    );
+
+    const endUtc = getUtcDateFromMadridLocal(
+        _normalizeLocalIsoStr(endLocal)
+    );
+
+    if (!startUtc || !endUtc) {
+        return result;
+    }
+
+    const diffMs = endUtc.getTime() - startUtc.getTime();
+
+    if (!Number.isFinite(diffMs) || diffMs <= 0) {
+        return result;
+    }
+
+    const actualMinutes = Math.round(diffMs / 60000);
+
+    result.actualMinutes = actualMinutes;
+
+    const durationRange = serviceConfig.durationRange;
+
+    if (durationRange) {
+        const { min, max } = durationRange;
+
+        result.min = min;
+        result.max = max === Infinity ? null : max;
+
+        const belowMin = min > 0 && actualMinutes < min;
+        const aboveMax = max !== Infinity && actualMinutes > max;
+
+        if (belowMin || aboveMax) {
+            result.ok = false;
+            result.code = "SLOT_DURATION_OUT_OF_RANGE";
+        }
+
+        return result;
+    }
+
+    const expectedMinutes =
+        resolveExpectedSlotMinutes(serviceConfig);
+
+    if (expectedMinutes > 0) {
+        result.expectedMinutes = expectedMinutes;
+
+        if (Math.abs(actualMinutes - expectedMinutes) > 1) {
+            result.ok = false;
+            result.code = "SLOT_DURATION_MISMATCH";
+        }
+    }
+
+    return result;
 }
-
-export function _cloneDeep(value) {
-  const seen = new WeakMap();
-
-  function clone(current) {
-    if (current === null || typeof current !== "object") return current;
-    if (current instanceof Date) return new Date(current.getTime());
-    if (current instanceof RegExp) return new RegExp(current.source, current.flags);
-    if (seen.has(current)) return seen.get(current);
-
-    if (current instanceof Map) {
-      const clonedMap = new Map();
-      seen.set(current, clonedMap);
-      current.forEach((mapValue, mapKey) => {
-        clonedMap.set(clone(mapKey), clone(mapValue));
-      });
-      return clonedMap;
-    }
-
-    if (current instanceof Set) {
-      const clonedSet = new Set();
-      seen.set(current, clonedSet);
-      current.forEach((setValue) => clonedSet.add(clone(setValue)));
-      return clonedSet;
-    }
-
-    if (Array.isArray(current)) {
-      const clonedArray = [];
-      seen.set(current, clonedArray);
-      current.forEach((item, index) => {
-        clonedArray[index] = clone(item);
-      });
-      return clonedArray;
-    }
-
-    const clonedObject = {};
-    seen.set(current, clonedObject);
-    Object.keys(current).forEach((key) => {
-      clonedObject[key] = clone(current[key]);
-    });
-    return clonedObject;
-  }
-
-  return clone(value);
-}
-
-export default {
-  MESSAGE_TYPES,
-  URLS,
-  UI,
-  makeTraceId,
-  _generateUUID,
-  _safeTrim,
-  _cleanText,
-  _safeSlugOrId,
-  _normType,
-  _looksLikeGuid,
-  _isValidEmail,
-  _extractRelationalId,
-  _roundMoney,
-  _readPositiveAmount,
-  _readNonNegativeAmount,
-  _toDateSafe,
-  _readDate,
-  _normalizeLocalIsoStr,
-  getUtcDateFromMadridLocal,
-  getMadridLocalStringNoZ,
-  _stableSerialize,
-  _hashKey,
-  _maskEmail,
-  _maskPhone,
-  _maskName,
-  _maskIp,
-  _safeEmail,
-  _safePhone,
-  withTimeout,
-  _executeWithRetry,
-  _cloneDeep,
-  normalizeIdPart,
-  _normalizeIdPart
-};
