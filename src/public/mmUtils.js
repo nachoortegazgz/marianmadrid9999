@@ -1,18 +1,17 @@
 /*
 =============================================================================
 MODULE: public/mmUtils.js
-VERSION: v5007.5-FUNCTIONAL
+VERSION: v5007.6-ALIGNED
 =============================================================================
 */
 
 const MADRID_TZ = "Europe/Madrid";
 const ZERO_HASH = "0".repeat(64);
-
 const GUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // =============================================================================
-// CONTRATOS DE COMUNICACION
+// CONTRATOS
 // =============================================================================
 
 export const MESSAGE_TYPES = Object.freeze({
@@ -41,15 +40,29 @@ export const UI = Object.freeze({
 // =============================================================================
 
 export function makeTraceId(prefix = "op") {
-  const rawPrefix =
-    typeof prefix === "string" && prefix.length > 0 ? prefix : "op";
+  const raw = typeof prefix === "string" && prefix ? prefix : "op";
+  const safe = raw.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 24) || "op";
+  return `${safe}_${Date.now().toString(36)}_${_randomString(9)}`;
+}
 
-  const safePrefix =
-    rawPrefix.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 24) || "op";
+function _randomString(length = 16) {
+  const chars =
+    "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
-  return `${safePrefix}_${Date.now().toString(36)}_${Math.random()
-    .toString(36)
-    .slice(2, 11)}`;
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.getRandomValues === "function"
+  ) {
+    const bytes = new Uint8Array(length);
+    crypto.getRandomValues(bytes);
+
+    return Array.from(
+      bytes,
+      (byte) => chars[byte % chars.length]
+    ).join("");
+  }
+
+  throw new Error("Secure random generation is unavailable.");
 }
 
 export function _generateUUID() {
@@ -60,18 +73,30 @@ export function _generateUUID() {
     return crypto.randomUUID();
   }
 
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(
-    /[xy]/g,
-    (character) => {
-      const randomValue = Math.floor(Math.random() * 16);
-      const value =
-        character === "x"
-          ? randomValue
-          : (randomValue & 0x3) | 0x8;
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.getRandomValues === "function"
+  ) {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
 
-      return value.toString(16);
-    }
-  );
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+    const hex = Array.from(bytes, (byte) =>
+      byte.toString(16).padStart(2, "0")
+    ).join("");
+
+    return [
+      hex.slice(0, 8),
+      hex.slice(8, 12),
+      hex.slice(12, 16),
+      hex.slice(16, 20),
+      hex.slice(20)
+    ].join("-");
+  }
+
+  throw new Error("Secure UUID generation is unavailable.");
 }
 
 // =============================================================================
@@ -79,38 +104,30 @@ export function _generateUUID() {
 // =============================================================================
 
 export function _safeTrim(value) {
-  if (value === null || value === undefined) {
-    return "";
-  }
+  if (value === null || value === undefined) return "";
 
   try {
     return String(value).trim();
-  } catch {
+  } catch (_) {
     return "";
   }
 }
 
 export function _cleanText(value, maxLength = 500) {
   const text = _safeTrim(value);
+  if (!text) return "";
 
-  if (!text) {
-    return "";
-  }
-
-  const safeLength =
+  const limit =
     Number.isFinite(maxLength) && maxLength > 0
       ? Math.floor(maxLength)
       : 500;
 
-  return text.replace(/\s+/g, " ").slice(0, safeLength);
+  return text.replace(/\s+/g, " ").slice(0, limit);
 }
 
 export function _safeSlugOrId(value) {
   const text = _safeTrim(value);
-
-  if (!text) {
-    return "";
-  }
+  if (!text) return "";
 
   return text
     .toLowerCase()
@@ -131,19 +148,16 @@ export function _looksLikeGuid(value) {
 
 export function normalizeIdPart(value, maxLength = 100) {
   const text = _safeTrim(value);
+  if (!text) return "";
 
-  if (!text) {
-    return "";
-  }
-
-  const safeLength =
+  const limit =
     Number.isFinite(maxLength) && maxLength > 0
       ? Math.floor(maxLength)
       : 100;
 
   return text
     .replace(/[^a-zA-Z0-9_.-]/g, "")
-    .slice(0, safeLength);
+    .slice(0, limit);
 }
 
 export const _normalizeIdPart = normalizeIdPart;
@@ -155,9 +169,7 @@ export const _normalizeIdPart = normalizeIdPart;
 export function _isValidEmail(email) {
   const value = _safeTrim(email);
 
-  if (!value || value.length > 254) {
-    return false;
-  }
+  if (!value || value.length > 254) return false;
 
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
@@ -170,17 +182,19 @@ export function _safeEmail(email) {
 export function _safePhone(phone) {
   const value = _safeTrim(phone);
 
-  if (!value) {
-    return "";
-  }
+  if (!value || value.length > 32) return "";
 
-  return value.replace(/\s+/g, "").replace(/[^\d+]/g, "");
+  const normalized = value
+    .replace(/[()\s.-]/g, "")
+    .replace(/[^\d+]/g, "");
+
+  return /^\+?\d{7,15}$/.test(normalized)
+    ? normalized
+    : "";
 }
 
 export function _extractRelationalId(value) {
-  if (value === null || value === undefined) {
-    return "";
-  }
+  if (value === null || value === undefined) return "";
 
   if (typeof value === "string") {
     return _safeTrim(value);
@@ -200,9 +214,7 @@ export function _extractRelationalId(value) {
 export function _roundMoney(value) {
   const amount = Number(value);
 
-  if (!Number.isFinite(amount)) {
-    return 0;
-  }
+  if (!Number.isFinite(amount)) return 0;
 
   return Math.round((amount + Number.EPSILON) * 100) / 100;
 }
@@ -232,9 +244,7 @@ export function _readNonNegativeAmount(value) {
 // =============================================================================
 
 export function _toDateSafe(value) {
-  if (value === null || value === undefined) {
-    return null;
-  }
+  if (value === null || value === undefined) return null;
 
   if (value instanceof Date) {
     return Number.isNaN(value.getTime()) ? null : value;
@@ -247,10 +257,7 @@ export function _toDateSafe(value) {
 
   if (typeof value === "string") {
     const text = value.trim();
-
-    if (!text) {
-      return null;
-    }
+    if (!text) return null;
 
     const date = new Date(text);
     return Number.isNaN(date.getTime()) ? null : date;
@@ -261,16 +268,13 @@ export function _toDateSafe(value) {
 
 export function _readDate(value) {
   const date = _toDateSafe(value);
-
-  if (!date) {
-    return null;
-  }
+  if (!date) return null;
 
   try {
     return date.toLocaleDateString("sv-SE", {
       timeZone: MADRID_TZ
     });
-  } catch {
+  } catch (_) {
     return null;
   }
 }
@@ -291,22 +295,26 @@ function _formatMadridDateParts(date) {
     parts.find((part) => part.type === type)?.value || "";
 
   let hour = get("hour");
-
-  if (hour === "24") {
-    hour = "00";
-  }
+  if (hour === "24") hour = "00";
 
   return {
     year: get("year"),
-    month: get("month"),
-    day: get("day"),
+    month: get("month").padStart(2, "0"),
+    day: get("day").padStart(2, "0"),
     hour: hour.padStart(2, "0"),
     minute: get("minute").padStart(2, "0"),
     second: get("second").padStart(2, "0")
   };
 }
 
-function _isValidLocalDateTime(year, month, day, hour, minute, second) {
+function _isValidLocalDateTime(
+  year,
+  month,
+  day,
+  hour,
+  minute,
+  second
+) {
   const date = new Date(
     Date.UTC(year, month - 1, day, hour, minute, second)
   );
@@ -323,10 +331,7 @@ function _isValidLocalDateTime(year, month, day, hour, minute, second) {
 
 export function _normalizeLocalIsoStr(value) {
   const text = _safeTrim(value);
-
-  if (!text) {
-    return "";
-  }
+  if (!text) return "";
 
   const localMatch =
     /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/.exec(text);
@@ -352,39 +357,27 @@ export function _normalizeLocalIsoStr(value) {
       return "";
     }
 
-    return `${String(year).padStart(4, "0")}-${String(month).padStart(
-      2,
-      "0"
-    )}-${String(day).padStart(2, "0")}T${String(hour).padStart(
-      2,
-      "0"
-    )}:${String(minute).padStart(2, "0")}:${String(second).padStart(
-      2,
-      "0"
-    )}`;
+    return [
+      `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
+      `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:${String(second).padStart(2, "0")}`
+    ].join("T");
   }
 
   const date = _toDateSafe(text);
-
-  if (!date) {
-    return "";
-  }
+  if (!date) return "";
 
   try {
     const parts = _formatMadridDateParts(date);
 
     return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}`;
-  } catch {
+  } catch (_) {
     return "";
   }
 }
 
 export function getUtcDateFromMadridLocal(localValue) {
   const normalized = _normalizeLocalIsoStr(localValue);
-
-  if (!normalized) {
-    return null;
-  }
+  if (!normalized) return null;
 
   const [datePart, timePart] = normalized.split("T");
   const [year, month, day] = datePart.split("-").map(Number);
@@ -401,7 +394,7 @@ export function getUtcDateFromMadridLocal(localValue) {
 
   let guess = new Date(targetUtc);
 
-  for (let index = 0; index < 4; index += 1) {
+  for (let index = 0; index < 6; index += 1) {
     const parts = _formatMadridDateParts(guess);
 
     const madridAsUtc = Date.UTC(
@@ -415,11 +408,14 @@ export function getUtcDateFromMadridLocal(localValue) {
 
     const difference = targetUtc - madridAsUtc;
 
-    if (Math.abs(difference) < 1000) {
-      break;
-    }
+    if (Math.abs(difference) < 1000) break;
 
     guess = new Date(guess.getTime() + difference);
+  }
+
+  // Rechaza horas inexistentes durante el cambio horario.
+  if (getMadridLocalStringNoZ(guess) !== normalized) {
+    return null;
   }
 
   return guess;
@@ -427,16 +423,13 @@ export function getUtcDateFromMadridLocal(localValue) {
 
 export function getMadridLocalStringNoZ(value) {
   const date = _toDateSafe(value);
-
-  if (!date) {
-    return "";
-  }
+  if (!date) return "";
 
   try {
     const parts = _formatMadridDateParts(date);
 
     return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}`;
-  } catch {
+  } catch (_) {
     return "";
   }
 }
@@ -457,10 +450,21 @@ export function _stableSerialize(value) {
       return JSON.stringify(current);
     }
 
-    if (
-      typeof current === "number" ||
-      typeof current === "boolean"
-    ) {
+    if (typeof current === "number") {
+      if (!Number.isFinite(current)) {
+        return JSON.stringify(
+          Number.isNaN(current)
+            ? "[NaN]"
+            : current === Infinity
+              ? "[Infinity]"
+              : "[-Infinity]"
+        );
+      }
+
+      return JSON.stringify(current);
+    }
+
+    if (typeof current === "boolean") {
       return JSON.stringify(current);
     }
 
@@ -502,9 +506,7 @@ export function _stableSerialize(value) {
 export function _hashKey(input) {
   const text = _safeTrim(input);
 
-  if (!text) {
-    return ZERO_HASH;
-  }
+  if (!text) return ZERO_HASH;
 
   let hash1 = 0xdeadbeef;
   let hash2 = 0x41c6ce57;
@@ -523,7 +525,8 @@ export function _hashKey(input) {
   hash2 ^= Math.imul(hash1 ^ (hash1 >>> 13), 3266489909);
 
   const combined =
-    4294967296 * (2097151 & hash2) + (hash1 >>> 0);
+    4294967296 * (2097151 & hash2) +
+    (hash1 >>> 0);
 
   return combined
     .toString(16)
@@ -558,19 +561,14 @@ export function _maskEmail(email) {
 export function _maskPhone(phone) {
   const value = _safeTrim(phone).replace(/\s+/g, "");
 
-  if (value.length < 4) {
-    return "";
-  }
+  if (value.length < 4) return "";
 
   return `${"*".repeat(value.length - 4)}${value.slice(-4)}`;
 }
 
 export function _maskName(name) {
   const value = _safeTrim(name);
-
-  if (!value) {
-    return "";
-  }
+  if (!value) return "";
 
   return value
     .split(/\s+/)
@@ -584,15 +582,25 @@ export function _maskName(name) {
 
 export function _maskIp(ip) {
   const value = _safeTrim(ip);
+  if (!value) return "";
 
-  if (!value) {
-    return "";
+  if (value.includes(":")) {
+    const parts = value.split(":");
+
+    if (parts.length < 2) return "***";
+
+    return parts
+      .map((part, index) => (index < 4 ? part : "*"))
+      .join(":");
   }
 
   const parts = value.split(".");
 
-  if (parts.length !== 4) {
-    return value;
+  if (
+    parts.length !== 4 ||
+    parts.some((part) => !/^\d{1,3}$/.test(part))
+  ) {
+    return "***";
   }
 
   return `${parts[0]}.${parts[1]}.*.*`;
@@ -603,33 +611,64 @@ export function _maskIp(ip) {
 // =============================================================================
 
 export function withTimeout(
-  promise,
+  promiseOrFactory,
   timeoutMs,
-  label = "operation"
+  label = "operation",
+  controller = null
 ) {
+  const operation =
+    typeof promiseOrFactory === "function"
+      ? promiseOrFactory
+      : () => promiseOrFactory;
+
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    return promise;
+    return operation();
   }
 
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
+    let settled = false;
+    let timer = null;
+
+    const finish = (callback, value) => {
+      if (settled) return;
+
+      settled = true;
+
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+
+      callback(value);
+    };
+
+    timer = setTimeout(() => {
+      if (controller) {
+        try {
+          controller.abort();
+        } catch (_) {}
+      }
+
       const error = new Error(
         `TIMEOUT: ${label} exceeded ${timeoutMs}ms`
       );
 
       error.code = "TIMEOUT";
-      reject(error);
+      finish(reject, error);
     }, timeoutMs);
 
-    Promise.resolve(promise).then(
-      (result) => {
-        clearTimeout(timer);
-        resolve(result);
-      },
-      (error) => {
-        clearTimeout(timer);
-        reject(error);
-      }
+    let result;
+
+    try {
+      result = operation();
+    } catch (error) {
+      finish(reject, error);
+      return;
+    }
+
+    Promise.resolve(result).then(
+      (value) => finish(resolve, value),
+      (error) => finish(reject, error)
     );
   });
 }
@@ -665,9 +704,7 @@ export async function _executeWithRetry(
     } catch (error) {
       lastError = error;
 
-      if (attempt >= safeRetries) {
-        break;
-      }
+      if (attempt >= safeRetries) break;
 
       const delay = Math.min(
         safeBaseDelay * 2 ** attempt +
@@ -710,7 +747,6 @@ export function _cloneDeep(value) {
 
     if (current instanceof Map) {
       const clonedMap = new Map();
-
       seen.set(current, clonedMap);
 
       current.forEach((mapValue, mapKey) => {
@@ -722,7 +758,6 @@ export function _cloneDeep(value) {
 
     if (current instanceof Set) {
       const clonedSet = new Set();
-
       seen.set(current, clonedSet);
 
       current.forEach((setValue) => {
@@ -734,7 +769,6 @@ export function _cloneDeep(value) {
 
     if (Array.isArray(current)) {
       const clonedArray = [];
-
       seen.set(current, clonedArray);
 
       current.forEach((item, index) => {
@@ -745,7 +779,6 @@ export function _cloneDeep(value) {
     }
 
     const clonedObject = {};
-
     seen.set(current, clonedObject);
 
     Object.keys(current).forEach((key) => {
@@ -766,7 +799,6 @@ export default {
   MESSAGE_TYPES,
   URLS,
   UI,
-
   makeTraceId,
   _generateUUID,
   _safeTrim,
