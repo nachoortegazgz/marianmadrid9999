@@ -1,38 +1,37 @@
 /*
 =============================================================================
 MODULE: backend/booking/bookingCore.js
-VERSION: v5008.3-ALIGNED (aligned + dead code removed + missing exports restored)
+VERSION: v5008.4-ALIGNED2 (audit fixes: date range, mandatory scheduleId,
+        cache validation, unused imports removed)
 BASE: BIBLIA v5002.5 Bloque 12.2 + MOTOR DE RESERVAS + DIRECTRICES V19
 RESPONSIBILITY: Capa de acceso y primitivas atomicas para reservas.
 STANDARDS: ASCII only. No Node builtins.
 HISTORIAL DE CAMBIOS:
-  v5008.3 | 2026-09-19 | ALINEACION CON AUDITORIA:
-           |            | [CORE-01] Restaurado _getDualPairFromCache
-           |            |   (referenciado por bookingSaga.js). Anadido
-           |            |   DUAL_CACHE_COL.
-           |            | [CORE-02] Restaurados 12 ERROR_CODES faltantes:
-           |            |   INVALID_DATES, STAFF_UNAVAILABLE,
-           |            |   INVALID_SLOT_RECHECK, FISCAL_SIGN_FAIL,
-           |            |   FISCAL_VIOLATION, INVALID_EMPLOYEE,
-           |            |   AUTH_REQUIRED, INVALID_CLOCK_TYPE,
-           |            |   RATE_LIMITED, LOCK_KEY_OR_OWNER_INVALID,
-           |            |   LOCK_EXPIRED_PENDING_CLEANUP.
-           |            | [CORE-03] Restaurados _projectCertifiedSlot y
-           |            |   _projectWriterSlotFromAvailability (usados por
-           |            |   consumidores externos y tests).
-           |            | [CORE-04] Restaurado _extractResourceIdsFromSlot
-           |            |   (usado por reservas.web).
-           |            | [CORE-05] Restaurados _normalizeAddons y _sumAddons
-           |            |   (usados por citasManager).
-           |            | [CORE-06] Restaurado getCertifiedDualSlotsOptimized
-           |            |   (cache pre-warm).
-           |            | [CORE-07] Restaurados _generatePairToken,
-           |            |   _areSlotsCompatible, _auditBookingPrice.
-           |            | [CORE-08] Restaurado _rankResourcesByLoad con .in()
-           |            |   sobre resourceId (auditoria B28; antes .hasSome
-           |            |   sobre campo escalar).
-           |            | [CORE-09] Anadidos imports CITA_FIELDS,
-           |            |   ESTADO_CITA, ESTADO_PAGO para consumidores.
+  v5008.4 | 2026-09-19 | ALINEACION CON AUDITORIA 2:
+           |            | [CORE-10] _forceStaffInPristineSlot() valida
+           |            |   explicitamente endDate > startDate. Antes
+           |            |   podia devolver un slot con rango invertido si
+           |            |   el input estaba malformado.
+           |            | [CORE-11] _persistBooking() exige scheduleId
+           |            |   valido (GUID) y lanza INVALID_PAYLOAD si falta.
+           |            |   BREAKING CHANGE: los callers deben pasar
+           |            |   scheduleId derivado del slot validado. Ya
+           |            |   cumplido en bookingSaga v5007.14.
+           |            | [CORE-12] _getDualPairFromCache() acepta tercer
+           |            |   parametro opcional `expected = {}` con
+           |            |   validaciones: serviceId, phase2ServiceId,
+           |            |   resourceId, minSchemaVersion. Retrocompatible.
+           |            | [CORE-13] _projectCertifiedSlot() documenta el
+           |            |   comportamiento de _normalizeLocalIsoStr frente
+           |            |   a ISO UTC con Z (convierte a Madrid, no
+           |            |   elimina la zona).
+           |            | [CORE-14] Imports no usados retirados:
+           |            |   CITA_FIELDS, ESTADO_CITA, ESTADO_PAGO. Los
+           |            |   consumidores importan de internalConfig.
+           |            | [CORE-15] Verificado: checkout SI se usa en
+           |            |   createCheckoutElevated y getCheckoutUrlElevated.
+  v5008.3 | 2026-09-19 | Restaurados _getDualPairFromCache, ERROR_CODES,
+           |            | proyecciones, ranking con .in(), etc.
   v5008.2 | 2026-09-15 | Aligned + dead code removed.
 =============================================================================
 */
@@ -47,9 +46,6 @@ import {
     COLLECTIONS,
     CONCURRENCY,
     SDK_CONFIG,
-    CITA_FIELDS,
-    ESTADO_CITA,
-    ESTADO_PAGO,
 } from "backend/internalConfig";
 import {
     _safeTrim,
@@ -199,6 +195,9 @@ async function _resolveScheduleIdByResourceId(resourceId) {
  * Build the official Writer V2 slot shape.
  * Required: serviceId, scheduleId, startDate/endDate (ISO),
  *           timezone, resource.id, location.id + locationType OWNER_BUSINESS.
+ *
+ * [CORE-10] Valida explicitamente que endDate > startDate. Si el rango esta
+ * invertido o es invalido, retorna null sin construir el slot.
  */
 export async function _forceStaffInPristineSlot(slot, resourceId, serviceIdOverride, defaultDurationMinutes) {
     if (!slot || typeof slot !== "object") return null;
@@ -253,6 +252,19 @@ export async function _forceStaffInPristineSlot(slot, resourceId, serviceIdOverr
     const startDate = getUtcDateFromMadridLocal(localStartDate);
     const endDate = getUtcDateFromMadridLocal(localEndDate);
     if (!startDate || !endDate) return null;
+
+    // [CORE-10] Validacion explicita del rango temporal
+    if (endDate.getTime() <= startDate.getTime()) {
+        log.error("_forceStaffInPristineSlot: invalid date range (endDate <= startDate)", {
+            localStartDate,
+            localEndDate,
+            startDateUtc: startDate.toISOString(),
+            endDateUtc: endDate.toISOString(),
+            resourceId: resourceIdClean,
+            serviceId,
+        });
+        return null;
+    }
 
     const locationId = _safeTrim(SDK_CONFIG?.LOCATION_ID);
     let locationType = _safeTrim(SDK_CONFIG?.LOCATION_TYPES?.BOOKINGS_WRITER) || "OWNER_BUSINESS";
@@ -526,6 +538,10 @@ export async function _failTransaction(pairToken, errorMessage) {
 
 // =============================================================================
 // BLOQUE 11 - PERSISTENCIA EN CITAS_F2
+//
+// [CORE-11] scheduleId obligatorio: rechaza null/undefined o no-GUID.
+//           BREAKING CHANGE respecto v5008.3. Los callers deben derivar
+//           scheduleId del slot validado (bookingSaga v5007.14 ya lo hace).
 // =============================================================================
 
 const CITAS_COL = COLLECTIONS.CITAS_F2;
@@ -539,6 +555,16 @@ export async function _persistBooking(params, traceId) {
     const endDate = p.endDate;
     if (!bookingId || !serviceId || !resourceId || !startDate || !endDate) {
         throw new Error("Missing required fields for persistBooking");
+    }
+
+    // [CORE-11] scheduleId obligatorio y valido como GUID
+    const scheduleIdClean = _safeTrim(p.scheduleId);
+    if (!scheduleIdClean || !_looksLikeGuid(scheduleIdClean)) {
+        throw createBookingError(
+            ERROR_CODES.INVALID_PAYLOAD,
+            "scheduleId is required and must be a valid GUID for CitasF2 persistence",
+            { traceId, bookingId: String(bookingId), scheduleIdRaw: p.scheduleId }
+        );
     }
 
     const startDateObj = startDate instanceof Date ? startDate : new Date(startDate);
@@ -567,7 +593,7 @@ export async function _persistBooking(params, traceId) {
         pairToken: String(p.pairToken || normalizedMeta.pairToken || ""),
         revision: Number(p.revision) || 1,
         serviceId: String(serviceId),
-        scheduleId: p.scheduleId ? String(p.scheduleId) : null,
+        scheduleId: scheduleIdClean,
         resourceId: String(resourceId),
         startDate: startDateObj,
         endDate: endDateObj,
@@ -621,10 +647,6 @@ export async function _persistBooking(params, traceId) {
 // BLOQUE 12 - ACTUALIZACION SEGURA DE CITA
 // =============================================================================
 
-/**
- * Safe update of a CitasF2 row by bookingId.
- * updater(cita) must return the updated document or null/undefined to skip.
- */
 export async function _updateCitaSafe(bookingId, updater, traceId, operation) {
     const bid = _safeTrim(bookingId);
     if (!bid) return { updated: false, reason: "INVALID_BOOKING_ID" };
@@ -663,11 +685,16 @@ export async function _updateCitaSafe(bookingId, updater, traceId, operation) {
 
 // =============================================================================
 // BLOQUE 13 - DUAL CACHE
+//
+// [CORE-12] Ampliado con validaciones opcionales (expected.serviceId,
+//           expected.phase2ServiceId, expected.resourceId,
+//           expected.minSchemaVersion). Retrocompatible: sin `expected`,
+//           se comporta como antes.
 // =============================================================================
 
 const DUAL_CACHE_COL = COLLECTIONS.DUAL_SLOT_CACHE;
 
-export async function _getDualPairFromCache(pairToken, traceId) {
+export async function _getDualPairFromCache(pairToken, traceId, expected = {}) {
     if (!pairToken) return null;
 
     const res = await wixData
@@ -682,6 +709,38 @@ export async function _getDualPairFromCache(pairToken, traceId) {
 
     const exp = _toDateSafe(item.expiresAt);
     if (exp && exp.getTime() < Date.now()) return null;
+
+    // [CORE-12] Validaciones opcionales de coherencia del cache
+    if (expected.serviceId && _safeTrim(item.serviceId) !== _safeTrim(expected.serviceId)) {
+        log.warn("_getDualPairFromCache: serviceId mismatch", {
+            pairToken, traceId, cached: item.serviceId, expected: expected.serviceId,
+        });
+        return null;
+    }
+    if (expected.resourceId && _safeTrim(item.resourceId) !== _safeTrim(expected.resourceId)) {
+        log.warn("_getDualPairFromCache: resourceId mismatch", {
+            pairToken, traceId, cached: item.resourceId, expected: expected.resourceId,
+        });
+        return null;
+    }
+    if (expected.phase2ServiceId) {
+        const cachedPhase2 = _safeTrim(item.phase2ServiceId || item.linkFases);
+        if (cachedPhase2 !== _safeTrim(expected.phase2ServiceId)) {
+            log.warn("_getDualPairFromCache: phase2ServiceId mismatch", {
+                pairToken, traceId, cached: cachedPhase2, expected: expected.phase2ServiceId,
+            });
+            return null;
+        }
+    }
+    if (Number.isFinite(expected.minSchemaVersion)) {
+        const cachedVersion = Number(item.schemaVersion || 1);
+        if (cachedVersion < Number(expected.minSchemaVersion)) {
+            log.warn("_getDualPairFromCache: schemaVersion too old", {
+                pairToken, traceId, cached: cachedVersion, expected: expected.minSchemaVersion,
+            });
+            return null;
+        }
+    }
 
     return item;
 }
@@ -762,6 +821,10 @@ export function _areSlotsContiguous(slot1, slot2, maxGapMinutes) {
 
 // =============================================================================
 // BLOQUE 18 - PROYECCION DE SLOTS CERTIFICADOS Y WRITER
+//
+// [CORE-13] Documentado: _normalizeLocalIsoStr() convierte ISO UTC con "Z"
+//           a hora de Madrid. NO elimina la zona: reinterpreta el instante
+//           en el timezone Europe/Madrid.
 // =============================================================================
 
 export function _projectCertifiedSlot(slot, resourceId) {
@@ -773,6 +836,9 @@ export function _projectCertifiedSlot(slot, resourceId) {
     const resourceIdClean = _safeTrim(resourceId || slot.resourceId || slot.resource?.id);
     if (!resourceIdClean || !_looksLikeGuid(resourceIdClean)) return null;
 
+    // [CORE-13] Manejo correcto de ISO UTC:
+    //   "2026-10-01T10:00:00Z"  -> "2026-10-01T12:00:00" (Madrid, CEST)
+    //   "2026-10-01T10:00:00"   -> "2026-10-01T10:00:00" (ya local Madrid)
     const localStartDate = _normalizeLocalIsoStr(slot.localStartDate || slot.startDate);
     const localEndDate = _normalizeLocalIsoStr(slot.localEndDate || slot.endDate);
 
@@ -828,6 +894,13 @@ export function _projectWriterSlotFromAvailability(slot, resourceId, serviceId) 
 
 // =============================================================================
 // BLOQUE 19 - SLOTS DUALES OPTIMIZADOS CON CACHE PRE-WARM
+//
+// NOTA auditoria: el cache NO es disponibilidad definitiva. El flujo
+// correcto es:
+//   cache -> seleccion -> revalidateExactAvailabilitySlot -> createBooking
+// Nunca: cache -> createBooking
+// Los consumidores (frontend) deben invocar revalidateExactAvailabilitySlot
+// antes de llamar a executeBookingSaga.
 // =============================================================================
 
 export async function getCertifiedDualSlotsOptimized(serviceId, resourceId, dateYMD, addonIds = []) {
@@ -899,10 +972,12 @@ export function _auditBookingPrice(basePrice, addons) {
 }
 
 // =============================================================================
-// BLOQUE 21 - [CORE-08] RANKING DE RECURSOS POR CARGA
+// BLOQUE 21 - RANKING DE RECURSOS POR CARGA
 //
-// Auditoria B28: se usa .in() sobre resourceId (campo escalar en CitasF2).
-// En versiones anteriores .hasSome() sobre campo escalar no funcionaba.
+// Auditoria B28: .in() sobre resourceId (campo escalar en CitasF2).
+// NOTA: cuenta reservas PENDING_PAYMENT como carga (no solo CONFIRMED).
+//       Justificacion: la cita ya ocupa el slot fisico. Si se prefiere
+//       contar solo CONFIRMED, modificar el filtro.
 // =============================================================================
 
 export async function _rankResourcesByLoad(resourceIds, dateYMD, traceId) {
@@ -949,6 +1024,8 @@ export async function _rankResourcesByLoad(resourceIds, dateYMD, traceId) {
                 const cancelled = ["CANCELLED", "DECLINED", "REJECTED", "NO_SHOW"].includes(status);
                 const ignoredPayment = paymentStatus === "CANCELLED";
 
+                // Se considera carga toda reserva no cancelada, incluido
+                // PENDING_PAYMENT (el slot fisico ya esta reservado).
                 if (!cancelled && !ignoredPayment) loads[resourceId].load += 1;
             }
 
