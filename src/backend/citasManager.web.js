@@ -1,9 +1,14 @@
 /*
 =============================================================================
 MODULE: backend/citasManager.web.js
-VERSION: v5008.2-ALIGNED
+VERSION: v5008.3-ALIGNED
 RESPONSIBILITY: Booking processing, payment confirmation and rescheduling.
 STANDARDS: G10 ASCII Strict.
+
+FIXES APPLIED (audit v5008.3 / v5008.4 / v5008.5):
+  - FIX-15: Validacion de MAX_DUAL_GAP_MINUTES en _revalidateDualInputSlots.
+            Se rechaza cualquier par F1/F2 cuyo gap supere el maximo
+            configurado en SLOT_SEARCH.MAX_DUAL_GAP_MINUTES (fallback 120).
 =============================================================================
 */
 
@@ -17,7 +22,8 @@ import {
   APP_IDS,
   ESTADO_CITA,
   ESTADO_PAGO,
-  FORMA_PAGO
+  FORMA_PAGO,
+  SLOT_SEARCH
 } from "backend/internalConfig";
 
 import {
@@ -56,6 +62,12 @@ const API_TIMEOUT_MS =
 
 const AUDIT_SOURCE =
   "backend/citasManager.web.js";
+
+// FIX-15: gap maximo permitido entre F1 y F2 en reservas duales.
+const MAX_DUAL_GAP_MINUTES = Math.max(
+  0,
+  Number(SLOT_SEARCH?.MAX_DUAL_GAP_MINUTES) || 120
+);
 
 function _getCitaMeta(cita) {
   if (!cita) return {};
@@ -351,6 +363,7 @@ async function _getValidatedPaidOrder(
     bookingLineItems
   };
 }
+
 async function _validatePaymentCitaSet(
   citas,
   orderId,
@@ -678,6 +691,7 @@ function _getBookingSlotFromCita(cita) {
     endDate: cita?.endDate || null
   };
 }
+
 function _getDualSlotInput(payload, key) {
   const slot = payload?.[key];
 
@@ -972,11 +986,33 @@ async function _revalidateDualInputSlots(
     );
   }
 
+  /**
+   * FIX-15: Validar que el gap entre F1 y F2 no supere el maximo
+   * permitido. Si el gap es mayor, se rechaza la reserva dual.
+   *
+   * Rango valido: 0 <= gapMinutes <= MAX_DUAL_GAP_MINUTES.
+   */
+  const gapMinutes =
+    (f2StartUtc.getTime() - f1EndUtc.getTime()) / 60000;
+
+  if (gapMinutes > MAX_DUAL_GAP_MINUTES) {
+    throw createBookingError(
+      ERROR_CODES.INVALID_PAYLOAD,
+      "Gap between F1 and F2 exceeds the maximum allowed.",
+      {
+        traceId,
+        gapMinutes,
+        maxGap: MAX_DUAL_GAP_MINUTES
+      }
+    );
+  }
+
   return {
     f1Cita,
     f2Cita,
     f1Result,
     f2Result,
-    selectedResourceId
+    selectedResourceId,
+    gapMinutes
   };
 }
