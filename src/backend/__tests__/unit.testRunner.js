@@ -130,7 +130,9 @@ export async function testBookingEnums() {
   // Align with internalConfig ESTADO_CITA / ESTADO_PAGO (canonical SSOT)
   assert.ok(ESTADO_CITA.CONFIRMED === 'CONFIRMED', 'ESTADO_CITA.CONFIRMED');
   assert.ok(ESTADO_CITA.PENDING_PAYMENT === 'PENDING_PAYMENT', 'ESTADO_CITA.PENDING_PAYMENT');
-  assert.ok(ESTADO_CITA.CANCELED === 'CANCELED', 'ESTADO_CITA.CANCELED');
+  // SSOT v5008.6: CANCELLED es canonico, CANCELED es alias deprecated que apunta a CANCELLED
+  assert.ok(ESTADO_CITA.CANCELLED === 'CANCELLED', 'ESTADO_CITA.CANCELLED');
+  assert.ok(ESTADO_CITA.CANCELED === 'CANCELLED', 'ESTADO_CITA.CANCELED (alias deprecated)');
 
   assert.ok(ESTADO_PAGO.PAID === 'PAID', 'ESTADO_PAGO.PAID');
   assert.ok(ESTADO_PAGO.UNPAID === 'UNPAID', 'ESTADO_PAGO.UNPAID');
