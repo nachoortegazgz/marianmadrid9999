@@ -1,7 +1,7 @@
 /*
 =============================================================================
 MODULE: pages/ADMINISTRACION.gn7mx.js
-VERSION: v5002.4-canonical-admin-page
+VERSION: v5002.5-canonical-admin-page
 RESPONSIBILITY: Canonical Velo page controller for Marian Administration.
 STANDARDS: G10 ASCII Strict, Velo V3 SDK.
 =============================================================================
@@ -44,9 +44,11 @@ const ACTIONS = {
       diaKey: payload?.diaKey || null,
     }),
 
-  INVENTORY_DASH: () => getInventoryDashboard(),
+  INVENTORY_DASH: () =>
+    getInventoryDashboard(),
 
-  INVENTORY_QUEUE: () => getInventoryReconciliationQueue(),
+  INVENTORY_QUEUE: () =>
+    getInventoryReconciliationQueue(),
 
   TPV_TX: ({ payload, traceId }) =>
     registerManualTransaction({
@@ -55,7 +57,10 @@ const ACTIONS = {
     }),
 
   Z_CLOSING: ({ payload, traceId }) =>
-    registerZClosing(payload?.diaKey, { traceId }),
+    registerZClosing(
+      payload?.diaKey || null,
+      { traceId }
+    ),
 
   FISCAL_SUMMARY: ({ payload, traceId }) =>
     getQuarterlyTaxSummary(
@@ -121,8 +126,10 @@ $w.onReady(async () => {
       ? accessRes.data
       : null;
 
-  if (!access || !access.isMarianManager) {
-    wixLocation.to(URLS.SERVICIOS || "/reserva-online");
+  if (!access || access.isMarianManager !== true) {
+    wixLocation.to(
+      URLS?.SERVICIOS || "/reserva-online"
+    );
     return;
   }
 
@@ -131,12 +138,15 @@ $w.onReady(async () => {
     traceId,
 
     onContextReady: async () => {
-      const [cashierRes, inventoryRes, queueRes] =
-        await Promise.all([
-          getCashierState({ traceId }).catch(() => null),
-          getInventoryDashboard().catch(() => null),
-          getInventoryReconciliationQueue().catch(() => null),
-        ]);
+      const [
+        cashierRes,
+        inventoryRes,
+        queueRes,
+      ] = await Promise.all([
+        getCashierState({ traceId }).catch(() => null),
+        getInventoryDashboard().catch(() => null),
+        getInventoryReconciliationQueue().catch(() => null),
+      ]);
 
       return {
         isMarianManager: true,
@@ -172,34 +182,45 @@ $w.onReady(async () => {
         .trim()
         .toUpperCase();
 
+      const payload = message?.payload || {};
       const handler = ACTIONS[type];
 
       if (!handler) {
-        reply(`${type}_RES`, {
-          status: "ERROR",
-          error: {
-            code: "UNKNOWN_ACTION",
-            message: "Accion no reconocida",
+        reply(
+          `${type || "UNKNOWN"}_RES`,
+          {
+            status: "ERROR",
+            error: {
+              code: "UNKNOWN_ACTION",
+              message: "Accion no reconocida",
+            },
           },
-        });
+          payload
+        );
         return;
       }
 
       try {
         const result = await handler({
-          payload: message?.payload || {},
+          payload,
           traceId,
         });
 
-        reply(`${type}_RES`, result);
+        reply(`${type}_RES`, result, payload);
       } catch (error) {
-        reply(`${type}_RES`, {
-          status: "ERROR",
-          error: {
-            code: "ACTION_FAILED",
-            message: error?.message || String(error),
+        reply(
+          `${type}_RES`,
+          {
+            status: "ERROR",
+            error: {
+              code: "ACTION_FAILED",
+              message:
+                error?.message ||
+                "No se pudo completar la accion.",
+            },
           },
-        });
+          payload
+        );
       }
     },
   });
