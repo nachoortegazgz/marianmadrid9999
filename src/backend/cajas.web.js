@@ -58,6 +58,7 @@ import {
     IVA_RATES,
     CAJA_STATUS,
     CONCURRENCY,
+    SIF_EVENT_TYPE,
 } from "backend/internalConfig";
 
 import { SECRETS } from "backend/mmSecrets";
@@ -113,6 +114,9 @@ const SIGNER_FAILURE_THRESHOLD = 3;
 const SIGNER_OPEN_MS = 60000;
 let _signerState = { failures: 0, openUntil: 0 };
 
+// Limite efectivo en efectivo segun Ley 11/2021 (art. 7)
+const CASH_LIMIT_EUR = 1000;
+
 function _normalizeLinkedBookingIds(value) {
     const values = Array.isArray(value) ? value : String(value || "").split(",");
     return Array.from(new Set(values.map((id) => String(id || "").trim()).filter(Boolean)));
@@ -155,6 +159,147 @@ async function _getCachedSecret(name) {
 
 export function _invalidateSecretCache() {
     _secretCache.clear();
+}
+
+// ============================================================================
+// VERI*FACTU: QR GENERATION (RD 1007/2023 Art. 10)
+// ============================================================================
+
+/**
+ * Genera QR Veri*factu segun especificacion AEAT
+ * Formato: https://verifactu.aeat.es/qrcode?csv={CSV}
+ * CSV = NIF_EMISOR|NUM_FACTURA|FECHA_EXPEDICION|IMPORTE_TOTAL|HASH_FIRMA
+ */
+export function generateVerifactuQR(facturaData) {
+    const { nifEmisor, numeroFactura, fechaExpedicion, importeTotal, hashFirma } = facturaData;
+
+    if (!nifEmisor || !numeroFactura || !fechaExpedicion || !importeTotal || !hashFirma) {
+        log.warn("QR_VERIFACTU: Datos incompletos", { nifEmisor, numeroFactura, fechaExpedicion });
+        return null;
+    }
+
+    const csv = `${nifEmisor}|${numeroFactura}|${fechaExpedicion}|${_roundMoney(importeTotal)}|${hashFirma}`;
+    const csvEncoded = encodeURIComponent(csv);
+    const qrUrl = `https://verifactu.aeat.es/qrcode?csv=${csvEncoded}`;
+
+    return {
+        csv,
+        qrUrl,
+        timestamp: new Date().toISOString()
+    };
+}
+
+// ============================================================================
+// SIF: SYSTEMA INTEGRAL DE FACTURACION (RD 1007/2023)
+// ============================================================================
+
+export async function _emitSifEvent(eventType, facturaData, traceId = makeTraceId()) {
+    if (!Object.values(SIF_EVENT_TYPE).includes(eventType)) {
+        log.error("SIF_EVENTO_INVALIDO", { eventType, traceId });
+        throw new Error(`SIF_EVENTO_INVALIDO: ${eventType}`);
+    }
+
+    const evento = {
+        eventType,
+        timestamp: new Date(),
+        facturaId: facturaData.numeroFactura || null,
+        serieFactura: facturaData.serie || null,
+        ejercicio: facturaData.ejercicio || new Date().getFullYear(),
+        hash: facturaData.hashFirma || null,
+        qrData: facturaData.qrData || null,
+        estado: 'EMITIDO',
+        metadata: {
+            nifEmisor: facturaData.nifEmisor,
+            importeTotal: facturaData.importeTotal,
+            fechaExpedicion: facturaData.fechaExpedicion,
+            tipoFactura: facturaData.tipoFactura
+        },
+        traceId
+    };
+
+    try {
+        await wixData.insert(COLLECTIONS.EVENTOS_SISTEMA_FACTURACION, evento);
+        log.info(`SIF_EVENTO_EMITIDO: ${eventType}`, { facturaId: evento.facturaId, traceId });
+        return evento;
+    } catch (error) {
+        log.error(`SIF_EVENTO_FALLIDO: ${eventType}`, { error, traceId });
+        await logAuditEvent('SIF_EMIT_ERROR', {
+            module: 'cajas.web.js',
+            eventType,
+            error: normalizeError(error),
+            traceId
+        });
+        return null;
+    }
+}
+
+// ============================================================================
+// LIMITES LEGALES: LEY 11/2021 (PREVENCION FRAUDE FISCAL)
+// ============================================================================
+
+export function _assertCashLimit(amount, paymentMethod, traceId = makeTraceId()) {
+    if (paymentMethod === FORMA_PAGO.EFECTIVO && amount >= CASH_LIMIT_EUR) {
+        const error = new Error(`LIMITE_EFECTIVO_SUPERADO: ${amount}€ >= ${CASH_LIMIT_EUR}€ (Ley 11/2021)`);
+        error.code = 'CASH_LIMIT_EXCEEDED';
+        error.meta = {
+            amount,
+            paymentMethod,
+            limit: CASH_LIMIT_EUR,
+            normativa: 'Ley 11/2021 art. 7',
+            traceId
+        };
+        log.error('ASSERT_CASH_LIMIT_FAILED', error.meta);
+        throw error;
+    }
+    return true;
+}
+
+// ============================================================================
+// CONCILIACION PAGOS ONLINE (Wix Payments V2 + Wix Stores V2)
+// ============================================================================
+
+export async function reconcileOnlinePayments(transactionId, traceId = makeTraceId()) {
+    const lockKey = `reconcile:${transactionId}`;
+
+    try {
+        await _lockSlotKeyOrFail(lockKey, traceId, 30000);
+
+        const movements = await wixData.query(COLLECTIONS.MOVIMIENTOS_CAJA)
+            .eq('transactionId', transactionId)
+            .limit(10)
+            .find();
+
+        if (!movements.items || movements.items.length === 0) {
+            log.warn('RECONCILIACION: Movimiento no encontrado', { transactionId, traceId });
+            return { status: 'NOT_FOUND', transactionId };
+        }
+
+        const reconciled = [];
+        for (const mov of movements.items) {
+            if (!mov.desgloseImpuestos && !mov.taxableAmount) {
+                log.warn('RECONCILIACION: Movimiento sin datos fiscales', { _id: mov._id });
+                continue;
+            }
+
+            if (mov.paymentMethod === FORMA_PAGO.ONLINE && mov.estadoConciliacion !== 'CONCILIADO') {
+                const updated = await wixData.update(COLLECTIONS.MOVIMIENTOS_CAJA, {
+                    ...mov,
+                    estadoConciliacion: 'CONCILIADO',
+                    fechaConciliacion: new Date()
+                });
+                reconciled.push(updated);
+            }
+        }
+
+        log.info('RECONCILIACION_COMPLETADA', { transactionId, reconciledCount: reconciled.length, traceId });
+        return { status: 'RECONCILED', transactionId, count: reconciled.length };
+
+    } catch (error) {
+        log.error('RECONCILIACION_FALLIDA', { transactionId, error, traceId });
+        throw error;
+    } finally {
+        await _unlockSlotKey(lockKey).catch(() => {});
+    }
 }
 
 // ============================================================================
@@ -521,9 +666,11 @@ export const registerManualTransaction = webMethod(Permissions.SiteMember, async
                 operationNature: movementType === TIPO_MOVIMIENTO.REEMBOLSO ? "DEVOLUCION" : movementType === TIPO_MOVIMIENTO.PROPINA ? "PROPINA" : movementType === TIPO_MOVIMIENTO.AJUSTE ? "AJUSTE" : "VENTA",
                 paymentMethod,
                 totalAmount: amount,
-                taxableAmount,
-                taxAmount,
-                taxRate,
+                desgloseImpuestos: JSON.stringify([{
+                    base: taxableAmount,
+                    tipo: taxRate,
+                    cuota: taxAmount
+                }]),
                 taxTreatment: movementType === TIPO_MOVIMIENTO.PROPINA ? "PROPINA_PENDIENTE_GESTORIA" : "IVA_GENERAL",
                 accountingSign: movementType === TIPO_MOVIMIENTO.REEMBOLSO ? -1 : 1,
                 accountingAmount: movementType === TIPO_MOVIMIENTO.REEMBOLSO ? -amount : amount,
@@ -864,8 +1011,25 @@ export const registerZClosing = webMethod(Permissions.SiteMember, async (diaKey,
         const totalTips = allMovements.filter(m => m.movementType === TIPO_MOVIMIENTO.PROPINA).reduce((s, m) => s + Number(m.accountingAmount || 0), 0);
         const totalAdjustments = allMovements.filter(m => m.movementType === TIPO_MOVIMIENTO.AJUSTE).reduce((s, m) => s + Number(m.accountingAmount || 0), 0);
         const grossSalesTotal = allMovements.filter(m => m.operationNature === "VENTA").reduce((s, m) => s + Number(m.accountingAmount || 0), 0);
-        const netTaxableAmount = allMovements.reduce((s, m) => s + Number(m.taxableAmount || 0), 0);
-        const netTaxAmount = allMovements.reduce((s, m) => s + Number(m.taxAmount || 0), 0);
+
+        // Calcular totales desde desgloseImpuestos (JSON array [{base, tipo, cuota}])
+        let netTaxableAmount = 0;
+        let netTaxAmount = 0;
+        for (const m of allMovements) {
+            try {
+                const desglose = JSON.parse(m.desgloseImpuestos || "[]");
+                for (const item of desglose) {
+                    netTaxableAmount += Number(item.base || 0);
+                    netTaxAmount += Number(item.cuota || 0);
+                }
+            } catch (_) {
+                // Fallback legacy para movimientos antiguos
+                netTaxableAmount += Number(m.taxableAmount || 0);
+                netTaxAmount += Number(m.taxAmount || 0);
+            }
+        }
+        netTaxableAmount = _roundMoney(netTaxableAmount);
+        netTaxAmount = _roundMoney(netTaxAmount);
         const consolidatedTotalAmount = _roundMoney(totalCash + totalCard + totalBizum + totalOnline);
 
         const movementTypeBreakdown = {};
@@ -876,14 +1040,29 @@ export const registerZClosing = webMethod(Permissions.SiteMember, async (diaKey,
 
         const taxTypeBreakdown = {};
         for (const m of allMovements) {
-            const rate = String(Number(m.taxRate) || 0);
-            if (!taxTypeBreakdown[rate]) {
-                taxTypeBreakdown[rate] = { taxableAmount: 0, taxAmount: 0, total: 0, operations: 0 };
+            // Extraer desglose desde JSON o fallback legacy
+            let desglose = [];
+            try {
+                desglose = JSON.parse(m.desgloseImpuestos || "[]");
+            } catch (_) {
+                // Fallback legacy: construir desglose desde campos planos antiguos
+                const rate = Number(m.taxRate) || 0;
+                const base = Number(m.taxableAmount) || 0;
+                const cuota = Number(m.taxAmount) || 0;
+                if (base > 0 || cuota > 0) {
+                    desglose = [{ base, tipo: rate, cuota }];
+                }
             }
-            taxTypeBreakdown[rate].taxableAmount = _roundMoney(taxTypeBreakdown[rate].taxableAmount + Number(m.taxableAmount || 0));
-            taxTypeBreakdown[rate].taxAmount = _roundMoney(taxTypeBreakdown[rate].taxAmount + Number(m.taxAmount || 0));
-            taxTypeBreakdown[rate].total = _roundMoney(taxTypeBreakdown[rate].total + Number(m.accountingAmount || 0));
-            taxTypeBreakdown[rate].operations++;
+            for (const item of desglose) {
+                const rate = String(Number(item.tipo) || 0);
+                if (!taxTypeBreakdown[rate]) {
+                    taxTypeBreakdown[rate] = { taxableAmount: 0, taxAmount: 0, total: 0, operations: 0 };
+                }
+                taxTypeBreakdown[rate].taxableAmount = _roundMoney(taxTypeBreakdown[rate].taxableAmount + Number(item.base || 0));
+                taxTypeBreakdown[rate].taxAmount = _roundMoney(taxTypeBreakdown[rate].taxAmount + Number(item.cuota || 0));
+                taxTypeBreakdown[rate].total = _roundMoney(taxTypeBreakdown[rate].total + Number(m.accountingAmount || 0));
+                taxTypeBreakdown[rate].operations++;
+            }
         }
 
         let expectedPrev = GENESIS_HASH;
@@ -1075,32 +1254,34 @@ export const registerGiftCardSale = webMethod(Permissions.SiteMember, async (pay
         }
 
         const taxRate = 0;
-        const taxableAmount = amount;
-        const taxAmount = 0;
+            const taxableAmount = amount;
+            const taxAmount = 0;
 
-        const operationDate = new Date().toLocaleDateString("sv-SE", { timeZone: SDK_CONFIG?.TZ || "Europe/Madrid" });
-        await _assertPeriodNotClosed(operationDate, traceId);
+            const operationDate = new Date().toLocaleDateString("sv-SE", { timeZone: SDK_CONFIG?.TZ || "Europe/Madrid" });
+            await _assertPeriodNotClosed(operationDate, traceId);
 
-        return await (async () => {
-            const seq = await _getNextSequence(traceId);
-            const lastMov = await _getLastMovement();
-            const previousRecordHash = lastMov?.currentRecordHash || GENESIS_HASH;
+            return await (async () => {
+                const seq = await _getNextSequence(traceId);
+                const lastMov = await _getLastMovement();
+                const previousRecordHash = lastMov?.currentRecordHash || GENESIS_HASH;
 
-            const generatedAt = new Date();
+                const generatedAt = new Date();
 
-            const movBase = {
-                sequenceNumber: seq.sequenceNumber,
-                invoiceNumber: seq.invoiceNumber,
-                operationDate,
-                fiscalPeriod: operationDate.slice(0, 7),
-                movementType: TIPO_MOVIMIENTO.VENTA_TARJETA_REGALO,
-                operationNature: "ANTICIPO",
-                paymentMethod,
-                totalAmount: amount,
-                taxableAmount,
-                taxAmount,
-                taxRate,
-                taxTreatment: "ANTICIPO_CLIENTE",
+                const movBase = {
+                    sequenceNumber: seq.sequenceNumber,
+                    invoiceNumber: seq.invoiceNumber,
+                    operationDate,
+                    fiscalPeriod: operationDate.slice(0, 7),
+                    movementType: TIPO_MOVIMIENTO.VENTA_TARJETA_REGALO,
+                    operationNature: "ANTICIPO",
+                    paymentMethod,
+                    totalAmount: amount,
+                    desgloseImpuestos: JSON.stringify([{
+                        base: taxableAmount,
+                        tipo: taxRate,
+                        cuota: taxAmount
+                    }]),
+                    taxTreatment: "ANTICIPO_CLIENTE",
                 accountingSign: 1,
                 accountingAmount: amount,
                 description: `Venta tarjeta regalo ${giftCardId}`,
@@ -1262,9 +1443,11 @@ export const registerGiftCardRedemption = webMethod(Permissions.SiteMember, asyn
                 operationNature: "APLICACION_ANTICIPO",
                 paymentMethod: FORMA_PAGO.TARJETA_REGALO,
                 totalAmount: amount,
-                taxableAmount,
-                taxAmount,
-                taxRate,
+                desgloseImpuestos: JSON.stringify([{
+                    base: taxableAmount,
+                    tipo: taxRate,
+                    cuota: taxAmount
+                }]),
                 taxTreatment: "IVA_GENERAL",
                 accountingSign: 1,
                 accountingAmount: amount,
