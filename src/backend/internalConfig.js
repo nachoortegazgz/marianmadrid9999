@@ -1,7 +1,7 @@
 /*
 =============================================================================
 MODULE: backend/internalConfig.js
-VERSION: v5008.4-OPT
+VERSION: v5008.6-FISCAL
 BASE: BIBLIA_DEFINITIVA v5002.5 + ESQUEMA CMS v5002.5 + DIRECTRICES V19
 RESPONSIBILITY: Single Source of Truth (SSOT) for backend configuration.
 STANDARDS: G10 ASCII Strict.
@@ -9,20 +9,30 @@ WIX STORES CATALOG: V1.
 
 FIXES APLICADOS:
   - FIX-24: LOCATION_TYPES.TIME_SLOTS = OWNER_BUSINESS.
-  - FIX-40: ESTADO_CITA.CANCELLED canonico (dos L, coincide con Writer V2).
-            CANCELED se conserva como alias deprecated para retrocompat.
-  - FIX-41: Documentado que `availabilityTimeSlots` de `@wix/bookings` YA es
-            Time Slots V2. No hay migracion pendiente.
+  - FIX-40: ESTADO_CITA.CANCELLED canonico, CANCELED alias deprecated.
+  - FIX-41: availabilityTimeSlots de @wix/bookings ya es V2.
+  - I-01: CUENTAS_PGC con retenciones (475100, 473000) y recargo (475800).
+  - I-02: CLAVES_AEAT con enum oficial Veri*factu.
+  - I-03: MOTIVOS_RECTIFICACION con enum oficial AEAT.
+  - Bloque 18: TIPOS_RETENCION_IRPF (0.15, 0.07, 0.01, 0).
+  - Bloque 19: ESTADO_DEVENGO_IVA (DEVENGADO, ANTICIPADO, APLICACION).
+  - FIX-FISCAL-02: ROL_FISCAL (EMISOR/RECEPTOR) para cuenta de retencion.
+  - FIX-FISCAL-04: EU_VAT_PREFIXES para validacion de NIF internacional.
+  - TIPO_MOVIMIENTO.SERVICIO_PROFESIONAL anadido.
 =============================================================================
 */
 
+// =============================================================================
 // BLOQUE 1 - STAFF ACTIVO
+// =============================================================================
+
 export const STAFF = Object.freeze({
     IDS: Object.freeze([
         "e556070a-6d6a-402e-8422-11133033ea76",
         "07f7344f-e7e4-4c53-854b-47fd82ac8d40",
         "9b905bfd-1a09-485d-9273-a24a20dfe648",
     ]),
+
     RESOURCE_TO_DISPLAY: Object.freeze({
         "e556070a-6d6a-402e-8422-11133033ea76": "Marian Madrid",
         "07f7344f-e7e4-4c53-854b-47fd82ac8d40": "Andrea",
@@ -30,7 +40,10 @@ export const STAFF = Object.freeze({
     }),
 });
 
+// =============================================================================
 // BLOQUE 2 - COLECCIONES CMS CANONICAS
+// =============================================================================
+
 export const COLLECTIONS = Object.freeze({
     ALERTAS_OPERATIVAS: "AlertasOperativas",
     PROCESSED_WEBHOOK_EVENTS: "ProcessedWebhookEvents",
@@ -45,7 +58,6 @@ export const COLLECTIONS = Object.freeze({
     CONFIGURACION_FISCAL: "ConfiguracionFiscal",
     DATOS_FISCALES: "DatosFiscales",
     DUAL_SLOT_CACHE: "DualSlotCache",
-    EVENTOS_SISTEMA_FACTURACION: "EventosSistemaFacturacion",
     HISTORICO_CIERRES_Z: "HistoricoCierresZ",
     INVENTARIO_STOCK_VENTA: "InventarioStockVenta",
     LIBRO_ASIENTOS_CONTABLES_DETALLE: "LibroAsientosContablesDetalle",
@@ -60,7 +72,10 @@ export const COLLECTIONS = Object.freeze({
     SLOT_LOCKS: "SlotLocks",
 });
 
+// =============================================================================
 // BLOQUE 3 - WIX APP IDS
+// =============================================================================
+
 export const APP_IDS = Object.freeze({
     BOOKINGS: "13d21c63-b5ec-5912-8397-c3a5ddb27a97",
     STORES: "215238eb-22a5-4c36-9e7b-e7c08025e04e",
@@ -71,23 +86,31 @@ export const APP_IDS = Object.freeze({
     GIFT_CARDS: "d80111c5-a0f4-47a8-b63a-65b54d774a27",
 });
 
+// =============================================================================
 // BLOQUE 4 - API KEYS Y RECURSOS WIX NATIVOS
+// =============================================================================
+
 export const API = Object.freeze({
     STAFF_RESOURCE_TYPE_ID: "1cd44cf8-756f-41c3-bd90-3e2ffcaf1155",
     MARIAN_MANAGEMENT_RESOURCE_ID: "e556070a-6d6a-402e-8422-11133033ea76",
 });
 
+// =============================================================================
 // BLOQUE 5 - SINGLETONS PROTEGIDOS
+// =============================================================================
+
 export const SINGLETONS = Object.freeze({
     CAJA: "CAJA_PRINCIPAL",
 });
 
+// =============================================================================
 // BLOQUE 6 - CONFIGURACION GLOBAL DEL SDK
+// =============================================================================
+
 export const SDK_CONFIG = Object.freeze({
     TZ: "Europe/Madrid",
     LOCATION_ID: "7a12abfd-bf30-4847-bcdf-00dc573d4802",
 
-    // FIX-24: OWNER_BUSINESS es el unico valor valido en Time Slots V2.
     LOCATION_TYPES: Object.freeze({
         TIME_SLOTS: "OWNER_BUSINESS",
         BOOKINGS_WRITER: "OWNER_BUSINESS",
@@ -171,7 +194,10 @@ export const SDK_CONFIG = Object.freeze({
     }),
 });
 
+// =============================================================================
 // BLOQUE 7 - CONCURRENCIA, LOCKS Y TRANSACCIONES
+// =============================================================================
+
 export const CONCURRENCY = Object.freeze({
     MUTEX_TTL_MS: 300000,
     HEARTBEAT_MS: 15000,
@@ -184,72 +210,9 @@ export const CONCURRENCY = Object.freeze({
     DEFAULT_DURATION_MIN: 30,
 });
 
+// =============================================================================
 // BLOQUE 8 - ENUMS DE NEGOCIO
-export const INVOICE_TYPE = Object.freeze({
-    F1: "F1",
-    F2: "F2",
-    F3: "F3",
-    R1: "R1",
-    R2: "R2",
-    R3: "R3",
-    R4: "R4",
-    R5: "R5",
-});
-
-export const REGIME_KEY = Object.freeze({
-    K01: "01",
-    K02: "02",
-    K03: "03",
-    K04: "04",
-    K05: "05",
-    K06: "06",
-    K07: "07",
-    K08: "08",
-    K09: "09",
-    K10: "10",
-    K11: "11",
-    K12: "12",
-    K13: "13",
-    K14: "14",
-    K15: "15",
-    K16: "16",
-    K17: "17",
-});
-
-export const SIF_EVENT_TYPE = Object.freeze({
-    INICIO_OPERACIONES: "INICIO_OPERACIONES",
-    ALTA_FACTURA: "ALTA_FACTURA",
-    ANULACION_FACTURA: "ANULACION_FACTURA",
-    CIERRE_OPERACIONES: "CIERRE_OPERACIONES",
-});
-
-export const RECONCILIATION_STATUS = Object.freeze({
-    PENDIENTE: "PENDIENTE",
-    CONCILIADO: "CONCILIADO",
-});
-
-export const JOURNEY_TYPE = Object.freeze({
-    ORDINARIA: "ORDINARIA",
-    EXTRAORDINARIA: "EXTRAORDINARIA",
-});
-
-export const ACCOUNT_NATURE = Object.freeze({
-    ACTIVO: "ACTIVO",
-    PASIVO: "PASIVO",
-    INGRESO: "INGRESO",
-    GASTO: "GASTO",
-});
-
-export const ENTRY_STATUS = Object.freeze({
-    DRAFT: "DRAFT",
-    POSTED: "POSTED",
-    LOCKED: "LOCKED",
-});
-
-export const BALANCE_NATURE = Object.freeze({
-    DEUDOR: "DEUDOR",
-    ACREEDOR: "ACREEDOR",
-});
+// =============================================================================
 
 export const TIPO_FICHAJE = Object.freeze({
     ENTRADA: "ENTRADA",
@@ -279,6 +242,7 @@ export const TIPO_MOVIMIENTO = Object.freeze({
     PAGO_PROVEEDOR: "PAGO_PROVEEDOR",
     ANTICIPO: "ANTICIPO",
     FONDO_INICIAL: "FONDO_INICIAL",
+    SERVICIO_PROFESIONAL: "SERVICIO_PROFESIONAL",
 });
 
 export const FORMA_PAGO = Object.freeze({
@@ -301,17 +265,11 @@ export const CAJA_STATUS = Object.freeze({
     CLOSED: "CERRADA",
 });
 
-/**
- * FIX-40: CANCELLED canonico (dos L, coincide con Writer V2 y con
- * suppressHooks de Wix). CANCELED se conserva como alias deprecated
- * para retrocompatibilidad. Migrar progresivamente todo el codigo a
- * ESTADO_CITA.CANCELLED y eliminar el alias cuando ya no se use.
- */
 export const ESTADO_CITA = Object.freeze({
     CONFIRMED: "CONFIRMED",
     PENDING_PAYMENT: "PENDING_PAYMENT",
     CANCELLED: "CANCELLED",
-    CANCELED: "CANCELLED", // alias deprecated (FIX-40)
+    CANCELED: "CANCELLED",
     REFUNDED: "REFUNDED",
 });
 
@@ -331,7 +289,10 @@ export const COLLAB_ROLES = Object.freeze({
     ESTILISTA: "ESTILISTA",
 });
 
+// =============================================================================
 // BLOQUE 9 - CATALOGO Y BUSQUEDA DE SLOTS
+// =============================================================================
+
 export const SERVICE_CATALOG = Object.freeze({
     STATES: Object.freeze({
         ACTIVO: "ACTIVO",
@@ -356,13 +317,19 @@ export const BOOKINGS_ADDON_CONFIG = Object.freeze({
     ACTIVE_NATIVE_IDS: Object.freeze([]),
 });
 
+// =============================================================================
 // BLOQUE 10 - JWT Y SEGURIDAD
+// =============================================================================
+
 export const JWT = Object.freeze({
     ALGORITHM: "HS256",
     EXPIRATION_MS: 1800000,
 });
 
+// =============================================================================
 // BLOQUE 11 - CAMPOS DE CITA
+// =============================================================================
+
 export const CITA_FIELDS = Object.freeze({
     STATUS: "status",
     STATUS_PAGO: "paymentStatus",
@@ -374,13 +341,19 @@ export const CITA_FIELDS = Object.freeze({
     META: "meta",
 });
 
+// =============================================================================
 // BLOQUE 12 - ACCESO Y ROLES
+// =============================================================================
+
 export const STAFF_ACCESS = Object.freeze({
     ALLOWED_ROLES: Object.freeze(["ADMIN", "GESTION", "ESTILISTA"]),
     MARIAN_RESOURCE_ID: "e556070a-6d6a-402e-8422-11133033ea76",
 });
 
+// =============================================================================
 // BLOQUE 13 - DINERO Y TEXTO POR DEFECTO
+// =============================================================================
+
 export const MONEY = Object.freeze({
     DISPLAY_CURRENCY: "EUR",
     DECIMALS: 2,
@@ -388,7 +361,10 @@ export const MONEY = Object.freeze({
 
 export const STAFF_DEFAULT_NAME = "Profesional";
 
+// =============================================================================
 // BLOQUE 14 - VALIDACION DE ADDONS NATIVOS
+// =============================================================================
+
 const GUID_PATTERN =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -409,3 +385,98 @@ export function validateActiveNativeAddonIds() {
         isEmpty: ids.length === 0,
     };
 }
+
+// =============================================================================
+// BLOQUE 15 - CUENTAS PGC (Plan General Contable)
+// =============================================================================
+
+export const CUENTAS_PGC = Object.freeze({
+    CAJA: "570000",
+    BANCOS: "572000",
+    PRESTACIONES_SERVICIOS: "705000",
+    IVA_REPERCUTIDO: "477000",
+    IVA_SOPORTADO: "472000",
+    DEVOLUCIONES_VENTAS: "708000",
+    PROVEEDORES: "400000",
+    COMPRAS_GASTOS: "600000",
+    PARTIDAS_PENDIENTES: "555000",
+
+    HP_RETENCIONES_IRPF_A_INGRESAR: "475100",
+    HP_RETENCIONES_IRPF_A_FAVOR: "473000",
+
+    HP_RECARGO_EQUIVALENCIA: "475800",
+    ANTICIPOS_CLIENTES: "438000",
+});
+
+// =============================================================================
+// BLOQUE 16 - CLAVES AEAT (Registro Facturas)
+// =============================================================================
+
+export const CLAVES_AEAT = Object.freeze({
+    F1: "F1",
+    F2: "F2",
+    F3: "F3",
+    R1: "R1",
+    R2: "R2",
+    R3: "R3",
+    R4: "R4",
+    R5: "R5",
+});
+
+// =============================================================================
+// BLOQUE 17 - MOTIVOS RECTIFICACION
+// =============================================================================
+
+export const MOTIVOS_RECTIFICACION = Object.freeze({
+    NUMERO_SERIE: "01",
+    SERIE: "02",
+    BASE_IMPONIBLE: "03",
+    CUOTA: "04",
+    FECHA: "05",
+    IDENTIFICACION: "06",
+    DESCUENTO: "07",
+    DESTINATARIO: "08",
+    OTRAS: "09",
+});
+
+// =============================================================================
+// BLOQUE 18 - TIPOS DE RETENCION IRPF
+// =============================================================================
+
+export const TIPOS_RETENCION_IRPF = Object.freeze({
+    PROFESIONALES_GENERAL: 0.15,
+    PROFESIONALES_PRIMEROS_3_ANOS: 0.07,
+    MODULOS: 0.01,
+    NINGUNA: 0,
+});
+
+// =============================================================================
+// BLOQUE 19 - ESTADOS DE DEVENGO IVA
+// =============================================================================
+
+export const ESTADO_DEVENGO_IVA = Object.freeze({
+    DEVENGADO: "DEVENGADO",
+    ANTICIPADO: "ANTICIPADO",
+    APLICACION_ANTICIPO: "APLICACION_ANTICIPO",
+});
+
+// =============================================================================
+// BLOQUE 20 - ROL FISCAL
+// EMISOR: la empresa emite factura y retiene a un tercero (475100 al HABER).
+// RECEPTOR: la empresa recibe factura y un tercero le retiene (473000 al DEBE).
+// =============================================================================
+
+export const ROL_FISCAL = Object.freeze({
+    EMISOR: "EMISOR",
+    RECEPTOR: "RECEPTOR",
+});
+
+// =============================================================================
+// BLOQUE 21 - PREFIJOS VAT UE
+// =============================================================================
+
+export const EU_VAT_PREFIXES = Object.freeze([
+    "AT", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "EL", "ES",
+    "FI", "FR", "HR", "HU", "IE", "IT", "LT", "LU", "LV", "MT",
+    "NL", "PL", "PT", "RO", "SE", "SI", "SK", "XI",
+]);
