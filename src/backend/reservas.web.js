@@ -467,7 +467,7 @@ export async function _mapServiceImport2ToUX(service, traceId) {
   const taxIncluded = _readImport2Field(service, "taxIncluded") === true;
   const taxRate = Number(_readImport2Field(service, "taxRate")) || 0;
   const categoryId = _safeTrim(_readImport2Field(service, "categoryId")) || null;
-  const categoryName = _safeTrim(_readImport2Field(service, "categoryName")) || null;
+  // categoryName es campo legacy prohibido (SSOT R10); se omite
   const locationId = _safeTrim(_readImport2Field(service, "locationId")) || null;
   const location = _safeTrim(_readImport2Field(service, "location")) || null;
   const imageUrl = _safeTrim(_readImport2Field(service, "mainMedia")) || "";
@@ -508,7 +508,7 @@ export async function _mapServiceImport2ToUX(service, traceId) {
     serviceType,
     sku,
     categoryId,
-    categoryName,
+    // categoryName eliminado (campo legacy prohibido SSOT R10)
     locationId,
     localizacion: location,
     internalNotes,

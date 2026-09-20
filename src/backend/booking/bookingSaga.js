@@ -1122,7 +1122,7 @@ export async function executeBookingSaga(unsafePayload) {
                     pairToken: pairToken,
                     contactDetails: { email: email },
                     meta: {
-                        uiPairToken: unsafePayload?.uiPairToken || pairToken,
+                        pairToken: pairToken,
                         f1Start: f1LocalStart,
                         f1End: f1LocalEnd,
                         f2Start: f2LocalStart || null,
@@ -1162,7 +1162,7 @@ export async function executeBookingSaga(unsafePayload) {
                         pairToken: pairToken,
                         contactDetails: { email: email },
                         meta: {
-                            uiPairToken: unsafePayload?.uiPairToken || pairToken,
+                            pairToken: pairToken,
                             linkedF1BookingId: bookingF1Id,
                             nativeAddonIds: detectedAddonIds,
                             writerRevision: revisionF2,

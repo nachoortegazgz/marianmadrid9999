@@ -45,6 +45,7 @@ export const COLLECTIONS = Object.freeze({
     CONFIGURACION_FISCAL: "ConfiguracionFiscal",
     DATOS_FISCALES: "DatosFiscales",
     DUAL_SLOT_CACHE: "DualSlotCache",
+    EVENTOS_SISTEMA_FACTURACION: "EventosSistemaFacturacion",
     HISTORICO_CIERRES_Z: "HistoricoCierresZ",
     INVENTARIO_STOCK_VENTA: "InventarioStockVenta",
     LIBRO_ASIENTOS_CONTABLES_DETALLE: "LibroAsientosContablesDetalle",
@@ -184,6 +185,72 @@ export const CONCURRENCY = Object.freeze({
 });
 
 // BLOQUE 8 - ENUMS DE NEGOCIO
+export const INVOICE_TYPE = Object.freeze({
+    F1: "F1",
+    F2: "F2",
+    F3: "F3",
+    R1: "R1",
+    R2: "R2",
+    R3: "R3",
+    R4: "R4",
+    R5: "R5",
+});
+
+export const REGIME_KEY = Object.freeze({
+    K01: "01",
+    K02: "02",
+    K03: "03",
+    K04: "04",
+    K05: "05",
+    K06: "06",
+    K07: "07",
+    K08: "08",
+    K09: "09",
+    K10: "10",
+    K11: "11",
+    K12: "12",
+    K13: "13",
+    K14: "14",
+    K15: "15",
+    K16: "16",
+    K17: "17",
+});
+
+export const SIF_EVENT_TYPE = Object.freeze({
+    INICIO_OPERACIONES: "INICIO_OPERACIONES",
+    ALTA_FACTURA: "ALTA_FACTURA",
+    ANULACION_FACTURA: "ANULACION_FACTURA",
+    CIERRE_OPERACIONES: "CIERRE_OPERACIONES",
+});
+
+export const RECONCILIATION_STATUS = Object.freeze({
+    PENDIENTE: "PENDIENTE",
+    CONCILIADO: "CONCILIADO",
+});
+
+export const JOURNEY_TYPE = Object.freeze({
+    ORDINARIA: "ORDINARIA",
+    EXTRAORDINARIA: "EXTRAORDINARIA",
+});
+
+export const ACCOUNT_NATURE = Object.freeze({
+    ACTIVO: "ACTIVO",
+    PASIVO: "PASIVO",
+    INGRESO: "INGRESO",
+    GASTO: "GASTO",
+});
+
+export const ENTRY_STATUS = Object.freeze({
+    DRAFT: "DRAFT",
+    POSTED: "POSTED",
+    LOCKED: "LOCKED",
+});
+
+export const BALANCE_NATURE = Object.freeze({
+    DEUDOR: "DEUDOR",
+    ACREEDOR: "ACREEDOR",
+});
+
 export const TIPO_FICHAJE = Object.freeze({
     ENTRADA: "ENTRADA",
     SALIDA: "SALIDA",
