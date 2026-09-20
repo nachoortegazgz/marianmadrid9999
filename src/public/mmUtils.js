@@ -360,5 +360,3 @@ export function toUtcRange(startLocal, endLocal) {
     endUtc
   };
 }
-
-El resultado debe estar vacío.
