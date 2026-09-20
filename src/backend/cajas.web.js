@@ -1,47 +1,20 @@
 /*
 =============================================================================
 MODULE: backend/cajas.web.js
-VERSION: v5008.3-OPT (FIX-48, FIX-49)
-BASE: Modulos optimizados 3 + BIBLIA v5002.5 + DOSSIER CAJA + DIRECTRICES V19
-RESPONSIBILITY: TPV cashier ledger, daily closures (Arqueo X / Cierre Z),
-                Veri*factu SHA-256 chain integrity, fiscal persistence,
-                M365 sync enqueue, IDEMPOTENCIA, auditoria completa y
-                control de periodos cerrados.
-STANDARDS: G10 ASCII Strict (0 non-ASCII characters).
+VERSION: v5008.5-FISCAL
+RESPONSIBILITY: TPV cashier ledger, daily closures, Veri*factu SHA-256
+                chain integrity, fiscal persistence, M365 sync enqueue.
+STANDARDS: G10 ASCII Strict.
 
-CORRECTIONS APPLIED:
-  [R2-01] Mutex atomico para _getNextSequence() con SlotLocks.
-  [R2-02] Idempotencia por transactionId antes de insertar.
-  [R2-03] _getLastMovement() ordena por sequenceNumber (determinista).
-  [R2-04] await en todas las llamadas a hashSHA256/hmacSha256Hex.
-  [R2-05] Verificar cierre Z existente antes de insertar.
-  [R2-15] Bloqueo de periodo cerrado (_assertPeriodNotClosed).
-  [R2-20] Auditoria de fallos en M365.
-  [C1] Flujo 7 Tarjetas regalo.
-  [FIX-D3] _logAuditEvent local eliminado.
-  [CI-CAJA-01..06] Idempotencia, revision saldos, validacion importes.
-  [CLEAN-01] seqCol -> COLLECTIONS.CAJA_ACTUAL.
-  [CLEAN-02..05] Retiradas referencias a colecciones eliminadas.
-  [HARD-01..06] Imports y firmas depuradas.
-  [REV2-01..06] Ajustes de revision 2.
-  [VF-01..03] Firma X.509 delegada, payload AEAT, QR Veri*factu.
-  [B7] _getNextSequence sin executeLedgerWithBackoff.
-  [B8] _updateCajaActual propaga errores a CompensacionesPendientes.
-  [B9] Cache de secretos (TTL 5 min).
-  [B10] registerGiftCardRedemption con redemptionId del cliente.
-  [B11] Circuit breaker en signer fiscal externo.
-  [B17] Intencion de migracion a colecciones dedicadas.
-  [B22] _getBusinessTaxId falla explicito sin configuracion fiscal.
-  [RL-01] Rate limiting en registerManualTransaction.
-  [SEC-01] Signer fiscal con timeout explicito.
-
-FIXES APLICADOS v5008.3:
-  - FIX-48: sequenceCounters migrado a documento CAJA_SEQ separado dentro
-            de la coleccion CAJA_ACTUAL. Elimina race entre
-            _updateCajaActual (saldos) y _getNextSequence (contadores).
-            Migracion transparente desde CAJA_PRINCIPAL.sequenceCounters.
-  - FIX-49: _id de CompensacionesPendientes de _updateCajaActual añade
-            sufijo Date.now() para evitar colision en reintentos.
+FIXES APLICADOS v5008.5-FISCAL:
+  - FIX-FISCAL-01: Calculo base/IVA correcto cuando hay retencion.
+                   Si payload.baseImponibleRetencion > 0, se usa como base
+                   y se valida cuadre: base + IVA - retencion == amount.
+  - FIX-FISCAL-02: Campo rolFiscal (EMISOR|RECEPTOR) propagado al
+                   movimiento. Determina la cuenta contable de retencion.
+  - FIX-FISCAL-03: Asientos descuadrados se encolan en
+                   CompensacionesPendientes con kind RESYNC_LEDGER_ACCOUNTING.
+  - Heredados: K-01..K-06 (detalles fiscales), FIX-48, FIX-49.
 =============================================================================
 */
 
@@ -58,7 +31,11 @@ import {
     IVA_RATES,
     CAJA_STATUS,
     CONCURRENCY,
-    SIF_EVENT_TYPE,
+    CLAVES_AEAT,
+    MOTIVOS_RECTIFICACION,
+    TIPOS_RETENCION_IRPF,
+    ESTADO_DEVENGO_IVA,
+    ROL_FISCAL,
 } from "backend/internalConfig";
 
 import { SECRETS } from "backend/mmSecrets";
@@ -77,7 +54,6 @@ import {
     _stableSerialize,
     _readDate,
     _readPositiveAmount,
-    _readNonNegativeAmount,
     withTimeout,
 } from "public/mmUtils";
 
@@ -96,8 +72,8 @@ const log = logger;
 // ============================================================================
 
 const CAJA_ACTUAL_ID = SINGLETONS?.CAJA || "CAJA_PRINCIPAL";
-const CAJA_SEQ_ID = "CAJA_SEQ"; // FIX-48
-const LEDGER_SCHEMA_VERSION = "LEDGER_V3";
+const CAJA_SEQ_ID = "CAJA_SEQ";
+const LEDGER_SCHEMA_VERSION = "LEDGER_V5_FISCAL";
 const GENESIS_HASH = "0".repeat(64);
 const MAX_LEDGER_BATCH_PAGES = 50;
 const LEDGER_PAGE_SIZE = 200;
@@ -114,8 +90,9 @@ const SIGNER_FAILURE_THRESHOLD = 3;
 const SIGNER_OPEN_MS = 60000;
 let _signerState = { failures: 0, openUntil: 0 };
 
-// Limite efectivo en efectivo segun Ley 11/2021 (art. 7)
-const CASH_LIMIT_EUR = 1000;
+const MONTO_OBLIGA_NIF_TERCERO = 300;
+const MONTO_OBLIGA_APROBADOR_Z = 500;
+const MONEY_EPSILON_FISCAL = 0.02;
 
 function _normalizeLinkedBookingIds(value) {
     const values = Array.isArray(value) ? value : String(value || "").split(",");
@@ -136,7 +113,6 @@ function _rateLimitOrThrow(surface, key, traceId) {
     }
 }
 
-// [FIX-49] Helper local para detectar duplicate insert.
 function _isDuplicateItemError(error) {
     const message = String(error?.message || "");
     return (
@@ -159,147 +135,6 @@ async function _getCachedSecret(name) {
 
 export function _invalidateSecretCache() {
     _secretCache.clear();
-}
-
-// ============================================================================
-// VERI*FACTU: QR GENERATION (RD 1007/2023 Art. 10)
-// ============================================================================
-
-/**
- * Genera QR Veri*factu segun especificacion AEAT
- * Formato: https://verifactu.aeat.es/qrcode?csv={CSV}
- * CSV = NIF_EMISOR|NUM_FACTURA|FECHA_EXPEDICION|IMPORTE_TOTAL|HASH_FIRMA
- */
-export function generateVerifactuQR(facturaData) {
-    const { nifEmisor, numeroFactura, fechaExpedicion, importeTotal, hashFirma } = facturaData;
-
-    if (!nifEmisor || !numeroFactura || !fechaExpedicion || !importeTotal || !hashFirma) {
-        log.warn("QR_VERIFACTU: Datos incompletos", { nifEmisor, numeroFactura, fechaExpedicion });
-        return null;
-    }
-
-    const csv = `${nifEmisor}|${numeroFactura}|${fechaExpedicion}|${_roundMoney(importeTotal)}|${hashFirma}`;
-    const csvEncoded = encodeURIComponent(csv);
-    const qrUrl = `https://verifactu.aeat.es/qrcode?csv=${csvEncoded}`;
-
-    return {
-        csv,
-        qrUrl,
-        timestamp: new Date().toISOString()
-    };
-}
-
-// ============================================================================
-// SIF: SYSTEMA INTEGRAL DE FACTURACION (RD 1007/2023)
-// ============================================================================
-
-export async function _emitSifEvent(eventType, facturaData, traceId = makeTraceId()) {
-    if (!Object.values(SIF_EVENT_TYPE).includes(eventType)) {
-        log.error("SIF_EVENTO_INVALIDO", { eventType, traceId });
-        throw new Error(`SIF_EVENTO_INVALIDO: ${eventType}`);
-    }
-
-    const evento = {
-        eventType,
-        timestamp: new Date(),
-        facturaId: facturaData.numeroFactura || null,
-        serieFactura: facturaData.serie || null,
-        ejercicio: facturaData.ejercicio || new Date().getFullYear(),
-        hash: facturaData.hashFirma || null,
-        qrData: facturaData.qrData || null,
-        estado: 'EMITIDO',
-        metadata: {
-            nifEmisor: facturaData.nifEmisor,
-            importeTotal: facturaData.importeTotal,
-            fechaExpedicion: facturaData.fechaExpedicion,
-            tipoFactura: facturaData.tipoFactura
-        },
-        traceId
-    };
-
-    try {
-        await wixData.insert(COLLECTIONS.EVENTOS_SISTEMA_FACTURACION, evento);
-        log.info(`SIF_EVENTO_EMITIDO: ${eventType}`, { facturaId: evento.facturaId, traceId });
-        return evento;
-    } catch (error) {
-        log.error(`SIF_EVENTO_FALLIDO: ${eventType}`, { error, traceId });
-        await logAuditEvent('SIF_EMIT_ERROR', {
-            module: 'cajas.web.js',
-            eventType,
-            error: normalizeError(error),
-            traceId
-        });
-        return null;
-    }
-}
-
-// ============================================================================
-// LIMITES LEGALES: LEY 11/2021 (PREVENCION FRAUDE FISCAL)
-// ============================================================================
-
-export function _assertCashLimit(amount, paymentMethod, traceId = makeTraceId()) {
-    if (paymentMethod === FORMA_PAGO.EFECTIVO && amount >= CASH_LIMIT_EUR) {
-        const error = new Error(`LIMITE_EFECTIVO_SUPERADO: ${amount}€ >= ${CASH_LIMIT_EUR}€ (Ley 11/2021)`);
-        error.code = 'CASH_LIMIT_EXCEEDED';
-        error.meta = {
-            amount,
-            paymentMethod,
-            limit: CASH_LIMIT_EUR,
-            normativa: 'Ley 11/2021 art. 7',
-            traceId
-        };
-        log.error('ASSERT_CASH_LIMIT_FAILED', error.meta);
-        throw error;
-    }
-    return true;
-}
-
-// ============================================================================
-// CONCILIACION PAGOS ONLINE (Wix Payments V2 + Wix Stores V2)
-// ============================================================================
-
-export async function reconcileOnlinePayments(transactionId, traceId = makeTraceId()) {
-    const lockKey = `reconcile:${transactionId}`;
-
-    try {
-        await _lockSlotKeyOrFail(lockKey, traceId, 30000);
-
-        const movements = await wixData.query(COLLECTIONS.MOVIMIENTOS_CAJA)
-            .eq('transactionId', transactionId)
-            .limit(10)
-            .find();
-
-        if (!movements.items || movements.items.length === 0) {
-            log.warn('RECONCILIACION: Movimiento no encontrado', { transactionId, traceId });
-            return { status: 'NOT_FOUND', transactionId };
-        }
-
-        const reconciled = [];
-        for (const mov of movements.items) {
-            if (!mov.desgloseImpuestos && !mov.taxableAmount) {
-                log.warn('RECONCILIACION: Movimiento sin datos fiscales', { _id: mov._id });
-                continue;
-            }
-
-            if (mov.paymentMethod === FORMA_PAGO.ONLINE && mov.estadoConciliacion !== 'CONCILIADO') {
-                const updated = await wixData.update(COLLECTIONS.MOVIMIENTOS_CAJA, {
-                    ...mov,
-                    estadoConciliacion: 'CONCILIADO',
-                    fechaConciliacion: new Date()
-                });
-                reconciled.push(updated);
-            }
-        }
-
-        log.info('RECONCILIACION_COMPLETADA', { transactionId, reconciledCount: reconciled.length, traceId });
-        return { status: 'RECONCILED', transactionId, count: reconciled.length };
-
-    } catch (error) {
-        log.error('RECONCILIACION_FALLIDA', { transactionId, error, traceId });
-        throw error;
-    } finally {
-        await _unlockSlotKey(lockKey).catch(() => {});
-    }
 }
 
 // ============================================================================
@@ -391,17 +226,46 @@ function _buildAEATPayload(mov, generatedAt) {
         ["IDEmisorFactura", mov.businessTaxId || ""],
         ["NumSerieFactura", mov.invoiceNumber || ""],
         ["FechaExpedicionFactura", _formatAEATDate(mov.operationDate)],
-        ["TipoFactura", mov.operationNature === "DEVOLUCION" ? "R1" : "F1"],
+        ["TipoFactura", mov.claveRegistroFactura || CLAVES_AEAT.F1],
         ["CuotaTotal", String(Number(mov.taxAmount || 0).toFixed(2))],
         ["ImporteTotal", String(Number(mov.totalAmount || 0).toFixed(2))],
         ["Huella", mov.previousRecordHash || ""],
         ["FechaHoraHusoGenRegistro", _formatAEATDateTimeMadrid(generatedAt)],
     ];
+
+    if (mov.nifTercero) fields.push(["NIFDestinatario", String(mov.nifTercero).slice(0, 20)]);
+    if (mov.razonSocialTercero) fields.push(["NombreRazonDestinatario", String(mov.razonSocialTercero).slice(0, 200)]);
+    if (mov.referenciaBancariaConciliacion) fields.push(["ReferenciaBancaria", String(mov.referenciaBancariaConciliacion).slice(0, 60)]);
+
+    if (mov.estadoDevengoIVA === ESTADO_DEVENGO_IVA.APLICACION_ANTICIPO) {
+        fields.push(["TipoRectificativa", "I"]);
+        if (mov.idAnticipoVinculado) {
+            fields.push(["IdAnticipoVinculado", String(mov.idAnticipoVinculado).slice(0, 120)]);
+        }
+    }
+
+    if (Number(mov.importeRetencionIRPF || 0) > 0) {
+        fields.push(["ImporteRetencionIRPF", String(Number(mov.importeRetencionIRPF).toFixed(2))]);
+        if (mov.baseImponibleRetencion > 0) {
+            fields.push(["BaseImponibleRetencion", String(Number(mov.baseImponibleRetencion).toFixed(2))]);
+        }
+        if (mov.rolFiscal) {
+            fields.push(["RolFiscal", String(mov.rolFiscal).slice(0, 10)]);
+        }
+    }
+
+    if (Number(mov.importeRecargoEquivalencia || 0) > 0) {
+        fields.push(["ImporteRecargoEquivalencia", String(Number(mov.importeRecargoEquivalencia).toFixed(2))]);
+    }
+
+    if (mov.motivoRectificacion) fields.push(["MotivoRectificacion", String(mov.motivoRectificacion).slice(0, 4)]);
+    if (mov.idFacturaRectificada) fields.push(["IdFacturaRectificada", String(mov.idFacturaRectificada).slice(0, 120)]);
+
     return fields.map(([key, value]) => `${key}=${value}`).join("&");
 }
 
 // ============================================================================
-// FIRMA X.509 DELEGADA CON CIRCUIT BREAKER
+// FIRMA X.509
 // ============================================================================
 
 async function _computeSignature(currentHash, traceId) {
@@ -442,9 +306,7 @@ async function _computeSignature(currentHash, traceId) {
         }
 
         const data = await response.json();
-        if (!data?.signature) {
-            throw new Error("FISCAL_SIGNER_INVALID_RESPONSE");
-        }
+        if (!data?.signature) throw new Error("FISCAL_SIGNER_INVALID_RESPONSE");
 
         _signerState.failures = 0;
         _signerState.openUntil = 0;
@@ -481,7 +343,7 @@ function _generateVerificationQR(invoiceNumber, businessTaxId, operationDate, to
 }
 
 // ============================================================================
-// HASH CHAIN UTILITIES
+// HASH CHAIN
 // ============================================================================
 
 async function _computeCurrentHash(prevHash, payloadStr) {
@@ -489,14 +351,7 @@ async function _computeCurrentHash(prevHash, payloadStr) {
 }
 
 // ============================================================================
-// SEQUENCE COUNTER (ATOMIC) - [FIX-48]
-//
-// Los contadores viven en CAJA_SEQ (documento separado dentro de
-// COLLECTIONS.CAJA_ACTUAL). Antes vivian en CAJA_PRINCIPAL y competian con
-// _updateCajaActual por el mismo documento.
-//
-// Migracion transparente: si CAJA_SEQ no existe, se inicializa con los
-// contadores de CAJA_PRINCIPAL.sequenceCounters y se marca migrado.
+// SEQUENCE COUNTER
 // ============================================================================
 
 async function _getNextSequence(traceId) {
@@ -591,15 +446,82 @@ async function _assertPeriodNotClosed(operationDate, traceId) {
 
     if (existingZ) {
         log.error("PERIOD_CLOSED: Intento de insertar movimiento en periodo cerrado", {
-            operationDate,
-            traceId,
+            operationDate, traceId,
         });
         throw new Error("PERIOD_CLOSED: No se pueden insertar movimientos en un periodo con cierre Z");
     }
 }
 
 // ============================================================================
-// CORE: REGISTER MANUAL TRANSACTION
+// [FIX-FISCAL-01] CALCULO FISCAL COHERENTE
+// ============================================================================
+
+function _resolveFiscalBase({
+    amount,
+    taxRate,
+    baseImponibleRetencion,
+    importeRetencionIRPF,
+    importeRecargoEquivalencia,
+}) {
+    // Si base viene explicita (caso retencion profesional), usarla.
+    if (baseImponibleRetencion > 0) {
+        const base = _roundMoney(baseImponibleRetencion);
+        const cuota = _roundMoney(base * taxRate);
+
+        const esperadoTotal = _roundMoney(
+            base + cuota + (importeRecargoEquivalencia || 0) - (importeRetencionIRPF || 0)
+        );
+        const diff = Math.abs(esperadoTotal - amount);
+
+        if (diff > MONEY_EPSILON_FISCAL) {
+            return {
+                ok: false,
+                code: "CUADRE_FISCAL_INVALIDO",
+                message: `Base ${base} + IVA ${cuota} + RE ${importeRecargoEquivalencia || 0} - Ret ${importeRetencionIRPF || 0} = ${esperadoTotal}, amount ${amount}`,
+                base,
+                cuota,
+            };
+        }
+
+        return { ok: true, base, cuota };
+    }
+
+    // Sin base explicita: derivar de amount.
+    const base = _roundMoney(amount / (1 + taxRate));
+    const cuota = _roundMoney(amount - base);
+    return { ok: true, base, cuota };
+}
+
+// ============================================================================
+// [FIX-FISCAL-03] ENCOLAR ASIENTO DESCUADRADO
+// ============================================================================
+
+async function _queueAccountingResync(movimiento, err, traceId) {
+    try {
+        await wixData.insert(COLLECTIONS.COMPENSACIONES_PENDIENTES, {
+            _id: `REC_ACCT_SYNC_${movimiento.transactionId || "NA"}_${Date.now()}`,
+            kind: "RESYNC_LEDGER_ACCOUNTING",
+            transactionId: movimiento.transactionId || null,
+            amount: Number(movimiento.totalAmount) || 0,
+            paymentMethod: movimiento.paymentMethod || null,
+            concept: "Reintento de proyeccion contable tras fallo",
+            status: "PENDING_RECOVERY",
+            phase: "WAIT_FOR_ACCOUNTING_RESYNC",
+            origin: "ACCOUNTING_PROJECTION_FAILED",
+            alertRequired: true,
+            attempts: 0,
+            lastError: err?.message || "UNKNOWN",
+            traceId,
+            _createdDate: new Date(),
+            _updatedDate: new Date(),
+        }, { suppressAuth: true });
+    } catch (queueErr) {
+        log.error("_queueAccountingResync failed", { traceId, error: queueErr?.message });
+    }
+}
+
+// ============================================================================
+// REGISTER MANUAL TRANSACTION
 // ============================================================================
 
 export const registerManualTransaction = webMethod(Permissions.SiteMember, async (payload) => {
@@ -630,6 +552,69 @@ export const registerManualTransaction = webMethod(Permissions.SiteMember, async
         const resourceId = _safeTrim(payload?.resourceId || "CAJA_LOCAL");
         const transactionId = payload?.transactionId || null;
 
+        const nifTercero = _safeTrim(payload?.nifTercero) || null;
+        const razonSocialTercero = _cleanText(payload?.razonSocialTercero || "", 200) || null;
+        const esB2B = payload?.esB2B === true;
+        const obligaNif = esB2B || amount >= MONTO_OBLIGA_NIF_TERCERO;
+
+        if (obligaNif && !nifTercero) {
+            return {
+                status: "ERROR", data: null,
+                error: {
+                    code: "NIF_TERCERO_REQUERIDO",
+                    message: `Ventas B2B o > ${MONTO_OBLIGA_NIF_TERCERO} EUR requieren NIF del tercero`,
+                },
+            };
+        }
+
+        if (obligaNif && !razonSocialTercero) {
+            return {
+                status: "ERROR", data: null,
+                error: {
+                    code: "RAZON_SOCIAL_REQUERIDA",
+                    message: `Ventas B2B o > ${MONTO_OBLIGA_NIF_TERCERO} EUR requieren razon social del tercero`,
+                },
+            };
+        }
+
+        const tipoRetencionIRPF = Number(payload?.tipoRetencionIRPF) || 0;
+        const baseImponibleRetencion = Number(payload?.baseImponibleRetencion) || 0;
+        let importeRetencionIRPF = Number(payload?.importeRetencionIRPF) || 0;
+
+        if (tipoRetencionIRPF > 0 && baseImponibleRetencion > 0 && importeRetencionIRPF === 0) {
+            importeRetencionIRPF = _roundMoney(baseImponibleRetencion * tipoRetencionIRPF);
+        }
+
+        const tipoRecargoEquivalencia = Number(payload?.tipoRecargoEquivalencia) || 0;
+        let importeRecargoEquivalencia = Number(payload?.importeRecargoEquivalencia) || 0;
+
+        if (tipoRecargoEquivalencia > 0 && importeRecargoEquivalencia === 0) {
+            const baseParaRecargo = baseImponibleRetencion > 0
+                ? baseImponibleRetencion
+                : _roundMoney(amount / (1 + (Number(payload?.taxRate) || IVA_RATES.GENERAL)));
+            importeRecargoEquivalencia = _roundMoney(baseParaRecargo * tipoRecargoEquivalencia);
+        }
+
+        // [FIX-FISCAL-02] Rol fiscal
+        const rawRol = _safeTrim(payload?.rolFiscal).toUpperCase();
+        const rolFiscal = (rawRol === ROL_FISCAL.EMISOR || rawRol === ROL_FISCAL.RECEPTOR)
+            ? rawRol
+            : ROL_FISCAL.EMISOR;
+
+        const idAnticipoVinculado = _safeTrim(payload?.idAnticipoVinculado) || null;
+        const estadoDevengoIVA = _safeTrim(payload?.estadoDevengoIVA)
+            || (movementType === TIPO_MOVIMIENTO.ANTICIPO
+                ? ESTADO_DEVENGO_IVA.ANTICIPADO
+                : idAnticipoVinculado
+                    ? ESTADO_DEVENGO_IVA.APLICACION_ANTICIPO
+                    : ESTADO_DEVENGO_IVA.DEVENGADO);
+
+        const referenciaBancariaConciliacion = _safeTrim(payload?.referenciaBancariaConciliacion) || null;
+        const claveRegistroFactura = _safeTrim(payload?.claveRegistroFactura) || null;
+        const motivoRectificacion = _safeTrim(payload?.motivoRectificacion) || null;
+        const idFacturaRectificada = _safeTrim(payload?.idFacturaRectificada) || null;
+        const numeroSerieFacturaEmisor = _safeTrim(payload?.numeroSerieFacturaEmisor) || null;
+
         if (transactionId) {
             const existingRes = await wixData
                 .query(COLLECTIONS.MOVIMIENTOS_CAJA)
@@ -646,14 +631,31 @@ export const registerManualTransaction = webMethod(Permissions.SiteMember, async
         const operationDate = new Date().toLocaleDateString("sv-SE", { timeZone: SDK_CONFIG?.TZ || "Europe/Madrid" });
         await _assertPeriodNotClosed(operationDate, traceId);
 
+        // [FIX-FISCAL-01] Calculo fiscal coherente ANTES de la secuencia
+        const taxRate = Number(payload?.taxRate) || IVA_RATES.GENERAL;
+        const fiscalCalc = _resolveFiscalBase({
+            amount,
+            taxRate,
+            baseImponibleRetencion,
+            importeRetencionIRPF,
+            importeRecargoEquivalencia,
+        });
+
+        if (!fiscalCalc.ok) {
+            log.warn("Fiscal cuadre failed", { traceId, code: fiscalCalc.code });
+            return {
+                status: "ERROR", data: null,
+                error: { code: fiscalCalc.code, message: fiscalCalc.message },
+            };
+        }
+
+        const taxableAmount = fiscalCalc.base;
+        const taxAmount = fiscalCalc.cuota;
+
         return await (async () => {
             const seq = await _getNextSequence(traceId);
             const lastMov = await _getLastMovement();
             const previousRecordHash = lastMov?.currentRecordHash || GENESIS_HASH;
-
-            const taxRate = Number(payload?.taxRate) || IVA_RATES.GENERAL;
-            const taxableAmount = _roundMoney(amount / (1 + taxRate));
-            const taxAmount = _roundMoney(amount - taxableAmount);
 
             const generatedAt = new Date();
 
@@ -663,20 +665,26 @@ export const registerManualTransaction = webMethod(Permissions.SiteMember, async
                 operationDate,
                 fiscalPeriod: operationDate.slice(0, 7),
                 movementType,
-                operationNature: movementType === TIPO_MOVIMIENTO.REEMBOLSO ? "DEVOLUCION" : movementType === TIPO_MOVIMIENTO.PROPINA ? "PROPINA" : movementType === TIPO_MOVIMIENTO.AJUSTE ? "AJUSTE" : "VENTA",
+                operationNature: movementType === TIPO_MOVIMIENTO.REEMBOLSO
+                    ? "DEVOLUCION"
+                    : movementType === TIPO_MOVIMIENTO.PROPINA
+                        ? "PROPINA"
+                        : movementType === TIPO_MOVIMIENTO.AJUSTE
+                            ? "AJUSTE"
+                            : movementType === TIPO_MOVIMIENTO.ANTICIPO
+                                ? "ANTICIPO"
+                                : "VENTA",
                 paymentMethod,
                 totalAmount: amount,
-                desgloseImpuestos: JSON.stringify([{
-                    base: taxableAmount,
-                    tipo: taxRate,
-                    cuota: taxAmount
-                }]),
+                taxableAmount,
+                taxAmount,
+                taxRate,
                 taxTreatment: movementType === TIPO_MOVIMIENTO.PROPINA ? "PROPINA_PENDIENTE_GESTORIA" : "IVA_GENERAL",
                 accountingSign: movementType === TIPO_MOVIMIENTO.REEMBOLSO ? -1 : 1,
                 accountingAmount: movementType === TIPO_MOVIMIENTO.REEMBOLSO ? -amount : amount,
                 description: concept,
                 lineItems: payload?.lineItems || [],
-                rectifiedInvoiceReference: payload?.rectifiedInvoiceReference || null,
+                rectifiedInvoiceReference: idFacturaRectificada,
                 businessTaxId,
                 schemaIntegrityVersion: LEDGER_SCHEMA_VERSION,
                 recordSource: payload?.origen || payload?.recordSource || "INTERNAL",
@@ -685,6 +693,28 @@ export const registerManualTransaction = webMethod(Permissions.SiteMember, async
                 transactionId: transactionId || `TX_${seq.sequenceNumber}`,
                 orderId: payload?.orderId || null,
                 refundId: payload?.refundId || null,
+
+                nifTercero,
+                razonSocialTercero,
+                esB2B,
+
+                baseImponibleRetencion,
+                tipoRetencionIRPF,
+                importeRetencionIRPF,
+                rolFiscal,
+
+                tipoRecargoEquivalencia,
+                importeRecargoEquivalencia,
+
+                idAnticipoVinculado,
+                estadoDevengoIVA,
+
+                referenciaBancariaConciliacion,
+
+                claveRegistroFactura: claveRegistroFactura || CLAVES_AEAT.F1,
+                motivoRectificacion,
+                idFacturaRectificada,
+                numeroSerieFacturaEmisor,
             };
 
             const aeatPayload = _buildAEATPayload(
@@ -753,15 +783,23 @@ export const registerManualTransaction = webMethod(Permissions.SiteMember, async
             const saved = await wixData.insert(COLLECTIONS.MOVIMIENTOS_CAJA, movimiento, { suppressAuth: true });
             await _updateCajaActual(movimiento, traceId);
 
-            try {
-                projectLedgerMovementToAccounting(movimiento).catch((accErr) => {
-                    log.warn("Accounting projection deferred", {
-                        error: accErr?.message || String(accErr),
-                        concept: movimiento?.concept,
+            // [FIX-FISCAL-03] Proyeccion contable con recovery
+            projectLedgerMovementToAccounting(movimiento)
+                .then((accResult) => {
+                    if (accResult?.status === "SUCCESS" || accResult?.status === "SKIPPED") return;
+                    log.warn("Accounting projection non-success", {
                         traceId,
+                        status: accResult?.status,
+                        reason: accResult?.reason,
                     });
+                })
+                .catch(async (accErr) => {
+                    log.error("Accounting projection failed; queuing resync", {
+                        traceId,
+                        error: accErr?.message || String(accErr),
+                    });
+                    await _queueAccountingResync(movimiento, accErr, traceId);
                 });
-            } catch (_) { /* ignore */ }
 
             if (SDK_CONFIG?.M365?.ENABLED) {
                 try {
@@ -782,7 +820,7 @@ export const registerManualTransaction = webMethod(Permissions.SiteMember, async
 });
 
 // ============================================================================
-// UPDATE CAJA ACTUAL SINGLETON
+// UPDATE CAJA ACTUAL
 // ============================================================================
 
 async function _updateCajaActual(movimiento, traceId) {
@@ -794,25 +832,18 @@ async function _updateCajaActual(movimiento, traceId) {
                 _id: CAJA_ACTUAL_ID,
                 operationDate: movimiento.operationDate,
                 cashRegisterStatus: CAJA_STATUS.OPEN,
-                totalBalance: 0,
-                cashBalance: 0,
-                cardBalance: 0,
-                bizumBalance: 0,
-                onlineBalance: 0,
+                totalBalance: 0, cashBalance: 0, cardBalance: 0, bizumBalance: 0, onlineBalance: 0,
                 totalOperations: 0,
-                openedAt: new Date(),
-                closedAt: null,
-                lastActivityAt: new Date(),
-                _createdDate: new Date(),
-                _updatedDate: new Date(),
+                openedAt: new Date(), closedAt: null, lastActivityAt: new Date(),
+                _createdDate: new Date(), _updatedDate: new Date(),
             };
         }
         const amount = Number(movimiento.accountingAmount) || 0;
         const method = _safeTrim(movimiento.paymentMethod).toUpperCase();
-        if (method === FORMA_PAGO.EFECTIVO) { caja.cashBalance = _roundMoney((caja.cashBalance || 0) + amount); }
-        else if (method === FORMA_PAGO.TARJETA) { caja.cardBalance = _roundMoney((caja.cardBalance || 0) + amount); }
-        else if (method === FORMA_PAGO.BIZUM) { caja.bizumBalance = _roundMoney((caja.bizumBalance || 0) + amount); }
-        else if (method === FORMA_PAGO.ONLINE) { caja.onlineBalance = _roundMoney((caja.onlineBalance || 0) + amount); }
+        if (method === FORMA_PAGO.EFECTIVO) caja.cashBalance = _roundMoney((caja.cashBalance || 0) + amount);
+        else if (method === FORMA_PAGO.TARJETA) caja.cardBalance = _roundMoney((caja.cardBalance || 0) + amount);
+        else if (method === FORMA_PAGO.BIZUM) caja.bizumBalance = _roundMoney((caja.bizumBalance || 0) + amount);
+        else if (method === FORMA_PAGO.ONLINE) caja.onlineBalance = _roundMoney((caja.onlineBalance || 0) + amount);
 
         caja.totalBalance = _roundMoney((caja.cashBalance || 0) + (caja.cardBalance || 0) + (caja.bizumBalance || 0) + (caja.onlineBalance || 0));
         caja.totalOperations = Number(caja.totalOperations || 0) + 1;
@@ -823,7 +854,6 @@ async function _updateCajaActual(movimiento, traceId) {
         log.error("_updateCajaActual failed; queuing resync", { traceId, error: err?.message });
         try {
             await wixData.insert(COLLECTIONS.COMPENSACIONES_PENDIENTES, {
-                // FIX-49: sufijo Date.now() para evitar colision en reintentos.
                 _id: `REC_CAJA_SYNC_${movimiento.transactionId || "NA"}_${Date.now()}`,
                 kind: "RESYNC_CAJA_BALANCE",
                 transactionId: movimiento.transactionId || null,
@@ -837,8 +867,7 @@ async function _updateCajaActual(movimiento, traceId) {
                 attempts: 0,
                 lastError: err?.message || "UNKNOWN",
                 traceId,
-                _createdDate: new Date(),
-                _updatedDate: new Date(),
+                _createdDate: new Date(), _updatedDate: new Date(),
             }, { suppressAuth: true });
         } catch (queueErr) {
             log.error("_updateCajaActual: failed to queue resync", { traceId, error: queueErr?.message });
@@ -865,18 +894,11 @@ async function _enqueueM365Sync(movimiento, traceId) {
     const integrityHash = await hashSHA256(_stableSerialize(payload));
     payload.integrityHash = integrityHash;
     const queueId = `m365-graph-${integrityHash.slice(0, 56)}`;
-    const queueRecord = {
-        _id: queueId,
-        payload,
-        payloadHash: integrityHash,
-        status: "PENDING",
-        attempts: 0,
-        nextAttemptAt: new Date(),
-        traceId,
-        _createdDate: new Date(),
-        _updatedDate: new Date(),
-    };
-    await wixData.insert(queueCol, queueRecord, { suppressAuth: true });
+    await wixData.insert(queueCol, {
+        _id: queueId, payload, payloadHash: integrityHash,
+        status: "PENDING", attempts: 0, nextAttemptAt: new Date(), traceId,
+        _createdDate: new Date(), _updatedDate: new Date(),
+    }, { suppressAuth: true });
 }
 
 // ============================================================================
@@ -885,6 +907,11 @@ async function _enqueueM365Sync(movimiento, traceId) {
 
 export async function registerBookingPayment(bookingIds, amount, method, meta = {}) {
     const traceId = meta.traceId || makeTraceId("bkg-pay");
+
+    const estadoDevengoIVA = meta.idAnticipoVinculado
+        ? ESTADO_DEVENGO_IVA.APLICACION_ANTICIPO
+        : meta.estadoDevengoIVA || ESTADO_DEVENGO_IVA.DEVENGADO;
+
     return await registerManualTransaction({
         amount,
         paymentMethod: method,
@@ -895,6 +922,26 @@ export async function registerBookingPayment(bookingIds, amount, method, meta = 
         transactionId: meta.transactionId || null,
         orderId: meta.orderId || null,
         traceId,
+
+        nifTercero: meta.nifTercero || null,
+        razonSocialTercero: meta.razonSocialTercero || null,
+        esB2B: meta.esB2B === true,
+
+        tipoRetencionIRPF: meta.tipoRetencionIRPF || 0,
+        baseImponibleRetencion: meta.baseImponibleRetencion || 0,
+        importeRetencionIRPF: meta.importeRetencionIRPF || 0,
+        rolFiscal: meta.rolFiscal || ROL_FISCAL.EMISOR,
+
+        tipoRecargoEquivalencia: meta.tipoRecargoEquivalencia || 0,
+
+        idAnticipoVinculado: meta.idAnticipoVinculado || null,
+        estadoDevengoIVA,
+
+        referenciaBancariaConciliacion: meta.referenciaBancariaConciliacion || null,
+
+        claveRegistroFactura: meta.claveRegistroFactura || null,
+        motivoRectificacion: meta.motivoRectificacion || null,
+        idFacturaRectificada: meta.idFacturaRectificada || null,
     });
 }
 
@@ -905,8 +952,7 @@ export async function registerBookingPayment(bookingIds, amount, method, meta = 
 export async function queueFiscalRecovery(recoveryData) {
     const traceId = recoveryData.traceId || makeTraceId("fiscal-rec");
     try {
-        const compCol = COLLECTIONS.COMPENSACIONES_PENDIENTES;
-        await wixData.insert(compCol, {
+        await wixData.insert(COLLECTIONS.COMPENSACIONES_PENDIENTES, {
             _id: `REC_${recoveryData.transactionId || Date.now()}_${Date.now()}`,
             bookingIds: recoveryData.bookingIds || null,
             orderId: recoveryData.orderId || null,
@@ -924,8 +970,7 @@ export async function queueFiscalRecovery(recoveryData) {
             attempts: 0,
             lastError: recoveryData.lastError || null,
             traceId,
-            _createdDate: new Date(),
-            _updatedDate: new Date(),
+            _createdDate: new Date(), _updatedDate: new Date(),
         }, { suppressAuth: true });
     } catch (err) {
         log.error("queueFiscalRecovery failed", { traceId, error: err?.message });
@@ -940,18 +985,13 @@ export const getCashierState = webMethod(Permissions.SiteMember, async (options 
     const { traceId } = options;
     try {
         await requireCajero(traceId);
-        const cajaCol = COLLECTIONS.CAJA_ACTUAL;
-        const caja = await wixData.get(cajaCol, CAJA_ACTUAL_ID, { suppressAuth: true }).catch(() => null);
+        const caja = await wixData.get(COLLECTIONS.CAJA_ACTUAL, CAJA_ACTUAL_ID, { suppressAuth: true }).catch(() => null);
         return {
             status: "SUCCESS",
             data: caja || {
                 _id: CAJA_ACTUAL_ID,
                 cashRegisterStatus: CAJA_STATUS.CLOSED,
-                totalBalance: 0,
-                cashBalance: 0,
-                cardBalance: 0,
-                bizumBalance: 0,
-                onlineBalance: 0,
+                totalBalance: 0, cashBalance: 0, cardBalance: 0, bizumBalance: 0, onlineBalance: 0,
                 totalOperations: 0,
             },
             error: null,
@@ -1011,26 +1051,23 @@ export const registerZClosing = webMethod(Permissions.SiteMember, async (diaKey,
         const totalTips = allMovements.filter(m => m.movementType === TIPO_MOVIMIENTO.PROPINA).reduce((s, m) => s + Number(m.accountingAmount || 0), 0);
         const totalAdjustments = allMovements.filter(m => m.movementType === TIPO_MOVIMIENTO.AJUSTE).reduce((s, m) => s + Number(m.accountingAmount || 0), 0);
         const grossSalesTotal = allMovements.filter(m => m.operationNature === "VENTA").reduce((s, m) => s + Number(m.accountingAmount || 0), 0);
+        const netTaxableAmount = allMovements.reduce((s, m) => s + Number(m.taxableAmount || 0), 0);
+        const netTaxAmount = allMovements.reduce((s, m) => s + Number(m.taxAmount || 0), 0);
+        const consolidatedTotalAmount = _roundMoney(totalCash + totalCard + totalBizum + totalOnline);
 
-        // Calcular totales desde desgloseImpuestos (JSON array [{base, tipo, cuota}])
-        let netTaxableAmount = 0;
-        let netTaxAmount = 0;
-        for (const m of allMovements) {
-            try {
-                const desglose = JSON.parse(m.desgloseImpuestos || "[]");
-                for (const item of desglose) {
-                    netTaxableAmount += Number(item.base || 0);
-                    netTaxAmount += Number(item.cuota || 0);
-                }
-            } catch (_) {
-                // Fallback legacy para movimientos antiguos
-                netTaxableAmount += Number(m.taxableAmount || 0);
-                netTaxAmount += Number(m.taxAmount || 0);
+        let usuarioAprobador = null;
+        if (Math.abs(totalAdjustments) > MONTO_OBLIGA_APROBADOR_Z) {
+            usuarioAprobador = _safeTrim(options?.usuarioAprobador) || null;
+            if (!usuarioAprobador) {
+                return {
+                    status: "ERROR", data: null,
+                    error: {
+                        code: "APROBADOR_REQUERIDO",
+                        message: `Cierre Z con ajustes > ${MONTO_OBLIGA_APROBADOR_Z} EUR requiere usuarioAprobador explicito`,
+                    },
+                };
             }
         }
-        netTaxableAmount = _roundMoney(netTaxableAmount);
-        netTaxAmount = _roundMoney(netTaxAmount);
-        const consolidatedTotalAmount = _roundMoney(totalCash + totalCard + totalBizum + totalOnline);
 
         const movementTypeBreakdown = {};
         for (const m of allMovements) {
@@ -1040,29 +1077,14 @@ export const registerZClosing = webMethod(Permissions.SiteMember, async (diaKey,
 
         const taxTypeBreakdown = {};
         for (const m of allMovements) {
-            // Extraer desglose desde JSON o fallback legacy
-            let desglose = [];
-            try {
-                desglose = JSON.parse(m.desgloseImpuestos || "[]");
-            } catch (_) {
-                // Fallback legacy: construir desglose desde campos planos antiguos
-                const rate = Number(m.taxRate) || 0;
-                const base = Number(m.taxableAmount) || 0;
-                const cuota = Number(m.taxAmount) || 0;
-                if (base > 0 || cuota > 0) {
-                    desglose = [{ base, tipo: rate, cuota }];
-                }
+            const rate = String(Number(m.taxRate) || 0);
+            if (!taxTypeBreakdown[rate]) {
+                taxTypeBreakdown[rate] = { taxableAmount: 0, taxAmount: 0, total: 0, operations: 0 };
             }
-            for (const item of desglose) {
-                const rate = String(Number(item.tipo) || 0);
-                if (!taxTypeBreakdown[rate]) {
-                    taxTypeBreakdown[rate] = { taxableAmount: 0, taxAmount: 0, total: 0, operations: 0 };
-                }
-                taxTypeBreakdown[rate].taxableAmount = _roundMoney(taxTypeBreakdown[rate].taxableAmount + Number(item.base || 0));
-                taxTypeBreakdown[rate].taxAmount = _roundMoney(taxTypeBreakdown[rate].taxAmount + Number(item.cuota || 0));
-                taxTypeBreakdown[rate].total = _roundMoney(taxTypeBreakdown[rate].total + Number(m.accountingAmount || 0));
-                taxTypeBreakdown[rate].operations++;
-            }
+            taxTypeBreakdown[rate].taxableAmount = _roundMoney(taxTypeBreakdown[rate].taxableAmount + Number(m.taxableAmount || 0));
+            taxTypeBreakdown[rate].taxAmount = _roundMoney(taxTypeBreakdown[rate].taxAmount + Number(m.taxAmount || 0));
+            taxTypeBreakdown[rate].total = _roundMoney(taxTypeBreakdown[rate].total + Number(m.accountingAmount || 0));
+            taxTypeBreakdown[rate].operations++;
         }
 
         let expectedPrev = GENESIS_HASH;
@@ -1071,10 +1093,8 @@ export const registerZClosing = webMethod(Permissions.SiteMember, async (diaKey,
             if (mov.previousRecordHash && mov.previousRecordHash !== expectedPrev) {
                 integrityVerified = false;
                 log.error("Hash chain integrity violation detected", {
-                    traceId,
-                    movementId: mov._id,
-                    expected: expectedPrev,
-                    actual: mov.previousRecordHash,
+                    traceId, movementId: mov._id,
+                    expected: expectedPrev, actual: mov.previousRecordHash,
                 });
                 break;
             }
@@ -1106,9 +1126,7 @@ export const registerZClosing = webMethod(Permissions.SiteMember, async (diaKey,
         } catch (signErr) {
             closingSignatureStatus = "PENDING_SIGNATURE";
             log.warn("Z closing signature unavailable; proceeding without signature", {
-                cleanDiaKey,
-                error: signErr?.message,
-                traceId,
+                cleanDiaKey, error: signErr?.message, traceId,
             });
             await queueFiscalRecovery({
                 transactionId: `Z_${cleanDiaKey}`,
@@ -1155,19 +1173,19 @@ export const registerZClosing = webMethod(Permissions.SiteMember, async (diaKey,
             timeZone: SDK_CONFIG?.TZ || "Europe/Madrid",
             closedAt: new Date(),
             verifiedAt: closingSignatureStatus === "SIGNED" ? new Date() : null,
+            usuarioAprobador,
             traceId,
             _createdDate: new Date(),
         };
 
         const saved = await wixData.insert(COLLECTIONS.HISTORICO_CIERRES_Z, zRecord, { suppressAuth: true });
 
-        const cajaCol = COLLECTIONS.CAJA_ACTUAL;
-        const caja = await wixData.get(cajaCol, CAJA_ACTUAL_ID, { suppressAuth: true }).catch(() => null);
+        const caja = await wixData.get(COLLECTIONS.CAJA_ACTUAL, CAJA_ACTUAL_ID, { suppressAuth: true }).catch(() => null);
         if (caja) {
             caja.cashRegisterStatus = CAJA_STATUS.CLOSED;
             caja.closedAt = new Date();
             caja._updatedDate = new Date();
-            await wixData.save(cajaCol, caja, { suppressAuth: true });
+            await wixData.save(COLLECTIONS.CAJA_ACTUAL, caja, { suppressAuth: true });
         }
 
         return { status: "SUCCESS", data: saved, error: null };
@@ -1253,35 +1271,28 @@ export const registerGiftCardSale = webMethod(Permissions.SiteMember, async (pay
             return { status: "SUCCESS", data: existingRes.items[0], error: null, idempotent: true };
         }
 
-        const taxRate = 0;
-            const taxableAmount = amount;
-            const taxAmount = 0;
+        const operationDate = new Date().toLocaleDateString("sv-SE", { timeZone: SDK_CONFIG?.TZ || "Europe/Madrid" });
+        await _assertPeriodNotClosed(operationDate, traceId);
 
-            const operationDate = new Date().toLocaleDateString("sv-SE", { timeZone: SDK_CONFIG?.TZ || "Europe/Madrid" });
-            await _assertPeriodNotClosed(operationDate, traceId);
+        return await (async () => {
+            const seq = await _getNextSequence(traceId);
+            const lastMov = await _getLastMovement();
+            const previousRecordHash = lastMov?.currentRecordHash || GENESIS_HASH;
+            const generatedAt = new Date();
 
-            return await (async () => {
-                const seq = await _getNextSequence(traceId);
-                const lastMov = await _getLastMovement();
-                const previousRecordHash = lastMov?.currentRecordHash || GENESIS_HASH;
-
-                const generatedAt = new Date();
-
-                const movBase = {
-                    sequenceNumber: seq.sequenceNumber,
-                    invoiceNumber: seq.invoiceNumber,
-                    operationDate,
-                    fiscalPeriod: operationDate.slice(0, 7),
-                    movementType: TIPO_MOVIMIENTO.VENTA_TARJETA_REGALO,
-                    operationNature: "ANTICIPO",
-                    paymentMethod,
-                    totalAmount: amount,
-                    desgloseImpuestos: JSON.stringify([{
-                        base: taxableAmount,
-                        tipo: taxRate,
-                        cuota: taxAmount
-                    }]),
-                    taxTreatment: "ANTICIPO_CLIENTE",
+            const movBase = {
+                sequenceNumber: seq.sequenceNumber,
+                invoiceNumber: seq.invoiceNumber,
+                operationDate,
+                fiscalPeriod: operationDate.slice(0, 7),
+                movementType: TIPO_MOVIMIENTO.VENTA_TARJETA_REGALO,
+                operationNature: "ANTICIPO",
+                paymentMethod,
+                totalAmount: amount,
+                taxableAmount: amount,
+                taxAmount: 0,
+                taxRate: 0,
+                taxTreatment: "ANTICIPO_CLIENTE",
                 accountingSign: 1,
                 accountingAmount: amount,
                 description: `Venta tarjeta regalo ${giftCardId}`,
@@ -1293,11 +1304,26 @@ export const registerGiftCardSale = webMethod(Permissions.SiteMember, async (pay
                 resourceId: _safeTrim(payload?.resourceId) || "CAJA_LOCAL",
                 reservaIdVinculada: null,
                 transactionId: `GC_SALE-${giftCardId}`,
-                orderId: null,
-                refundId: null,
-                giftCardId,
-                giftCardOperation: "SALE",
+                orderId: null, refundId: null,
+                giftCardId, giftCardOperation: "SALE",
                 customerEmail: payload?.customerEmail || null,
+
+                nifTercero: _safeTrim(payload?.nifTercero) || null,
+                razonSocialTercero: _cleanText(payload?.razonSocialTercero || "", 200) || null,
+                esB2B: false,
+                baseImponibleRetencion: 0,
+                tipoRetencionIRPF: 0,
+                importeRetencionIRPF: 0,
+                rolFiscal: ROL_FISCAL.EMISOR,
+                tipoRecargoEquivalencia: 0,
+                importeRecargoEquivalencia: 0,
+                idAnticipoVinculado: null,
+                estadoDevengoIVA: ESTADO_DEVENGO_IVA.ANTICIPADO,
+                referenciaBancariaConciliacion: _safeTrim(payload?.referenciaBancariaConciliacion) || null,
+                claveRegistroFactura: CLAVES_AEAT.F2,
+                motivoRectificacion: null,
+                idFacturaRectificada: null,
+                numeroSerieFacturaEmisor: null,
             };
 
             const aeatPayload = _buildAEATPayload({ ...movBase, previousRecordHash }, generatedAt);
@@ -1308,14 +1334,9 @@ export const registerGiftCardSale = webMethod(Permissions.SiteMember, async (pay
                 digitalSignature = await _computeSignature(currentRecordHash, traceId);
             } catch (signErr) {
                 await queueFiscalRecovery({
-                    transactionId: movBase.transactionId,
-                    amount,
-                    paymentMethod,
-                    concept: movBase.description,
-                    tipoMovimiento: movBase.movementType,
-                    phase: "WAIT_FOR_SIGNER",
-                    origin: "FISCAL_SIGNER_DOWN",
-                    traceId,
+                    transactionId: movBase.transactionId, amount, paymentMethod,
+                    concept: movBase.description, tipoMovimiento: movBase.movementType,
+                    phase: "WAIT_FOR_SIGNER", origin: "FISCAL_SIGNER_DOWN", traceId,
                     lastError: signErr?.message || "FISCAL_SIGN_FAIL",
                 });
                 return {
@@ -1329,11 +1350,7 @@ export const registerGiftCardSale = webMethod(Permissions.SiteMember, async (pay
 
             const movimiento = {
                 ...movBase,
-                previousRecordHash,
-                currentRecordHash,
-                digitalSignature,
-                aeatPayload,
-                verificationQR,
+                previousRecordHash, currentRecordHash, digitalSignature, aeatPayload, verificationQR,
                 hashAlgorithm: "SHA-256",
                 signatureAlgorithm: "RSASSA-PKCS1-v1_5-SHA-256",
                 registeredAt: generatedAt,
@@ -1344,15 +1361,11 @@ export const registerGiftCardSale = webMethod(Permissions.SiteMember, async (pay
             const saved = await wixData.insert(COLLECTIONS.MOVIMIENTOS_CAJA, movimiento, { suppressAuth: true });
             await _updateCajaActual(movimiento, traceId);
 
-            try {
-                projectLedgerMovementToAccounting(movimiento).catch((accErr) => {
-                    log.warn("Accounting projection deferred", {
-                        error: accErr?.message || String(accErr),
-                        concept: movimiento?.concept,
-                        traceId,
-                    });
+            projectLedgerMovementToAccounting(movimiento)
+                .catch(async (accErr) => {
+                    log.error("Accounting projection failed", { traceId, error: accErr?.message });
+                    await _queueAccountingResync(movimiento, accErr, traceId);
                 });
-            } catch (_) { /* ignore */ }
 
             await logAuditEvent("GIFT_CARD_SOLD", "INFO", `Tarjeta regalo vendida: ${giftCardId}`, { giftCardId, amount, traceId }, traceId, giftCardId, "backend/cajas.web.js");
 
@@ -1387,8 +1400,7 @@ export const registerGiftCardRedemption = webMethod(Permissions.SiteMember, asyn
 
         const clientRedemptionId = _safeTrim(payload?.redemptionId);
         const clientTransactionId = _safeTrim(payload?.transactionId);
-        const redemptionId = clientRedemptionId ||
-            clientTransactionId ||
+        const redemptionId = clientRedemptionId || clientTransactionId ||
             `GC_REDEEM-${giftCardId}-${bookingId || "NA"}-${amount}-${Date.now()}`;
 
         const existingRedemption = await wixData
@@ -1399,12 +1411,7 @@ export const registerGiftCardRedemption = webMethod(Permissions.SiteMember, asyn
 
         if (existingRedemption?.items?.length > 0) {
             log.info("Gift card redemption idempotent duplicate detected", { redemptionId, giftCardId, traceId });
-            return {
-                status: "SUCCESS",
-                data: existingRedemption.items[0],
-                error: null,
-                idempotent: true,
-            };
+            return { status: "SUCCESS", data: existingRedemption.items[0], error: null, idempotent: true };
         }
 
         let taxRate = IVA_RATES.GENERAL;
@@ -1431,7 +1438,6 @@ export const registerGiftCardRedemption = webMethod(Permissions.SiteMember, asyn
             const seq = await _getNextSequence(traceId);
             const lastMov = await _getLastMovement();
             const previousRecordHash = lastMov?.currentRecordHash || GENESIS_HASH;
-
             const generatedAt = new Date();
 
             const movBase = {
@@ -1443,11 +1449,7 @@ export const registerGiftCardRedemption = webMethod(Permissions.SiteMember, asyn
                 operationNature: "APLICACION_ANTICIPO",
                 paymentMethod: FORMA_PAGO.TARJETA_REGALO,
                 totalAmount: amount,
-                desgloseImpuestos: JSON.stringify([{
-                    base: taxableAmount,
-                    tipo: taxRate,
-                    cuota: taxAmount
-                }]),
+                taxableAmount, taxAmount, taxRate,
                 taxTreatment: "IVA_GENERAL",
                 accountingSign: 1,
                 accountingAmount: amount,
@@ -1460,11 +1462,26 @@ export const registerGiftCardRedemption = webMethod(Permissions.SiteMember, asyn
                 resourceId: _safeTrim(payload?.resourceId) || "CAJA_LOCAL",
                 reservaIdVinculada: bookingId ? _linkedBookingValue([bookingId]) : null,
                 transactionId: redemptionId,
-                orderId: null,
-                refundId: null,
-                giftCardId,
-                giftCardOperation: "REDEMPTION",
+                orderId: null, refundId: null,
+                giftCardId, giftCardOperation: "REDEMPTION",
                 serviceIdRedeemed: serviceId || null,
+
+                nifTercero: _safeTrim(payload?.nifTercero) || null,
+                razonSocialTercero: _cleanText(payload?.razonSocialTercero || "", 200) || null,
+                esB2B: false,
+                baseImponibleRetencion: 0,
+                tipoRetencionIRPF: 0,
+                importeRetencionIRPF: 0,
+                rolFiscal: ROL_FISCAL.EMISOR,
+                tipoRecargoEquivalencia: 0,
+                importeRecargoEquivalencia: 0,
+                idAnticipoVinculado: null,
+                estadoDevengoIVA: ESTADO_DEVENGO_IVA.APLICACION_ANTICIPO,
+                referenciaBancariaConciliacion: null,
+                claveRegistroFactura: CLAVES_AEAT.F2,
+                motivoRectificacion: null,
+                idFacturaRectificada: null,
+                numeroSerieFacturaEmisor: null,
             };
 
             const aeatPayload = _buildAEATPayload({ ...movBase, previousRecordHash }, generatedAt);
@@ -1475,14 +1492,10 @@ export const registerGiftCardRedemption = webMethod(Permissions.SiteMember, asyn
                 digitalSignature = await _computeSignature(currentRecordHash, traceId);
             } catch (signErr) {
                 await queueFiscalRecovery({
-                    transactionId: movBase.transactionId,
-                    amount,
+                    transactionId: movBase.transactionId, amount,
                     paymentMethod: movBase.paymentMethod,
-                    concept: movBase.description,
-                    tipoMovimiento: movBase.movementType,
-                    phase: "WAIT_FOR_SIGNER",
-                    origin: "FISCAL_SIGNER_DOWN",
-                    traceId,
+                    concept: movBase.description, tipoMovimiento: movBase.movementType,
+                    phase: "WAIT_FOR_SIGNER", origin: "FISCAL_SIGNER_DOWN", traceId,
                     lastError: signErr?.message || "FISCAL_SIGN_FAIL",
                 });
                 return {
@@ -1496,11 +1509,7 @@ export const registerGiftCardRedemption = webMethod(Permissions.SiteMember, asyn
 
             const movimiento = {
                 ...movBase,
-                previousRecordHash,
-                currentRecordHash,
-                digitalSignature,
-                aeatPayload,
-                verificationQR,
+                previousRecordHash, currentRecordHash, digitalSignature, aeatPayload, verificationQR,
                 hashAlgorithm: "SHA-256",
                 signatureAlgorithm: "RSASSA-PKCS1-v1_5-SHA-256",
                 registeredAt: generatedAt,
@@ -1511,15 +1520,11 @@ export const registerGiftCardRedemption = webMethod(Permissions.SiteMember, asyn
             const saved = await wixData.insert(COLLECTIONS.MOVIMIENTOS_CAJA, movimiento, { suppressAuth: true });
             await _updateCajaActual(movimiento, traceId);
 
-            try {
-                projectLedgerMovementToAccounting(movimiento).catch((accErr) => {
-                    log.warn("Accounting projection deferred", {
-                        error: accErr?.message || String(accErr),
-                        concept: movimiento?.concept,
-                        traceId,
-                    });
+            projectLedgerMovementToAccounting(movimiento)
+                .catch(async (accErr) => {
+                    log.error("Accounting projection failed", { traceId, error: accErr?.message });
+                    await _queueAccountingResync(movimiento, accErr, traceId);
                 });
-            } catch (_) { /* ignore */ }
 
             await logAuditEvent("GIFT_CARD_REDEEMED", "INFO", `Tarjeta regalo canjeada: ${giftCardId}`, { giftCardId, amount, serviceId, traceId }, traceId, giftCardId, "backend/cajas.web.js");
 
