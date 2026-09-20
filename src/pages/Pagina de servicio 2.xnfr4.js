@@ -1,16 +1,14 @@
 /*
 =============================================================================
 MODULE: pages/servicio-2.js
-VERSION: v5005.3-IMAGE-FALLBACK
+VERSION: v5005.4-IMAGE-FALLBACK-FIXED
 STANDARDS: G10 ASCII Strict, Velo Native Optimized.
 =============================================================================
 */
 
-import wixLocation from "wix-location";
+import wixLocation from "wix-location-frontend";
 
-import {
-  getServiceBySlugOrId
-} from "backend/reservas.web";
+import { getServiceBySlugOrId } from "backend/reservas.web";
 
 import {
   MESSAGE_TYPES,
@@ -21,12 +19,7 @@ import {
   _looksLikeGuid
 } from "public/mmUtils";
 
-import {
-  createWidgetBridge
-} from "public/widgetBridge";
-
-const DEFAULT_SERVICE_IMAGE =
-  "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 800'><rect width='1200' height='800' fill='%23e9e2d9'/><circle cx='900' cy='170' r='210' fill='%23d8bea0'/><rect x='105' y='180' width='530' height='450' rx='30' fill='%23f7f3ee'/><text x='160' y='420' fill='%23342b24' font-family='Georgia' font-size='68'>MARIAN</text><text x='160' y='500' fill='%23342b24' font-family='Georgia' font-size='68'>MADRID</text></svg>";
+import { createWidgetBridge } from "public/widgetBridge";
 
 let bridge = null;
 let resolvedService = null;
@@ -158,8 +151,8 @@ function getServiceImage(service) {
     service.imageUrl ||
     metadata.imageUrl ||
     metadata.mainMedia ||
-    DEFAULT_SERVICE_IMAGE
-  ) || DEFAULT_SERVICE_IMAGE;
+    ""
+  );
 }
 
 function getAddonIds(payload) {
@@ -191,7 +184,6 @@ function buildBookingUrl(service, payload) {
 
   const serviceId = getServiceId(service);
   const slugUrl = getServiceSlug(service);
-
   const query = [];
 
   if (slugUrl) {
