@@ -21,8 +21,8 @@
  *  - FIX-31: G10 ASCII en strings de usuario.
  */
 
-import wixLocation from "wix-location";
-import wixWindow from "wix-window";
+import wixLocation from "wix-location-frontend";
+import wixWindow from "wix-window-frontend";
 
 import {
   getServiceBySlugOrId,
