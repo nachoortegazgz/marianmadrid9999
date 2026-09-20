@@ -1,10 +1,13 @@
-```js
 /*
 =============================================================================
 MODULE: pages/only-staff.js
-VERSION: v5002.3-canonical-only-staff
+VERSION: v5002.4-canonical-only-staff
 RESPONSIBILITY: Staff-only panel page controller for TPV operations.
 STANDARDS: G10 ASCII Strict, Velo V3 SDK.
+
+FIXES:
+  - v5002.4: Removed erroneous Markdown code fence that prevented page execution.
+  - v5002.4: withTimeout uses promise factory () => ... per mmUtils contract.
 =============================================================================
 */
 
@@ -27,7 +30,7 @@ $w.onReady(async () => {
   const traceId = makeTraceId("only-staff");
 
   const accessRes = await withTimeout(
-    checkStaffCollaboratorAccess({ traceId }),
+    () => checkStaffCollaboratorAccess({ traceId }),
     UI.FRONTEND_API_TIMEOUT_MS,
     "checkStaffCollaboratorAccess"
   ).catch(() => null);
@@ -110,4 +113,3 @@ $w.onReady(async () => {
     },
   });
 });
-```
