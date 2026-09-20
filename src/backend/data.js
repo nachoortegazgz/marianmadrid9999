@@ -151,8 +151,29 @@ export function MovimientosCaja_beforeInsert(item) {
     }
 
     // [D-02] Validar cuadre fiscal segun rolFiscal.
-    const base = Number(item.taxableAmount) || 0;
-    const cuota = Number(item.taxAmount) || 0;
+    // SSOT v5008.7: desgloseImpuestos es JSON array [{base, tipo, cuota}]
+    // Se mantiene taxableAmount/taxAmount para compatibilidad con cajas.web.js v5008.5
+    let base = 0;
+    let cuota = 0;
+
+    if (item.desgloseImpuestos) {
+        try {
+            const desglose = typeof item.desgloseImpuestos === 'string'
+                ? JSON.parse(item.desgloseImpuestos)
+                : item.desgloseImpuestos;
+            if (Array.isArray(desglose) && desglose.length > 0) {
+                base = desglose.reduce((sum, d) => sum + Number(d.base || 0), 0);
+                cuota = desglose.reduce((sum, d) => sum + Number(d.cuota || 0), 0);
+            }
+        } catch (e) {
+            _schemaError("desgloseImpuestos no es JSON valido");
+        }
+    } else {
+        // Fallback a campos planos (legacy hasta migracion completa)
+        base = Number(item.taxableAmount) || 0;
+        cuota = Number(item.taxAmount) || 0;
+    }
+
     const retencion = Number(item.importeRetencionIRPF) || 0;
     const recargo = Number(item.importeRecargoEquivalencia) || 0;
     const total = Number(item.totalAmount) || 0;

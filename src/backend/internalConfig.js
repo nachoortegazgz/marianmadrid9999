@@ -46,12 +46,12 @@ export const STAFF = Object.freeze({
 
 export const COLLECTIONS = Object.freeze({
     ALERTAS_OPERATIVAS: "AlertasOperativas",
-    PROCESSED_WEBHOOK_EVENTS: "ProcessedWebhookEvents",
     ASIENTOS_CONTABLES: "AsientosContables",
     AVAILABILITY_DAYS_CACHE: "AvailabilityDaysCache",
     BOOKINGS_SERVICE_SYNC_QUEUE: "BookingsServiceSyncQueue",
     BOOKING_TRANSACTIONS: "BookingTransactions",
     CAJA_ACTUAL: "CajaActual",
+    CATEGORIAS_SERVICIO: "CategoriasServicio",
     CITAS_F2: "CitasF2",
     COMPENSACIONES_PENDIENTES: "CompensacionesPendientes",
     COMPLEMENTOS_CATALOGO: "ComplementosCatalogo",
@@ -61,10 +61,14 @@ export const COLLECTIONS = Object.freeze({
     HISTORICO_CIERRES_Z: "HistoricoCierresZ",
     INVENTARIO_STOCK_VENTA: "InventarioStockVenta",
     LIBRO_ASIENTOS_CONTABLES_DETALLE: "LibroAsientosContablesDetalle",
+    LIBRO_REGISTRO_FACTURAS_EXPEDIDAS: "LibroRegistroFacturasExpedidas",
+    LIBRO_REGISTRO_FACTURAS_RECIBIDAS: "LibroRegistroFacturasRecibidas",
     M365_GRAPH_SYNC_QUEUE: "M365GraphSyncQueue",
     MAPA_STAFF: "MapaStaff",
     MOVIMIENTOS_CAJA: "MovimientosCaja",
     MOVIMIENTOS_INVENTARIO: "MovimientosInventario",
+    PLAN_CUENTAS_CONTABLES: "PlanCuentasContables",
+    PROCESSED_WEBHOOK_EVENTS: "ProcessedWebhookEvents",
     PROVEEDORES_LISTA: "ProveedoresLista",
     RATE_LIMIT_BLOCKS: "RateLimitBlocks",
     REGISTROS_HORARIOS_STAFF: "RegistrosHorariosStaff",
@@ -269,7 +273,7 @@ export const ESTADO_CITA = Object.freeze({
     CONFIRMED: "CONFIRMED",
     PENDING_PAYMENT: "PENDING_PAYMENT",
     CANCELLED: "CANCELLED",
-    CANCELED: "CANCELLED",
+    CANCELED: "CANCELLED",  // Alias deprecated para compatibilidad SSOT v5008.6
     REFUNDED: "REFUNDED",
 });
 

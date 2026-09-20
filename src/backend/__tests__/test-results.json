@@ -1,18 +1,18 @@
 {
-  "timestamp": "2026-09-14T19:48:38.576Z",
+  "timestamp": "2026-09-20T02:42:55.827Z",
   "environment": "nodejs-test-runner",
   "batteries": [
     {
       "name": "UNIT_TESTS",
       "description": "Tests puros de lógica, enums y estructuras SSOT",
-      "timestamp": "2026-09-14T19:48:38.608Z",
+      "timestamp": "2026-09-20T02:42:55.857Z",
       "results": {
-        "traceId": "UNIT_RUN_1789415318576",
+        "traceId": "UNIT_RUN_1789872175827",
         "total": 9,
-        "passed": 7,
-        "failed": 2,
-        "successRate": "77.78%",
-        "status": "UNIT_TESTS_FAILED",
+        "passed": 9,
+        "failed": 0,
+        "successRate": "100.00%",
+        "status": "UNIT_TESTS_PASSED",
         "details": [
           {
             "testId": "UNIT-GEN-01",
@@ -36,9 +36,9 @@
             "message": "Conversión timezone correcta"
           },
           {
-            "testId": "BookingEnums",
-            "status": "FAIL",
-            "error": "PENDING faltante"
+            "testId": "UNIT-ENUM-01",
+            "status": "PASS",
+            "message": "Enums CITAS_F2 alineados con internalConfig"
           },
           {
             "testId": "UNIT-ENUM-02",
@@ -55,13 +55,13 @@
             "status": "PASS",
             "message": "Todas las colecciones SSOT definidas",
             "data": {
-              "count": 34
+              "count": 29
             }
           },
           {
-            "testId": "SdkConfig",
-            "status": "FAIL",
-            "error": "MUTEX_TTL_MS debe ser positivo"
+            "testId": "UNIT-STRUCT-02",
+            "status": "PASS",
+            "message": "CONCURRENCY/SDK config valida"
           },
           {
             "testId": "UNIT-STRUCT-03",
@@ -74,9 +74,9 @@
   ],
   "globalSummary": {
     "totalTests": 9,
-    "totalPassed": 7,
-    "totalFailed": 2,
-    "overallStatus": "SOME_TESTS_FAILED_REVIEW_REQUIRED",
-    "successRate": "77.78%"
+    "totalPassed": 9,
+    "totalFailed": 0,
+    "overallStatus": "ALL_TESTS_PASSED_READY_FOR_DEPLOY",
+    "successRate": "100.00%"
   }
 }
