@@ -1,141 +1,318 @@
 /*
 =============================================================================
 MODULE: backend/eventLog.js
-VERSION: v5009.0-FISCAL
-BASE: SSOT CMS v5009 + DOSSIER CAJA + DIRECTRICES V19
-RESPONSIBILITY: Motor unico de escritura fiscal AEAT. Registra eventos
-                atomicos (cabecera MovimientosCaja + detalle
-                LibroAsientosContablesDetalle) con encadenamiento SHA-256,
-                y proyecta a colecciones secundarias (AsientosContables,
-                FacturasRecibidas, MovimientosInventario, HistoricoCierresZ).
+VERSION: v5009-FISCAL
+BASE: v5008.5 + SSOT v5009 + DOSSIER CAJA + CONSOLIDACION v1
+RESPONSIBILITY: Motor atomico de registro fiscal (append-only). Cabecera +
+                detalle + encadenamiento Verifactu + proyeccion secundaria.
 STANDARDS: G10 ASCII Strict.
 
-INVARIANTES:
-  - Toda escritura fiscal pasa por registrarEventoEconomico.
-  - Cabecera obtiene huella ANTES de insertar detalle.
-  - Detalle hereda eventoOrigenId y lineHash encadenado.
-  - sequenceNumber monotono sin huecos (unico escritor: CAJA_SEQ).
-  - MovimientosCaja es append-only (hooks bloquean update/remove).
-  - Falla en proyeccion secundaria deja proyeccionEstado=PENDIENTE.
+REGLAS DE DISENO (decision tecnica consolidada):
+  - eventLog.js es el UNICO escritor de MovimientosCaja (append-only).
+  - Reutiliza hashSHA256 / hashChain de backend/securityEngine.
+  - Reutiliza _lockSlotKeyOrFail / _unlockSlotKey de bookingCore para la
+    secuencia global (mismo lock que usa cajas.web.js v5008.5).
+  - Reutiliza _formatAEATDateTimeMadrid (formato identico a v5008.5) para
+    preservar la integridad de la cadena ya existente.
+  - Mantiene DUAL WRITE durante transicion: escribe campos AEAT
+    (numSerieFactura, huella, ...) Y campos legacy (invoiceNumber,
+    currentRecordHash, ...) con el MISMO valor. La cadena se lee desde
+    legacy para no romper verifyFiscalHashChainIntegrity existente.
+  - Delega la proyeccion contable en contabilidad.projectLedgerMovementToAccounting
+    y la de stock en inventario.web.recordInventoryMovementSafe.
+  - NO duplica verifyFiscalHashChainIntegrity (vive en cajas.web.js como
+    webMethod Admin).
 
-CONSOLIDACIONES v5009:
-  - verifyFiscalHashChainIntegrity (cajas.web.js) es alias de
-    verificarCadenaHash. Una sola implementacion aqui.
-  - Proyeccion contable delega en contabilidad.js (import dinamico).
-  - Proyeccion stock delega en inventario.web.js (import dinamico).
-  - Sin ciclos: cajas.web.js importa eventLog, nunca al reves.
+FIXES APLICADOS v5009:
+  - FIX-EV-01: secuencia global reutiliza el lock de bookingCore. Sin race
+    entre cajas.web.js legacy y eventLog.js.
+  - FIX-EV-02: payload AEAT identico al de cajas.web.js (key=value&key=value)
+    para preservar la cadena SHA-256 existente.
+  - FIX-EV-03: escribe AMBOS juegos de campos (AEAT + legacy) con el mismo
+    valor (dual write).
+  - FIX-EV-04: proyeccion contable delega en contabilidad.js. Sin logica
+    duplicada.
+  - FIX-EV-05: proyeccion de stock delega en inventario.web.js via import
+    dinamico (evita ciclo estatico).
+  - FIX-EV-06: reconciliarProyecciones es idempotente y silenciosa.
+  - FIX-EV-07: errores de proyeccion NUNCA propagan al caller del motor.
 =============================================================================
 */
 
-import wixData from "wix-data";
 import { webMethod, Permissions } from "wix-web-module";
+import wixData from "wix-data";
 
 import {
     COLLECTIONS,
     SINGLETONS,
-    SISTEMA_INFORMATICO,
-    ESTADO_ENVIO_AEAT,
-    PROYECCION_ESTADO,
+    SDK_CONFIG,
+    TIPO_MOVIMIENTO,
+    FORMA_PAGO,
+    IVA_RATES,
+    CONCURRENCY,
+    CLAVES_AEAT,
+    MOTIVOS_RECTIFICACION,
+    ESTADO_DEVENGO_IVA,
+    ROL_FISCAL,
     TIPO_EVENTO,
+    TIPO_TERCERO,
+    PROYECCION_ESTADO,
+    SISTEMA_INFORMATICO,
 } from "backend/internalConfig";
+
+import {
+    hashSHA256,
+    hashChain,
+} from "backend/securityEngine";
 
 import {
     makeTraceId,
     _safeTrim,
+    _cleanText,
     _looksLikeGuid,
+    _roundMoney,
+    withTimeout,
 } from "public/mmUtils";
+
+import {
+    _lockSlotKeyOrFail,
+    _unlockSlotKey,
+} from "backend/booking/bookingCore";
 
 import { logger } from "backend/logger";
 
 const log = logger;
 
+// ============================================================================
+// CONSTANTES
+// ============================================================================
+
+const CAJA_ACTUAL_ID = SINGLETONS?.CAJA || "CAJA_PRINCIPAL";
 const CAJA_SEQ_ID = "CAJA_SEQ";
-const SHA256_HEX_LEN = 64;
-const MADRID_TZ = "Europe/Madrid";
+const LEDGER_SCHEMA_VERSION = "LEDGER_V5_FISCAL";
+const GENESIS_HASH = "0".repeat(64);
+
+const SEQUENCE_MUTEX_KEY = "FISCAL_SEQUENCE_LOCK";
+const SEQUENCE_MUTEX_TTL_MS = Number(CONCURRENCY?.LEDGER_MUTEX_TTL_MS) || 45000;
+
+const PROYECCION_BATCH_LIMIT = 25;
+const PROYECCION_TIMEOUT_MS =
+    Number(SDK_CONFIG?.TIMEOUTS?.API_MS) || 15000;
 
 // ============================================================================
-// BLOQUE 1 - UTILIDADES CRIPTOGRAFICAS
+// HELPERS DE FECHA / AEAT (identicos a cajas.web.js v5008.5)
 // ============================================================================
 
-async function _sha256Hex(input) {
-    const bytes = new TextEncoder().encode(String(input));
-    const hashBuffer = await crypto.subtle.digest("SHA-256", bytes);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+function _formatAEATDate(ymd) {
+    const clean = _safeTrim(ymd);
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(clean);
+    if (!match) return clean;
+    return `${match[3]}-${match[2]}-${match[1]}`;
 }
 
-function _isValidHuella(huella) {
-    return typeof huella === "string" && huella.length === SHA256_HEX_LEN;
-}
+function _formatAEATDateTimeMadrid(date) {
+    const dt = date instanceof Date ? date : new Date();
+    const parts = new Intl.DateTimeFormat("sv-SE", {
+        timeZone: SDK_CONFIG?.TZ || "Europe/Madrid",
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit",
+        hour12: false,
+    }).formatToParts(dt).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
 
-// ============================================================================
-// BLOQUE 2 - FECHA Y HORA MADRID
-// ============================================================================
+    const madridOffset = (() => {
+        const madridStr = dt.toLocaleString("en-US", {
+            timeZone: "Europe/Madrid",
+            timeZoneName: "longOffset",
+        });
+        const m = /GMT([+-])(\d{2}):?(\d{2})/.exec(madridStr);
+        if (m) return `${m[1]}${m[2]}:${m[3]}`;
+        const localMadrid = new Date(dt.toLocaleString("en-US", { timeZone: "Europe/Madrid" }));
+        const diffMinutes = Math.round((localMadrid - dt) / 60000);
+        const sign = diffMinutes >= 0 ? "+" : "-";
+        const abs = Math.abs(diffMinutes);
+        return `${sign}${String(Math.floor(abs / 60)).padStart(2, "0")}:${String(abs % 60).padStart(2, "0")}`;
+    })();
 
-function _getMadridOffsetHours(date) {
-    const utcDate = new Date(date.toLocaleString("en-US", { timeZone: "UTC" }));
-    const madridDate = new Date(date.toLocaleString("en-US", { timeZone: MADRID_TZ }));
-    return Math.round((madridDate.getTime() - utcDate.getTime()) / 3600000);
-}
-
-function _formatMadridIso(date) {
-    const offsetHours = _getMadridOffsetHours(date);
-    const local = new Date(date.getTime() + offsetHours * 3600000);
-    const y = local.getUTCFullYear();
-    const m = String(local.getUTCMonth() + 1).padStart(2, "0");
-    const d = String(local.getUTCDate()).padStart(2, "0");
-    const h = String(local.getUTCHours()).padStart(2, "0");
-    const mi = String(local.getUTCMinutes()).padStart(2, "0");
-    const s = String(local.getUTCSeconds()).padStart(2, "0");
-    const sign = offsetHours >= 0 ? "+" : "-";
-    const absOffset = String(Math.abs(offsetHours)).padStart(2, "0");
-    return `${y}-${m}-${d}T${h}:${mi}:${s}${sign}${absOffset}:00`;
+    return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}${madridOffset}`;
 }
 
 function _buildGenerationTimestamp(date) {
-    const offsetHours = _getMadridOffsetHours(date);
-    const local = new Date(date.getTime() + offsetHours * 3600000);
+    const dt = date instanceof Date ? date : new Date();
+    const parts = new Intl.DateTimeFormat("sv-SE", {
+        timeZone: SDK_CONFIG?.TZ || "Europe/Madrid",
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit",
+        hour12: false,
+    }).formatToParts(dt).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
     return {
-        year: local.getUTCFullYear(),
-        month: local.getUTCMonth() + 1,
-        day: local.getUTCDate(),
-        hour: local.getUTCHours(),
-        minute: local.getUTCMinutes(),
-        second: local.getUTCSeconds(),
+        year: Number(parts.year),
+        month: Number(parts.month),
+        day: Number(parts.day),
+        hour: Number(parts.hour),
+        minute: Number(parts.minute),
+        second: Number(parts.second),
     };
 }
 
+function _generateVerificationQR(invoiceNumber, businessTaxId, operationDate, totalAmount) {
+    const baseUrl = "https://www2.agenciatributaria.gob.es/wlpl/TIKE-CONT/ValidarQR";
+    const params = [
+        `nif=${encodeURIComponent(businessTaxId)}`,
+        `numserie=${encodeURIComponent(invoiceNumber)}`,
+        `fecha=${encodeURIComponent(operationDate)}`,
+        `importe=${encodeURIComponent(String(totalAmount))}`,
+    ];
+    return `${baseUrl}?${params.join("&")}`;
+}
+
+// [FIX-EV-02] Payload AEAT identico al de cajas.web.js v5008.5
+// para preservar la cadena SHA-256 existente. Los campos se aceptan en
+// nomenclatura AEAT o legacy indistintamente.
+function _buildAEATPayload(mov, generatedAt) {
+    const nifDest = _safeTrim(mov.nifDestinatario || mov.nifTercero);
+    const nombreDest = _safeTrim(mov.nombreRazonDestinatario || mov.razonSocialTercero);
+    const numSerie = _safeTrim(mov.numSerieFactura || mov.invoiceNumber);
+    const fechaExp = _safeTrim(mov.fechaExpedicionFactura || mov.operationDate);
+    const tipoFactura = _safeTrim(mov.tipoFactura || mov.claveRegistroFactura) || CLAVES_AEAT.F1;
+    const cuotaTotal = Number(mov.cuotaTotal ?? mov.taxAmount ?? 0);
+    const importeTotal = Number(mov.importeTotal ?? mov.totalAmount ?? 0);
+    const huellaAnterior = _safeTrim(mov.huellaAnterior || mov.previousRecordHash);
+    const nifEmisor = _safeTrim(mov.nifEmisor || mov.businessTaxId);
+    const tipoRect = _safeTrim(mov.tipoRectificativa);
+    const idFactAnt = _safeTrim(mov.idFacturaAnterior || mov.idFacturaRectificada);
+    const motivoRect = _safeTrim(mov.motivoRectificacion);
+    const estadoDevengo = _safeTrim(mov.estadoDevengoIVA || mov.estadoDevengoIva);
+    const idAnticipo = _safeTrim(mov.idAnticipoVinculado);
+    const importeRet = Number(mov.importeRetencionIRPF || 0);
+    const baseRet = Number(mov.baseImponibleRetencion || 0);
+    const rolFiscal = _safeTrim(mov.rolFiscal);
+    const importeRE = Number(mov.cuotaRecargoEquivalencia ?? mov.importeRecargoEquivalencia ?? 0);
+    const refBancaria = _safeTrim(mov.referenciaBancariaConciliacion);
+
+    const fields = [
+        ["IDEmisorFactura", nifEmisor || ""],
+        ["NumSerieFactura", numSerie || ""],
+        ["FechaExpedicionFactura", _formatAEATDate(fechaExp)],
+        ["TipoFactura", tipoFactura],
+        ["CuotaTotal", String(cuotaTotal.toFixed(2))],
+        ["ImporteTotal", String(importeTotal.toFixed(2))],
+        ["Huella", huellaAnterior || ""],
+        ["FechaHoraHusoGenRegistro", _formatAEATDateTimeMadrid(generatedAt)],
+    ];
+
+    if (nifDest) fields.push(["NIFDestinatario", nifDest.slice(0, 20)]);
+    if (nombreDest) fields.push(["NombreRazonDestinatario", nombreDest.slice(0, 200)]);
+    if (refBancaria) fields.push(["ReferenciaBancaria", refBancaria.slice(0, 60)]);
+
+    if (estadoDevengo === ESTADO_DEVENGO_IVA.APLICACION_ANTICIPO) {
+        fields.push(["TipoRectificativa", "I"]);
+        if (idAnticipo) fields.push(["IdAnticipoVinculado", idAnticipo.slice(0, 120)]);
+    }
+
+    if (tipoRect) fields.push(["TipoRectificativa", tipoRect.slice(0, 4)]);
+    if (importeRet > 0) {
+        fields.push(["ImporteRetencionIRPF", String(importeRet.toFixed(2))]);
+        if (baseRet > 0) fields.push(["BaseImponibleRetencion", String(baseRet.toFixed(2))]);
+        if (rolFiscal) fields.push(["RolFiscal", rolFiscal.slice(0, 10)]);
+    }
+
+    if (importeRE > 0) fields.push(["ImporteRecargoEquivalencia", String(importeRE.toFixed(2))]);
+    if (motivoRect) fields.push(["MotivoRectificacion", motivoRect.slice(0, 4)]);
+    if (idFactAnt) fields.push(["IdFacturaRectificada", idFactAnt.slice(0, 120)]);
+
+    return fields.map(([k, v]) => `${k}=${v}`).join("&");
+}
+
 // ============================================================================
-// BLOQUE 3 - SECUENCIA GLOBAL (unico escritor: este modulo)
+// [FIX-EV-01] SECUENCIA GLOBAL — lock compartido con cajas.web.js
 // ============================================================================
 
-async function _getNextSequence() {
-    const current = await wixData
-        .get(COLLECTIONS.CAJA_ACTUAL, CAJA_SEQ_ID, { suppressAuth: true })
-        .catch(() => null);
-    const next = Number(current?.sequenceNumber || 0) + 1;
-    await wixData.save(COLLECTIONS.CAJA_ACTUAL, {
-        _id: CAJA_SEQ_ID,
-        sequenceNumber: next,
-        updatedAt: new Date(),
-    }, { suppressAuth: true });
-    return next;
+export async function _getNextSequenceInternal(traceId) {
+    const lockOwnerId = `seq_${traceId || makeTraceId("seq")}`;
+
+    const lockResult = await _lockSlotKeyOrFail(
+        SEQUENCE_MUTEX_KEY,
+        lockOwnerId,
+        SEQUENCE_MUTEX_TTL_MS
+    );
+    if (!lockResult?.ok) {
+        throw new Error("SEQUENCE_LOCK_BUSY: No se pudo adquirir el lock de secuencia");
+    }
+
+    try {
+        let seqDoc = await wixData
+            .get(COLLECTIONS.CAJA_ACTUAL, CAJA_SEQ_ID, { suppressAuth: true, consistentRead: true })
+            .catch(() => null);
+
+        if (!seqDoc) {
+            const legacyCaja = await wixData
+                .get(COLLECTIONS.CAJA_ACTUAL, CAJA_ACTUAL_ID, { suppressAuth: true, consistentRead: true })
+                .catch(() => null);
+
+            const legacyCounters =
+                legacyCaja && legacyCaja.sequenceCounters
+                    ? legacyCaja.sequenceCounters
+                    : { seqGlobal: 0 };
+
+            seqDoc = {
+                _id: CAJA_SEQ_ID,
+                sequenceCounters: { ...legacyCounters },
+                migratedFrom: CAJA_ACTUAL_ID,
+                migratedAt: new Date(),
+                _createdDate: new Date(),
+                _updatedDate: new Date(),
+            };
+
+            await wixData
+                .insert(COLLECTIONS.CAJA_ACTUAL, seqDoc, { suppressAuth: true })
+                .catch(async (insertErr) => {
+                    const msg = String(insertErr?.message || "");
+                    if (msg.includes("WDE0123") || msg.includes("WD_ITEM_ALREADY_EXISTS") || msg.includes("Duplicated")) {
+                        seqDoc = await wixData
+                            .get(COLLECTIONS.CAJA_ACTUAL, CAJA_SEQ_ID, { suppressAuth: true, consistentRead: true })
+                            .catch(() => null);
+                        if (!seqDoc) throw insertErr;
+                    } else {
+                        throw insertErr;
+                    }
+                });
+        }
+
+        const counters = seqDoc.sequenceCounters || {};
+        const nextGlobal = Number(counters.seqGlobal || 0) + 1;
+        const yearKey = String(new Date().getFullYear());
+        const nextYear = Number(counters[yearKey] || 0) + 1;
+        counters.seqGlobal = nextGlobal;
+        counters[yearKey] = nextYear;
+        seqDoc.sequenceCounters = counters;
+        seqDoc._updatedDate = new Date();
+
+        await wixData.save(COLLECTIONS.CAJA_ACTUAL, seqDoc, { suppressAuth: true });
+
+        return {
+            sequenceNumber: nextGlobal,
+            yearSequence: nextYear,
+            invoiceNumber: `FAC-${yearKey}-${String(nextYear).padStart(5, "0")}`,
+        };
+    } finally {
+        await _unlockSlotKey(SEQUENCE_MUTEX_KEY, lockOwnerId).catch(() => {});
+    }
 }
 
 async function _getUltimoEventoCaja() {
-    const result = await wixData
+    const res = await wixData
         .query(COLLECTIONS.MOVIMIENTOS_CAJA)
         .descending("sequenceNumber")
         .limit(1)
-        .find({ suppressAuth: true });
-    return result?.items?.[0] || null;
+        .find({ suppressAuth: true, consistentRead: true });
+    return res?.items?.[0] || null;
 }
 
 // ============================================================================
-// BLOQUE 4 - UPSERT DE MAESTROS
+// MAESTROS
 // ============================================================================
 
-async function upsertDatosFiscales({ nifCif, razonSocial, tipoTercero, datosContacto }, traceId) {
+async function _upsertDatosFiscales({ nifCif, razonSocial, tipoTercero, datosContacto }, traceId) {
     const nif = _safeTrim(nifCif).toUpperCase();
     if (!nif) return null;
 
@@ -150,14 +327,16 @@ async function upsertDatosFiscales({ nifCif, razonSocial, tipoTercero, datosCont
     return await wixData.insert(COLLECTIONS.DATOS_FISCALES, {
         nifCif: nif,
         razonSocial: _safeTrim(razonSocial).toUpperCase() || "SIN NOMBRE",
-        tipoTercero: _safeTrim(tipoTercero) || "CLIENTE",
+        tipoTercero: tipoTercero || TIPO_TERCERO.CLIENTE,
         datosContacto: datosContacto || null,
         activo: true,
         traceIdAlta: traceId,
+        _createdDate: new Date(),
+        _updatedDate: new Date(),
     }, { suppressAuth: true });
 }
 
-async function getServicioCatalogo(catalogoId, traceId) {
+async function _getServicioCatalogo(catalogoId, traceId) {
     const id = _safeTrim(catalogoId);
     if (!_looksLikeGuid(id)) return null;
     try {
@@ -169,42 +348,47 @@ async function getServicioCatalogo(catalogoId, traceId) {
 }
 
 // ============================================================================
-// BLOQUE 5 - PAYLOAD FISCAL AEAT
+// PAYLOAD FISCAL (snapshot inmutable guardado en el doc)
 // ============================================================================
 
-function buildPayloadFiscal({ tercero, catalogo, input, ts, huellaAnterior, huellaActual }) {
-    const fechaHoraHusoGenRegistro = _formatMadridIso(ts);
+function _buildPayloadFiscalSnapshot({
+    tercero, catalogo, input, ts, huellaAnterior, huellaActual, fechaHoraHusoGenRegistro,
+}) {
     return {
-        idEmisorFactura: _safeTrim(input.nifEmisor),
+        idEmisorFactura: _safeTrim(input.nifEmisor || input.businessTaxId),
         nombreRazonEmisor: _safeTrim(input.nombreRazonEmisor),
-        nifDestinatario: _safeTrim(tercero?.nifCif || input.nifDestinatario),
-        nombreRazonDestinatario: _safeTrim(tercero?.razonSocial || input.nombreRazonDestinatario),
+        nifDestinatario: _safeTrim(tercero?.nifCif || input.nifDestinatario || input.nifTercero),
+        nombreRazonDestinatario: _safeTrim(tercero?.razonSocial || input.nombreRazonDestinatario || input.razonSocialTercero),
         domicilioDestinatario: tercero?.datosContacto || input.domicilioDestinatario || null,
         emitidaPorTerceroODestinatario: _safeTrim(input.emitidaPorTerceroODestinatario) || "E",
         nombreRazonTercero: _safeTrim(input.nombreRazonTercero) || null,
         nifTerceroExpedidor: _safeTrim(input.nifTerceroExpedidor) || null,
-        numSerieFactura: _safeTrim(input.numSerieFactura),
-        fechaExpedicionFactura: _safeTrim(input.fechaExpedicionFactura),
+        numSerieFactura: _safeTrim(input.numSerieFactura || input.invoiceNumber),
+        fechaExpedicionFactura: _safeTrim(input.fechaExpedicionFactura || input.operationDate),
         fechaOperacion: _safeTrim(input.fechaOperacion) || null,
-        tipoFactura: _safeTrim(input.tipoFactura) || "F1",
-        descripcionOperacion: _safeTrim(input.descripcionOperacion),
-        importeTotal: Number(input.importeTotal || 0),
-        baseImponibleOImporteNoSujeto: Number(input.baseImponibleOImporteNoSujeto || 0),
-        cuotaTotal: Number(input.cuotaTotal || 0),
-        tipoImpositivo: Number(input.tipoImpositivo || catalogo?.taxRate || 0),
-        tipoRecargoEquivalencia: Number(input.tipoRecargoEquivalencia || 0),
-        cuotaRecargoEquivalencia: Number(input.cuotaRecargoEquivalencia || 0),
-        importeRetencionIRPF: Number(input.importeRetencionIRPF || 0),
-        tipoRetencionIRPF: Number(input.tipoRetencionIRPF || 0),
+        tipoFactura: _safeTrim(input.tipoFactura || input.claveRegistroFactura) || "F1",
+        tipoRectificativa: _safeTrim(input.tipoRectificativa) || null,
+        descripcionOperacion: _safeTrim(input.descripcionOperacion || input.concept),
+        importeTotal: Number(input.importeTotal ?? input.totalAmount ?? 0),
+        baseImponibleOImporteNoSujeto: Number(input.baseImponibleOImporteNoSujeto ?? input.taxableAmount ?? 0),
+        cuotaTotal: Number(input.cuotaTotal ?? input.taxAmount ?? 0),
+        tipoImpositivo: Number(input.tipoImpositivo ?? input.taxRate ?? catalogo?.taxRate ?? 0),
+        tipoRecargoEquivalencia: Number(input.tipoRecargoEquivalencia ?? 0),
+        cuotaRecargoEquivalencia: Number(input.cuotaRecargoEquivalencia ?? input.importeRecargoEquivalencia ?? 0),
+        importeRetencionIRPF: Number(input.importeRetencionIRPF ?? 0),
+        tipoRetencionIRPF: Number(input.tipoRetencionIRPF ?? 0),
+        baseImponibleRetencion: Number(input.baseImponibleRetencion ?? 0),
         claveRegimen: _safeTrim(input.claveRegimen || catalogo?.claveRegimenAEAT) || "01",
         calificacionOperacion: _safeTrim(input.calificacionOperacion || catalogo?.calificacionOperacionAEAT) || "S1",
         operacionExenta: _safeTrim(input.operacionExenta || catalogo?.operacionExentaAEAT) || null,
         inversionSujetoPasivo: input.inversionSujetoPasivo === true || catalogo?.inversionSujetoPasivo === true,
         causaNoSujeta: _safeTrim(input.causaNoSujeta) || null,
+        regimenEspecialCriterioCaja: input.regimenEspecialCriterioCaja === true,
+        exentaPorArticulo20: input.exentaPorArticulo20 === true,
         sistemaInformatico: { ...SISTEMA_INFORMATICO },
-        idFacturaAnterior: input.idFacturaAnterior || null,
-        numSerieFacturaAnterior: input.numSerieFacturaAnterior || null,
-        fechaExpedicionFacturaAnterior: input.fechaExpedicionFacturaAnterior || null,
+        idFacturaAnterior: _safeTrim(input.idFacturaAnterior) || null,
+        numSerieFacturaAnterior: _safeTrim(input.numSerieFacturaAnterior) || null,
+        fechaExpedicionFacturaAnterior: _safeTrim(input.fechaExpedicionFacturaAnterior) || null,
         huellaAnterior: huellaAnterior || null,
         huella: huellaActual,
         fechaHoraHusoGenRegistro,
@@ -214,157 +398,196 @@ function buildPayloadFiscal({ tercero, catalogo, input, ts, huellaAnterior, huel
 }
 
 // ============================================================================
-// BLOQUE 6 - REGISTRO ATOMICO DEL EVENTO
+// MOTOR — registrarEventoEconomico
 // ============================================================================
 
 export async function registrarEventoEconomico(input) {
-    if (!input || typeof input !== "object") {
-        return { status: "ERROR", data: null, error: { code: "INVALID_INPUT" } };
-    }
-
     const traceId = input.traceId || makeTraceId("evento");
     const ts = new Date();
 
-    const tercero = await upsertDatosFiscales({
-        nifCif: input.nifDestinatario || input.nifEmisor,
-        razonSocial: input.nombreRazonDestinatario || input.nombreRazonEmisor,
-        tipoTercero: input.tipoTercero || "CLIENTE",
+    // 1. Resolver tercero
+    const tercero = await _upsertDatosFiscales({
+        nifCif: input.nifDestinatario || input.nifTercero || input.nifEmisor,
+        razonSocial: input.nombreRazonDestinatario || input.razonSocialTercero || input.nombreRazonEmisor,
+        tipoTercero: input.tipoTercero || TIPO_TERCERO.CLIENTE,
         datosContacto: input.datosContacto || input.domicilioDestinatario || null,
     }, traceId);
 
-    const catalogo = await getServicioCatalogo(input.catalogoId, traceId);
+    // 2. Resolver catalogo
+    const catalogo = await _getServicioCatalogo(input.catalogoId, traceId);
 
+    // 3. Ultimo evento + secuencia
     const anterior = await _getUltimoEventoCaja();
-    const sequenceNumber = await _getNextSequence();
+    const seq = await _getNextSequenceInternal(traceId);
 
-    const fechaHoraHusoGenRegistro = _formatMadridIso(ts);
-    const huellaActual = await _sha256Hex(
-        (anterior?.huella || "") +
-        JSON.stringify(input) +
-        fechaHoraHusoGenRegistro
-    );
+    const huellaAnterior = _safeTrim(anterior?.huella || anterior?.currentRecordHash) || GENESIS_HASH;
+    const fechaHoraHusoGenRegistro = _formatAEATDateTimeMadrid(ts);
 
-    const payloadFiscal = buildPayloadFiscal({
-        tercero,
-        catalogo,
-        input,
-        ts,
-        huellaAnterior: anterior?.huella || null,
-        huellaActual,
-    });
+    // 4. Construir movimiento base (aun sin huella)
+    const movBase = {
+        sequenceNumber: seq.sequenceNumber,
+        numSerieFactura: _safeTrim(input.numSerieFactura || input.invoiceNumber) || seq.invoiceNumber,
+        invoiceNumber: _safeTrim(input.numSerieFactura || input.invoiceNumber) || seq.invoiceNumber,
+        fechaExpedicionFactura: _safeTrim(input.fechaExpedicionFactura || input.operationDate) ||
+            new Date().toLocaleDateString("sv-SE", { timeZone: SDK_CONFIG?.TZ || "Europe/Madrid" }),
+        operationDate: _safeTrim(input.fechaExpedicionFactura || input.operationDate) ||
+            new Date().toLocaleDateString("sv-SE", { timeZone: SDK_CONFIG?.TZ || "Europe/Madrid" }),
+        fechaOperacion: _safeTrim(input.fechaOperacion) || null,
+        fiscalPeriod: (_safeTrim(input.fechaExpedicionFactura || input.operationDate) ||
+            new Date().toLocaleDateString("sv-SE", { timeZone: SDK_CONFIG?.TZ || "Europe/Madrid" })).slice(0, 7),
 
-    const cabecera = await wixData.insert(COLLECTIONS.MOVIMIENTOS_CAJA, {
-        // Legacy v5008.3
-        amount: Number(input.importeTotal || 0),
+        tipoMovimiento: _safeTrim(input.tipoMovimiento || input.movementType),
+        movementType: _safeTrim(input.tipoMovimiento || input.movementType),
+        tipoEvento: _safeTrim(input.tipoEvento),
+
         paymentMethod: _safeTrim(input.paymentMethod),
-        tipoMovimiento: _safeTrim(input.tipoMovimiento),
-        concept: _safeTrim(input.descripcionOperacion),
-        resourceId: _safeTrim(input.resourceId),
-        reservaIdVinculada: _safeTrim(input.reservaIdVinculada),
-        transactionId: _safeTrim(input.transactionId),
-        orderId: _safeTrim(input.orderId),
-        schemaVersion: "LEDGER_V5_FISCAL",
-        hash: huellaActual,
-        prevHash: anterior?.huella || null,
-        registeredAt: ts,
-
-        // AEAT
-        importeTotal: Number(input.importeTotal || 0),
-        descripcionOperacion: _safeTrim(input.descripcionOperacion),
-        staffResourceId: _safeTrim(input.staffResourceId),
         channelType: _safeTrim(input.channelType) || "POS",
-        huella: huellaActual,
-        huellaAnterior: anterior?.huella || null,
-        fechaHoraHusoGenRegistro,
-        generationTimestamp: payloadFiscal.generationTimestamp,
-        numSerieFactura: _safeTrim(input.numSerieFactura),
-        fechaExpedicionFactura: input.fechaExpedicionFactura || ts,
-        fechaOperacion: input.fechaOperacion || null,
-        tipoFactura: _safeTrim(input.tipoFactura) || "F1",
+
+        importeTotal: Number(input.importeTotal ?? input.totalAmount ?? 0),
+        totalAmount: Number(input.importeTotal ?? input.totalAmount ?? 0),
+        baseImponibleOImporteNoSujeto: Number(input.baseImponibleOImporteNoSujeto ?? input.taxableAmount ?? 0),
+        taxableAmount: Number(input.baseImponibleOImporteNoSujeto ?? input.taxableAmount ?? 0),
+        cuotaTotal: Number(input.cuotaTotal ?? input.taxAmount ?? 0),
+        taxAmount: Number(input.cuotaTotal ?? input.taxAmount ?? 0),
+        tipoImpositivo: Number(input.tipoImpositivo ?? input.taxRate ?? IVA_RATES.GENERAL),
+        taxRate: Number(input.tipoImpositivo ?? input.taxRate ?? IVA_RATES.GENERAL),
+        tipoRecargoEquivalencia: Number(input.tipoRecargoEquivalencia ?? 0),
+        cuotaRecargoEquivalencia: Number(input.cuotaRecargoEquivalencia ?? input.importeRecargoEquivalencia ?? 0),
+        importeRecargoEquivalencia: Number(input.cuotaRecargoEquivalencia ?? input.importeRecargoEquivalencia ?? 0),
+        importeRetencionIRPF: Number(input.importeRetencionIRPF ?? 0),
+        tipoRetencionIRPF: Number(input.tipoRetencionIRPF ?? 0),
+        baseImponibleRetencion: Number(input.baseImponibleRetencion ?? 0),
+        rolFiscal: _safeTrim(input.rolFiscal) || ROL_FISCAL.EMISOR,
+
+        descripcionOperacion: _cleanText(input.descripcionOperacion || input.concept || "", 500),
+        concept: _cleanText(input.descripcionOperacion || input.concept || "", 500),
+
+        tipoFactura: _safeTrim(input.tipoFactura || input.claveRegistroFactura) || CLAVES_AEAT.F1,
+        claveRegistroFactura: _safeTrim(input.tipoFactura || input.claveRegistroFactura) || CLAVES_AEAT.F1,
         tipoRectificativa: _safeTrim(input.tipoRectificativa) || null,
-        importeRectificacion: input.importeRectificacion || null,
-        baseImponibleOImporteNoSujeto: Number(input.baseImponibleOImporteNoSujeto || 0),
-        cuotaTotal: Number(input.cuotaTotal || 0),
-        tipoImpositivo: Number(input.tipoImpositivo || 0),
-        tipoRecargoEquivalencia: Number(input.tipoRecargoEquivalencia || 0),
-        cuotaRecargoEquivalencia: Number(input.cuotaRecargoEquivalencia || 0),
-        importeRetencionIRPF: Number(input.importeRetencionIRPF || 0),
-        tipoRetencionIRPF: Number(input.tipoRetencionIRPF || 0),
-        baseImponibleRetencion: Number(input.baseImponibleRetencion || 0),
-        nifEmisor: _safeTrim(input.nifEmisor),
+        motivoRectificacion: _safeTrim(input.motivoRectificacion) || null,
+        idFacturaAnterior: _safeTrim(input.idFacturaAnterior || input.idFacturaRectificada) || null,
+        idFacturaRectificada: _safeTrim(input.idFacturaAnterior || input.idFacturaRectificada) || null,
+        numSerieFacturaAnterior: _safeTrim(input.numSerieFacturaAnterior) || null,
+        fechaExpedicionFacturaAnterior: _safeTrim(input.fechaExpedicionFacturaAnterior) || null,
+
+        nifEmisor: _safeTrim(input.nifEmisor || input.businessTaxId),
+        businessTaxId: _safeTrim(input.nifEmisor || input.businessTaxId),
         nombreRazonEmisor: _safeTrim(input.nombreRazonEmisor),
-        nifDestinatario: _safeTrim(tercero?.nifCif || input.nifDestinatario),
-        nombreRazonDestinatario: _safeTrim(tercero?.razonSocial || input.nombreRazonDestinatario),
+        nifDestinatario: _safeTrim(tercero?.nifCif || input.nifDestinatario || input.nifTercero),
+        nifTercero: _safeTrim(tercero?.nifCif || input.nifDestinatario || input.nifTercero),
+        nombreRazonDestinatario: _safeTrim(tercero?.razonSocial || input.nombreRazonDestinatario || input.razonSocialTercero),
+        razonSocialTercero: _safeTrim(tercero?.razonSocial || input.nombreRazonDestinatario || input.razonSocialTercero),
         domicilioDestinatario: tercero?.datosContacto || input.domicilioDestinatario || null,
-        emitidaPorTerceroODestinatario: payloadFiscal.emitidaPorTerceroODestinatario,
-        nombreRazonTercero: payloadFiscal.nombreRazonTercero,
-        nifTerceroExpedidor: payloadFiscal.nifTerceroExpedidor,
-        causaNoSujeta: payloadFiscal.causaNoSujeta,
-        inversionSujetoPasivo: payloadFiscal.inversionSujetoPasivo,
-        claveRegimen: payloadFiscal.claveRegimen,
-        calificacionOperacion: payloadFiscal.calificacionOperacion,
-        operacionExenta: payloadFiscal.operacionExenta,
+        esB2B: input.esB2B === true,
+
+        emitidaPorTerceroODestinatario: _safeTrim(input.emitidaPorTerceroODestinatario) || "E",
+        nombreRazonTercero: _safeTrim(input.nombreRazonTercero) || null,
+        nifTerceroExpedidor: _safeTrim(input.nifTerceroExpedidor) || null,
+        causaNoSujeta: _safeTrim(input.causaNoSujeta) || null,
+        inversionSujetoPasivo: input.inversionSujetoPasivo === true || catalogo?.inversionSujetoPasivo === true,
+
+        claveRegimen: _safeTrim(input.claveRegimen || catalogo?.claveRegimenAEAT) || "01",
+        calificacionOperacion: _safeTrim(input.calificacionOperacion || catalogo?.calificacionOperacionAEAT) || "S1",
+        operacionExenta: _safeTrim(input.operacionExenta || catalogo?.operacionExentaAEAT) || null,
         regimenEspecialCriterioCaja: input.regimenEspecialCriterioCaja === true,
         exentaPorArticulo20: input.exentaPorArticulo20 === true,
-        desgloseDetallado: payloadFiscal.desgloseDetallado,
-        sistemaInformatico: payloadFiscal.sistemaInformatico,
-        idFacturaAnterior: anterior?.numSerieFactura || null,
-        numSerieFacturaAnterior: anterior?.numSerieFactura || null,
-        fechaExpedicionFacturaAnterior: anterior?.fechaExpedicionFactura || null,
-        estadoEnvioAeat: ESTADO_ENVIO_AEAT.PENDIENTE,
 
-        // Event sourcing
-        tipoEvento: _safeTrim(input.tipoEvento) || TIPO_EVENTO.VENTA_LINEA,
+        idAnticipoVinculado: _safeTrim(input.idAnticipoVinculado) || null,
+        estadoDevengoIVA: _safeTrim(input.estadoDevengoIVA) || ESTADO_DEVENGO_IVA.DEVENGADO,
+        referenciaBancariaConciliacion: _safeTrim(input.referenciaBancariaConciliacion) || null,
+        numeroSerieFacturaEmisor: _safeTrim(input.numeroSerieFacturaEmisor) || null,
+
+        resourceId: _safeTrim(input.resourceId) || null,
+        staffResourceId: _safeTrim(input.staffResourceId) || null,
+        reservaIdVinculada: _safeTrim(input.reservaIdVinculada) || null,
+        transactionId: _safeTrim(input.transactionId) || `TX_${seq.sequenceNumber}`,
+        orderId: _safeTrim(input.orderId) || null,
+        refundId: _safeTrim(input.refundId) || null,
+        pairToken: _safeTrim(input.pairToken) || null,
+
         terceroId: tercero?._id || null,
         catalogoId: catalogo?._id || null,
-        pairToken: _safeTrim(input.pairToken) || null,
+
+        schemaIntegrityVersion: LEDGER_SCHEMA_VERSION,
+        schemaVersion: LEDGER_SCHEMA_VERSION,
+        recordSource: _safeTrim(input.recordSource || input.origen) || "INTERNAL",
+        lineItems: Array.isArray(input.lineItems) ? input.lineItems : [],
+    };
+
+    // 5. AEAT payload + huella
+    const aeatPayload = _buildAEATPayload({ ...movBase, previousRecordHash: huellaAnterior }, ts);
+    const huellaActual = await hashChain(huellaAnterior, aeatPayload);
+
+    // 6. Snapshot inmutable
+    const payloadFiscal = _buildPayloadFiscalSnapshot({
+        tercero, catalogo, input, ts,
+        huellaAnterior, huellaActual,
+        fechaHoraHusoGenRegistro,
+    });
+
+    // 7. Doc cabecera (dual write)
+    const doc = {
+        ...movBase,
+        huella: huellaActual,
+        huellaAnterior,
+        currentRecordHash: huellaActual,
+        previousRecordHash: huellaAnterior,
+        fechaHoraHusoGenRegistro,
+        generationTimestamp: _buildGenerationTimestamp(ts),
+        desgloseDetallado: payloadFiscal.desgloseDetallado,
+        sistemaInformatico: payloadFiscal.sistemaInformatico,
         payloadFiscal,
-        sequenceNumber,
         proyeccionEstado: PROYECCION_ESTADO.PENDIENTE,
         proyeccionDetalleIds: [],
         traceId,
-    }, { suppressAuth: true });
+        registeredAt: ts,
+        _createdDate: new Date(),
+    };
 
-    // Detalle: N lineas
+    const cabecera = await wixData.insert(COLLECTIONS.MOVIMIENTOS_CAJA, doc, { suppressAuth: true });
+
+    // 8. Detalle (lineas)
     const detalleIds = [];
     const desglose = Array.isArray(input.desglose) ? input.desglose : [];
-    for (let i = 0; i < desglose.length; i += 1) {
+    for (let i = 0; i < desglose.length; i++) {
         const d = desglose[i];
-        const lineHash = await _sha256Hex(huellaActual + JSON.stringify(d));
+        const lineHash = await hashSHA256(huellaActual + JSON.stringify(d));
         const det = await wixData.insert(COLLECTIONS.LIBRO_ASIENTOS_CONTABLES_DETALLE, {
             lineHash,
-            baseImponibleOImporteNoSujeto: Number(d.base || 0),
-            tipoImpositivo: Number(d.tipo || 0),
-            cuotaRepercutida: Number(d.cuota || 0),
+            baseImponibleOImporteNoSujeto: Number(d.baseImponibleOImporteNoSujeto ?? d.base ?? 0),
+            tipoImpositivo: Number(d.tipoImpositivo ?? d.tipo ?? 0),
+            cuotaRepercutida: Number(d.cuotaRepercutida ?? d.cuota ?? 0),
             eventoOrigenId: cabecera._id,
             numeroLinea: i + 1,
             terceroId: tercero?._id || null,
             catalogoId: catalogo?._id || null,
-            descripcionOperacion: _safeTrim(d.descripcion || input.descripcionOperacion),
+            descripcionOperacion: _cleanText(d.descripcion || input.descripcionOperacion || input.concept || "", 500),
             unidades: Number(d.unidades || 1),
             magnitud: Number(d.magnitud || 1),
-            importeNetoUnitario: Number(d.importeNeto || 0),
-            codigoImpuesto: _safeTrim(d.codigoImpuesto || catalogo?.codigoImpuesto),
+            importeNetoUnitario: Number(d.importeNetoUnitario ?? d.importeNeto ?? 0),
+            codigoImpuesto: _safeTrim(d.codigoImpuesto || catalogo?.codigoImpuesto) || null,
             claveRegimen: _safeTrim(d.claveRegimen || payloadFiscal.claveRegimen),
             calificacionOperacion: _safeTrim(d.calificacionOperacion || payloadFiscal.calificacionOperacion),
             operacionExenta: _safeTrim(d.operacionExenta) || null,
             inversionSujetoPasivo: d.inversionSujetoPasivo === true || payloadFiscal.inversionSujetoPasivo,
-            cuentaContable: _safeTrim(d.cuentaContable || catalogo?.cuentaContableIngreso),
-            tipoRecargoEquivalencia: Number(d.tipoRE || 0),
-            cuotaRecargoEquivalencia: Number(d.cuotaRE || 0),
+            cuentaContable: _safeTrim(d.cuentaContable || catalogo?.cuentaContableIngreso) || null,
+            tipoRecargoEquivalencia: Number(d.tipoRecargoEquivalencia ?? d.tipoRE ?? 0),
+            cuotaRecargoEquivalencia: Number(d.cuotaRecargoEquivalencia ?? d.cuotaRE ?? 0),
             importeRetencionIRPF: Number(d.importeRetencionIRPF || 0),
             tipoRetencionIRPF: Number(d.tipoRetencionIRPF || 0),
+            _createdDate: new Date(),
         }, { suppressAuth: true });
         detalleIds.push(det._id);
     }
 
-    // Proyeccion secundaria
+    // 9. Proyeccion secundaria — NUNCA propaga errores al caller
     let proyeccionEstado = PROYECCION_ESTADO.OK;
     try {
-        await proyectarSegunTipoEvento(cabecera, detalleIds, traceId);
+        await _proyectarSegunTipoEvento(cabecera, detalleIds, traceId);
     } catch (err) {
         proyeccionEstado = PROYECCION_ESTADO.ERROR;
-        log.error("Proyeccion secundaria fallo", {
+        log.error("Proyeccion secundaria fallo (no bloqueante)", {
             traceId,
             eventoId: cabecera._id,
             tipoEvento: cabecera.tipoEvento,
@@ -378,25 +601,27 @@ export async function registrarEventoEconomico(input) {
             cabeceraId: cabecera._id,
             detalleIds,
             huella: huellaActual,
-            sequenceNumber,
+            sequenceNumber: seq.sequenceNumber,
+            numSerieFactura: doc.numSerieFactura,
+            proyeccionEstado,
         },
         error: null,
     };
 }
 
 // ============================================================================
-// BLOQUE 7 - PROYECCION SECUNDARIA (imports dinamicos para evitar ciclos)
+// PROYECCION SECUNDARIA — delega en modulos existentes
 // ============================================================================
 
-async function proyectarSegunTipoEvento(cabecera, detalleIds, traceId) {
+async function _proyectarSegunTipoEvento(cabecera, detalleIds, traceId) {
     switch (cabecera.tipoEvento) {
         case TIPO_EVENTO.VENTA_LINEA:
         case TIPO_EVENTO.RECTIFICATIVA:
         case TIPO_EVENTO.AJUSTE:
-            await _proyectarAsientoContable(cabecera, detalleIds, traceId);
+            await _proyectarAsientoContable(cabecera, traceId);
             break;
         case TIPO_EVENTO.COMPRA_LINEA:
-            await _proyectarFacturaRecibida(cabecera, detalleIds, traceId);
+            await _proyectarFacturaRecibida(cabecera, traceId);
             break;
         case TIPO_EVENTO.MOV_STOCK:
             await _proyectarMovimientoInventario(cabecera, traceId);
@@ -409,47 +634,23 @@ async function proyectarSegunTipoEvento(cabecera, detalleIds, traceId) {
     }
 }
 
-async function _proyectarAsientoContable(cabecera, detalleIds, traceId) {
-    const entryId = `ASIENTO_${cabecera._id}`;
-    const fiscalPeriod = String(cabecera.fechaExpedicionFactura || "").slice(0, 7);
+// [FIX-EV-04] Delega en contabilidad.js — sin duplicar logica
+async function _proyectarAsientoContable(cabecera, traceId) {
     try {
-        await wixData.insert(COLLECTIONS.ASIENTOS_CONTABLES, {
-            sequenceNumber: cabecera.sequenceNumber,
-            operationDate: cabecera.fechaExpedicionFactura,
-            fiscalPeriod,
-            entryStatus: "POSTED",
-            journalEntryId: entryId,
-            previousHash: cabecera.huellaAnterior,
-            hashOrigen: cabecera.huella,
-            invoiceNumber: cabecera.numSerieFactura,
-            totalDocumentAmount: cabecera.importeTotal,
-            eventoOrigenId: cabecera._id,
-            terceroId: cabecera.terceroId,
-            payloadFiscalSnapshot: cabecera.payloadFiscal,
-            desgloseDetallado: cabecera.desgloseDetallado,
-            claveRegimen: cabecera.claveRegimen,
-            calificacionOperacion: cabecera.calificacionOperacion,
-            operacionExenta: cabecera.operacionExenta,
-            inversionSujetoPasivo: cabecera.inversionSujetoPasivo,
-            sistemaInformatico: cabecera.sistemaInformatico,
-            huella: cabecera.huella,
-            huellaAnterior: cabecera.huellaAnterior,
-            idFacturaAnterior: cabecera.idFacturaAnterior,
-            numSerieFacturaAnterior: cabecera.numSerieFacturaAnterior,
-            fechaExpedicionFacturaAnterior: cabecera.fechaExpedicionFacturaAnterior,
-        }, { suppressAuth: true });
-    } catch (err) {
-        if (err?.code === "WD_ITEM_ALREADY_EXISTS" || /duplicate/i.test(err?.message || "")) {
-            log.debug("Asiento ya existe", { eventoId: cabecera._id });
-            return;
+        const { projectLedgerMovementToAccounting } = await import("backend/contabilidad");
+        const res = await projectLedgerMovementToAccounting(cabecera);
+        if (res?.status !== "SUCCESS" && res?.status !== "SKIPPED") {
+            throw new Error(`contabilidad.js: ${res?.status || "UNKNOWN"}`);
         }
+    } catch (err) {
+        log.warn("Proyeccion contable fallo", { traceId, eventoId: cabecera._id, message: err?.message });
         throw err;
     }
 }
 
-async function _proyectarFacturaRecibida(cabecera, detalleIds, traceId) {
-    const numeroRecepcion = `FR-${cabecera.sequenceNumber}`;
+async function _proyectarFacturaRecibida(cabecera, traceId) {
     const fechaRecepcion = new Date();
+    const numeroRecepcion = `FR-${cabecera.sequenceNumber}`;
     try {
         await wixData.insert(COLLECTIONS.FACTURAS_RECIBIDAS, {
             numeroRecepcion,
@@ -478,49 +679,55 @@ async function _proyectarFacturaRecibida(cabecera, detalleIds, traceId) {
             inversionSujetoPasivo: cabecera.inversionSujetoPasivo,
             deducible: true,
             porcentajeDeduccion: 100,
-            cuotaDeducible: cabecera.cuotaTotal,
+            cuotaDeducible: Number(cabecera.cuotaTotal || 0),
             estadoPago: "PENDIENTE",
             eventoOrigenId: cabecera._id,
             origenRecepcion: "API",
             estadoValidacion: "PENDIENTE",
             traceId,
+            _createdDate: new Date(),
+            _updatedDate: new Date(),
         }, { suppressAuth: true });
     } catch (err) {
-        if (err?.code === "WD_ITEM_ALREADY_EXISTS" || /duplicate/i.test(err?.message || "")) {
-            log.debug("Factura recibida ya existe", { eventoId: cabecera._id });
+        const msg = String(err?.message || "");
+        if (msg.includes("WDE0123") || msg.includes("Duplicated") || msg.includes("already exists")) {
+            log.info("FacturaRecibida ya existe (idempotente)", { traceId, numeroRecepcion });
             return;
         }
         throw err;
     }
 }
 
+// [FIX-EV-05] import dinamico — evita ciclo estatico
 async function _proyectarMovimientoInventario(cabecera, traceId) {
-    // Delegado a inventario.web.js via import dinamico para evitar ciclo.
-    const { recordInventoryMovementSafe } = await import("backend/inventario.web");
-    if (typeof recordInventoryMovementSafe !== "function") {
-        log.warn("recordInventoryMovementSafe no disponible; proyeccion stock omitida", {
+    try {
+        const mod = await import("backend/inventario.web");
+        const fn = mod?.recordInventoryMovementSafe;
+        if (typeof fn !== "function") {
+            log.warn("inventario.recordInventoryMovementSafe no disponible", { traceId });
+            return;
+        }
+        await fn({
+            wixProductId: cabecera.payloadFiscal?.wixProductId || null,
+            sku: cabecera.payloadFiscal?.sku || null,
+            orderId: cabecera.orderId || null,
+            refundId: cabecera.payloadFiscal?.refundId || null,
+            eventoOrigenId: cabecera._id,
+            catalogoId: cabecera.catalogoId,
+            magnitud: cabecera.payloadFiscal?.magnitud || 1,
+            terceroId: cabecera.terceroId,
             traceId,
-            eventoId: cabecera._id,
         });
-        return;
+    } catch (err) {
+        log.warn("Proyeccion inventario fallo", { traceId, eventoId: cabecera._id, message: err?.message });
+        throw err;
     }
-    await recordInventoryMovementSafe({
-        eventoOrigenId: cabecera._id,
-        catalogoId: cabecera.catalogoId,
-        terceroId: cabecera.terceroId,
-        orderId: cabecera.orderId || null,
-        refundId: cabecera.payloadFiscal?.refundId || null,
-        wixProductId: cabecera.payloadFiscal?.wixProductId || null,
-        sku: cabecera.payloadFiscal?.sku || null,
-        magnitud: Number(cabecera.payloadFiscal?.magnitud || 1),
-        traceId,
-    });
 }
 
 async function _proyectarCierreZ(cabecera, traceId) {
-    const entryId = `Z_${cabecera.fechaExpedicionFactura}`;
     try {
         await wixData.insert(COLLECTIONS.HISTORICO_CIERRES_Z, {
+            _id: `Z_${cabecera.fechaExpedicionFactura}`,
             operationDate: cabecera.fechaExpedicionFactura,
             saldosPorMetodo: cabecera.payloadFiscal?.saldosPorMetodo || {},
             eventoOrigenId: cabecera._id,
@@ -528,11 +735,14 @@ async function _proyectarCierreZ(cabecera, traceId) {
             desglosePorTipoOperacion: cabecera.payloadFiscal?.desglosePorTipoOperacion || [],
             desglosePorTipoImpositivo: cabecera.payloadFiscal?.desglosePorTipoImpositivo || [],
             resumenVerifactu: cabecera.payloadFiscal?.resumenVerifactu || {},
-            estadoEnvioAeat: ESTADO_ENVIO_AEAT.PENDIENTE,
+            estadoEnvioAeat: "PENDIENTE",
+            traceId,
+            _createdDate: new Date(),
         }, { suppressAuth: true });
     } catch (err) {
-        if (err?.code === "WD_ITEM_ALREADY_EXISTS" || /duplicate/i.test(err?.message || "")) {
-            log.debug("Cierre Z ya existe", { eventoId: cabecera._id });
+        const msg = String(err?.message || "");
+        if (msg.includes("WDE0123") || msg.includes("Duplicated") || msg.includes("already exists")) {
+            log.info("CierreZ ya existe (idempotente)", { traceId, fecha: cabecera.fechaExpedicionFactura });
             return;
         }
         throw err;
@@ -540,7 +750,7 @@ async function _proyectarCierreZ(cabecera, traceId) {
 }
 
 // ============================================================================
-// BLOQUE 8 - CONSULTA Y AUDITORIA
+// WEB METHODS DE CONSULTA
 // ============================================================================
 
 export const getEventoPorId = webMethod(
@@ -551,7 +761,9 @@ export const getEventoPorId = webMethod(
             if (!_looksLikeGuid(eventoId)) {
                 return { status: "ERROR", data: null, error: { code: "INVALID_ID" } };
             }
-            const evento = await wixData.get(COLLECTIONS.MOVIMIENTOS_CAJA, eventoId, { suppressAuth: true });
+            const evento = await wixData
+                .get(COLLECTIONS.MOVIMIENTOS_CAJA, eventoId, { suppressAuth: true })
+                .catch(() => null);
             if (!evento) {
                 return { status: "ERROR", data: null, error: { code: "NOT_FOUND" } };
             }
@@ -572,84 +784,57 @@ export const getEventoPorId = webMethod(
     }
 );
 
-export const verificarCadenaHash = webMethod(
-    Permissions.Admin,
-    async (desdeSecuencia, hastaSecuencia) => {
-        const traceId = makeTraceId("verify-chain");
-        try {
-            const result = await wixData
-                .query(COLLECTIONS.MOVIMIENTOS_CAJA)
-                .ge("sequenceNumber", Number(desdeSecuencia) || 1)
-                .le("sequenceNumber", Number(hastaSecuencia) || 999999999)
-                .ascending("sequenceNumber")
-                .limit(1000)
-                .find({ suppressAuth: true });
-
-            let cadenaValida = true;
-            const errores = [];
-            let prevHuella = null;
-
-            for (const item of result.items || []) {
-                if (prevHuella && item.huellaAnterior !== prevHuella) {
-                    cadenaValida = false;
-                    errores.push({
-                        sequenceNumber: item.sequenceNumber,
-                        esperado: prevHuella,
-                        encontrado: item.huellaAnterior,
-                    });
-                }
-                prevHuella = item.huella;
-            }
-
-            return {
-                status: "SUCCESS",
-                data: {
-                    totalRegistros: (result.items || []).length,
-                    cadenaValida,
-                    errores,
-                    primeraHuella: result.items?.[0]?.huella || null,
-                    ultimaHuella: result.items?.[result.items.length - 1]?.huella || null,
-                },
-                error: null,
-            };
-        } catch (error) {
-            log.error("verificarCadenaHash fallo", { traceId, message: error?.message });
-            return { status: "ERROR", data: null, error: { code: "VERIFY_FAILED" } };
-        }
-    }
-);
+// NOTA: verifyFiscalHashChainIntegrity sigue viviendo en cajas.web.js como
+// webMethod Admin. eventLog.js NO duplica esa funcion.
 
 // ============================================================================
-// BLOQUE 9 - RECONCILIACION (invocado por cron)
+// RECONCILIACION (cron)
 // ============================================================================
 
+// [FIX-EV-06] Idempotente y silenciosa. Reprocesa eventos con proyeccionEstado
+// PENDIENTE o ERROR. Como MovimientosCaja es append-only, no actualizamos el
+// estado; la proyeccion se reintenta hasta exito y las proyecciones usan
+// _id deterministico o catch de Duplicated para ser idempotentes.
 export async function reconciliarProyecciones() {
-    const traceId = makeTraceId("reconcile");
-    const pendientes = await wixData
-        .query(COLLECTIONS.MOVIMIENTOS_CAJA)
-        .eq("proyeccionEstado", PROYECCION_ESTADO.PENDIENTE)
-        .limit(50)
-        .find({ suppressAuth: true });
-
+    const traceId = makeTraceId("recon");
     let procesados = 0;
     let fallidos = 0;
+    try {
+        const pendientes = await wixData
+            .query(COLLECTIONS.MOVIMIENTOS_CAJA)
+            .ne("proyeccionEstado", PROYECCION_ESTADO.OK)
+            .descending("sequenceNumber")
+            .limit(PROYECCION_BATCH_LIMIT)
+            .find({ suppressAuth: true });
 
-    for (const evento of pendientes.items || []) {
-        try {
-            await proyectarSegunTipoEvento(evento, evento.proyeccionDetalleIds || [], traceId);
-            procesados += 1;
-        } catch (err) {
-            fallidos += 1;
-            log.error("Reconciliacion fallo", {
-                traceId,
-                eventoId: evento._id,
-                message: err?.message,
-            });
+        for (const evento of pendientes.items || []) {
+            try {
+                await withTimeout(
+                    _proyectarSegunTipoEvento(evento, evento.proyeccionDetalleIds || [], traceId),
+                    PROYECCION_TIMEOUT_MS,
+                    "reconciliarProyecciones"
+                );
+                procesados += 1;
+            } catch (err) {
+                fallidos += 1;
+                log.warn("Reconciliacion fallo", {
+                    traceId,
+                    eventoId: evento._id,
+                    message: err?.message,
+                });
+            }
         }
-    }
 
-    return {
-        status: "SUCCESS",
-        data: { procesados, fallidos, total: (pendientes.items || []).length },
-    };
+        return { status: "SUCCESS", data: { procesados, fallidos, total: pendientes.items?.length || 0 } };
+    } catch (err) {
+        log.error("reconciliarProyecciones fallo global", { traceId, message: err?.message });
+        return { status: "ERROR", data: { procesados, fallidos }, error: { code: "RECON_FAIL", message: err?.message } };
+    }
 }
+
+export default {
+    registrarEventoEconomico,
+    getEventoPorId,
+    reconciliarProyecciones,
+    _getNextSequenceInternal,
+};
