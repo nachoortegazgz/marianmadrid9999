@@ -1,0 +1,476 @@
+# Matriz de correspondencia de IDs nativas — v5009 → v5009-V20
+
+**Uso:** refactor mecánico. Columna `old` es el ID nativa vigente en el código backend actual. Columna `new` es el ID nativa con la directriz V20 (inglés camelCase). Columna `visible` es el nombre en español que se muestra en CMS/UI.
+
+**Leyenda tipo:** `SYS` = system auto · `TXT` = Text · `NUM` = Number · `BOOL` = Boolean · `DATE` = Date · `DT` = DateTime · `OBJ` = Object · `ARR` = Array · `URL` = URL · `ENUM` = Text con valores fijos.
+
+---
+
+## 1. `DatosFiscales`
+
+| # | old (español) | new (inglés V20) | visible (español) | tipo |
+|---|---|---|---|---|
+| 1 | `_id` | `_id` | id | SYS |
+| 2 | `_createdDate` | `_createdDate` | fechaCreacion | SYS |
+| 3 | `_updatedDate` | `_updatedDate` | fechaActualizacion | SYS |
+| 4 | `_owner` | `_owner` | propietario | SYS |
+| 5 | `nifCif` | `taxId` | nifCif | TXT |
+| 6 | `razonSocial` | `legalName` | razonSocial | TXT |
+| 7 | `tipoTercero` | `thirdPartyType` | tipoTercero | ENUM |
+| 8 | `datosContacto` | `contactData` | datosContacto | OBJ |
+| 9 | `regimenesEspeciales` | `specialRegimes` | regimenesEspeciales | OBJ |
+| 10 | `esMinoristaRecargoEquivalencia` | `isRetailerEquivalenceSurcharge` | esMinoristaRecargoEquivalencia | BOOL |
+| 11 | `esEmpresarioProfesional` | `isBusinessProfessional` | esEmpresarioProfesional | BOOL |
+| 12 | `resourceIdBookings` | `bookingsResourceId` | recursoIdReservas | TXT |
+| 13 | `staffMemberId` | `staffMemberId` | personalMiembroId | TXT |
+| 14 | `esProveedorHabitual` | `isRegularSupplier` | esProveedorHabitual | BOOL |
+| 15 | `condicionesPago` | `paymentTerms` | condicionesPago | OBJ |
+| 16 | `activo` | `active` | activo | BOOL |
+| 17 | `traceIdAlta` | `registrationTraceId` | trazaIdAlta | TXT |
+| 18 | `sistemaInformatico` | `computerSystem` | sistemaInformatico | OBJ |
+| 19 | `nifProductor` | `producerTaxId` | nifProductor | TXT |
+| 20 | `nombreRazonProductor` | `producerLegalName` | nombreRazonProductor | TXT |
+| 21 | `idSistemaInformatico` | `computerSystemId` | idSistemaInformatico | TXT |
+| 22 | `version` | `version` | version | TXT |
+| 23 | `numeroInstalacion` | `installationNumber` | numeroInstalacion | TXT |
+| 24 | `tipoUsoPosibleSoloVerifactu` | `possibleUseOnlyVerifactu` | tipoUsoPosibleSoloVerifactu | ENUM |
+| 25 | `tipoUsoPosibleMultiOT` | `possibleUseMultiOT` | tipoUsoPosibleMultiOT | ENUM |
+| 26 | `indicadorMultiplesOT` | `multipleOTIndicator` | indicadorMultiplesOT | ENUM |
+| 27 | `fechaInicioVerifactu` | `verifactuStartDate` | fechaInicioVerifactu | DATE |
+
+---
+
+## 2. `MapaStaff`
+
+| # | old | new | visible | tipo |
+|---|---|---|---|---|
+| 1 | `_id` | `_id` | id | SYS |
+| 2 | `staffMemberId` | `staffMemberId` | personalMiembroId | TXT |
+| 3 | `resourceId` | `resourceId` | recursoId | TXT |
+| 4 | `nombre` | `name` | nombre | TXT |
+| 5 | `terceroId` | `thirdPartyId` | terceroId | TXT |
+
+---
+
+## 3. `ServiciosCatalogo`
+
+| # | old | new | visible | tipo |
+|---|---|---|---|---|
+| 1 | `_id` | `_id` | id | SYS |
+| 2 | `_createdDate` | `_createdDate` | fechaCreacion | SYS |
+| 3 | `_updatedDate` | `_updatedDate` | fechaActualizacion | SYS |
+| 4 | `_owner` | `_owner` | propietario | SYS |
+| 5 | `serviceId` | `serviceId` | servicioId | TXT |
+| 6 | `slugUrl` | `slugUrl` | slugUrl | TXT |
+| 7 | `title` | `title` | titulo | TXT |
+| 8 | `price` | `price` | precio | NUM |
+| 9 | `currency` | `currency` | moneda | TXT |
+| 10 | `sku` | `sku` | sku | TXT |
+| 11 | `allowCombine` | `allowCombine` | permitirCombinar | BOOL |
+| 12 | `linkedPhases` | `linkedPhases` | enlazadaFases | TXT |
+| 13 | `phase1Duration` | `phase1Duration` | fase1Duracion | NUM |
+| 14 | `phase2Duration` | `phase2Duration` | fase2Duracion | NUM |
+| 15 | `exposureDuration` | `exposureDuration` | exposicionDuracion | NUM |
+| 16 | `totalDuration` | `totalDuration` | totalDuracion | NUM |
+| 17 | `durationRange` | `durationRange` | duracionRango | OBJ |
+| 18 | `availableStaff` | `availableStaff` | disponiblePersonal | TXT |
+| 19 | `addOnOptions` | `addOnOptions` | complementoOpciones | ARR |
+| 20 | `hidden` | `hidden` | oculto | BOOL |
+| 21 | `taxIncluded` | `taxIncluded` | impuestoIncluido | BOOL |
+| 22 | `taxRate` | `taxRate` | impuestoTasa | NUM |
+| 23 | `naturalezaItem` | `itemNature` | naturalezaItem | ENUM |
+| 24 | `codigoImpuesto` | `taxCode` | codigoImpuesto | ENUM |
+| 25 | `claveRegimenAEAT` | `aeatRegimeKey` | claveRegimenAEAT | ENUM |
+| 26 | `calificacionOperacionAEAT` | `aeatOperationClassification` | calificacionOperacionAEAT | ENUM |
+| 27 | `operacionExentaAEAT` | `aeatExemptOperation` | operacionExentaAEAT | ENUM |
+| 28 | `inversionSujetoPasivo` | `reverseCharge` | inversionSujetoPasivo | BOOL |
+| 29 | `cuentaContableIngreso` | `incomeAccountCode` | cuentaContableIngreso | TXT |
+| 30 | `cuentaContableGasto` | `expenseAccountCode` | cuentaContableGasto | TXT |
+| 31 | `activo` | `active` | activo | BOOL |
+
+---
+
+## 4. `ComplementosCatalogo`
+
+| # | old | new | visible | tipo |
+|---|---|---|---|---|
+| 1 | `_id` | `_id` | id | SYS |
+| 2 | `codigoImpuesto` | `taxCode` | codigoImpuesto | ENUM |
+| 3 | `claveRegimenAEAT` | `aeatRegimeKey` | claveRegimenAEAT | TXT |
+| 4 | `cuentaContableIngreso` | `incomeAccountCode` | cuentaContableIngreso | TXT |
+| 5 | `naturalezaItem` | `itemNature` | naturalezaItem | ENUM |
+
+---
+
+## 5. `MovimientosCaja`
+
+| # | old | new | visible | tipo |
+|---|---|---|---|---|
+| 1 | `_id` | `_id` | id | SYS |
+| 2 | `_createdDate` | `_createdDate` | fechaCreacion | SYS |
+| 3 | `_updatedDate` | `_updatedDate` | fechaActualizacion | SYS |
+| 4 | `_owner` | `_owner` | propietario | SYS |
+| 5 | `amount` | `amount` | importeTotalLegacy | NUM |
+| 6 | `importeTotal` | `totalAmount` | importeTotal | NUM |
+| 7 | `paymentMethod` | `paymentMethod` | medioCobro | ENUM |
+| 8 | `tipoMovimiento` | `movementType` | tipoMovimiento | ENUM |
+| 9 | `concept` | `concept` | descripcionOperacionLegacy | TXT |
+| 10 | `descripcionOperacion` | `operationDescription` | descripcionOperacion | TXT |
+| 11 | `resourceId` | `resourceId` | recursoId | TXT |
+| 12 | `staffResourceId` | `staffResourceId` | personalRecursoId | TXT |
+| 13 | `channelType` | `channelType` | canalTipo | ENUM |
+| 14 | `reservaIdVinculada` | `linkedBookingIds` | reservaIdVinculada | TXT |
+| 15 | `transactionId` | `transactionId` | transaccionId | TXT |
+| 16 | `orderId` | `orderId` | pedidoId | TXT |
+| 17 | `schemaVersion` | `schemaVersion` | esquemaVersion | TXT |
+| 18 | `hash` | `hash` | huellaLegacy | TXT |
+| 19 | `huella` | `recordHash` | huella | TXT |
+| 20 | `prevHash` | `prevHash` | huellaAnteriorLegacy | TXT |
+| 21 | `huellaAnterior` | `previousRecordHash` | huellaAnterior | TXT |
+| 22 | `registeredAt` | `registeredAt` | fechaHoraHusoGenRegistroLegacy | DT |
+| 23 | `fechaHoraHusoGenRegistro` | `recordTimestamp` | fechaHoraHusoGenRegistro | TXT |
+| 24 | `generationTimestamp` | `generationTimestamp` | generationTimestamp | OBJ |
+| 25 | `numSerieFactura` | `invoiceNumber` | numSerieFactura | TXT |
+| 26 | `fechaExpedicionFactura` | `invoiceIssueDate` | fechaExpedicionFactura | DATE |
+| 27 | `fechaOperacion` | `operationDate` | fechaOperacion | DATE |
+| 28 | `tipoFactura` | `invoiceType` | tipoFactura | ENUM |
+| 29 | `tipoRectificativa` | `correctionType` | tipoRectificativa | ENUM |
+| 30 | `importeRectificacion` | `correctionAmount` | importeRectificacion | OBJ |
+| 31 | `baseImponibleOImporteNoSujeto` | `taxableBaseOrNonSubjectAmount` | baseImponibleOImporteNoSujeto | NUM |
+| 32 | `cuotaTotal` | `taxAmount` | cuotaTotal | NUM |
+| 33 | `tipoImpositivo` | `taxRate` | tipoImpositivo | NUM |
+| 34 | `tipoRecargoEquivalencia` | `surchargeRate` | tipoRecargoEquivalencia | NUM |
+| 35 | `cuotaRecargoEquivalencia` | `surchargeAmount` | cuotaRecargoEquivalencia | NUM |
+| 36 | `importeRetencionIRPF` | `irpfWithholdingAmount` | importeRetencionIRPF | NUM |
+| 37 | `tipoRetencionIRPF` | `irpfWithholdingRate` | tipoRetencionIRPF | NUM |
+| 38 | `baseImponibleRetencion` | `withholdingBase` | baseImponibleRetencion | NUM |
+| 39 | `nifEmisor` | `issuerTaxId` | nifEmisor | TXT |
+| 40 | `nombreRazonEmisor` | `issuerLegalName` | nombreRazonEmisor | TXT |
+| 41 | `nifDestinatario` | `recipientTaxId` | nifDestinatario | TXT |
+| 42 | `nombreRazonDestinatario` | `recipientLegalName` | nombreRazonDestinatario | TXT |
+| 43 | `domicilioDestinatario` | `recipientAddress` | domicilioDestinatario | OBJ |
+| 44 | `emitidaPorTerceroODestinatario` | `issuedByThirdPartyOrRecipient` | emitidaPorTerceroODestinatario | ENUM |
+| 45 | `nombreRazonTercero` | `thirdPartyLegalName` | nombreRazonTercero | TXT |
+| 46 | `nifTerceroExpedidor` | `issuerThirdPartyTaxId` | nifTerceroExpedidor | TXT |
+| 47 | `causaNoSujeta` | `nonSubjectReason` | causaNoSujeta | ENUM |
+| 48 | `inversionSujetoPasivo` | `reverseCharge` | inversionSujetoPasivo | BOOL |
+| 49 | `claveRegimen` | `regimeKey` | claveRegimen | ENUM |
+| 50 | `calificacionOperacion` | `operationClassification` | calificacionOperacion | ENUM |
+| 51 | `operacionExenta` | `exemptOperation` | operacionExenta | ENUM |
+| 52 | `regimenEspecialCriterioCaja` | `cashBasisRegime` | regimenEspecialCriterioCaja | BOOL |
+| 53 | `exentaPorArticulo20` | `article20Exempt` | exentaPorArticulo20 | BOOL |
+| 54 | `desgloseDetallado` | `detailedBreakdown` | desgloseDetallado | ARR |
+| 55 | `sistemaInformatico` | `computerSystem` | sistemaInformatico | OBJ |
+| 56 | `idFacturaAnterior` | `previousInvoiceId` | idFacturaAnterior | TXT |
+| 57 | `numSerieFacturaAnterior` | `previousInvoiceNumber` | numSerieFacturaAnterior | TXT |
+| 58 | `fechaExpedicionFacturaAnterior` | `previousInvoiceIssueDate` | fechaExpedicionFacturaAnterior | DATE |
+| 59 | `estadoEnvioAeat` | `aeatSubmissionStatus` | estadoEnvioAeat | ENUM |
+| 60 | `csvAeat` | `aeatCsv` | csvAeat | TXT |
+| 61 | `fechaEnvioAeat` | `aeatSubmissionDate` | fechaEnvioAeat | DATE |
+| 62 | `tipoEvento` | `eventType` | tipoEvento | ENUM |
+| 63 | `terceroId` | `thirdPartyId` | terceroId | TXT |
+| 64 | `catalogoId` | `catalogId` | catalogoId | TXT |
+| 65 | `pairToken` | `pairToken` | parToken | TXT |
+| 66 | `payloadFiscal` | `fiscalPayload` | payloadFiscal | OBJ |
+| 67 | `sequenceNumber` | `sequenceNumber` | secuenciaNumerica | NUM |
+| 68 | `proyeccionEstado` | `projectionStatus` | proyeccionEstado | ENUM |
+| 69 | `proyeccionDetalleIds` | `projectionDetailIds` | proyeccionDetalleIds | ARR |
+| 70 | `traceId` | `traceId` | trazaId | TXT |
+
+---
+
+## 6. `LibroAsientosContablesDetalle`
+
+| # | old | new | visible | tipo |
+|---|---|---|---|---|
+| 1 | `_id` | `_id` | id | SYS |
+| 2 | `_createdDate` | `_createdDate` | fechaCreacion | SYS |
+| 3 | `lineHash` | `lineHash` | lineaHuella | TXT |
+| 4 | `baseImponibleOImporteNoSujeto` | `taxableBaseOrNonSubjectAmount` | baseImponibleOImporteNoSujeto | NUM |
+| 5 | `tipoImpositivo` | `taxRate` | tipoImpositivo | NUM |
+| 6 | `cuotaRepercutida` | `chargedTaxAmount` | cuotaRepercutida | NUM |
+| 7 | `eventoOrigenId` | `sourceEventId` | eventoOrigenId | TXT |
+| 8 | `numeroLinea` | `lineNumber` | numeroLinea | NUM |
+| 9 | `terceroId` | `thirdPartyId` | terceroId | TXT |
+| 10 | `catalogoId` | `catalogId` | catalogoId | TXT |
+| 11 | `descripcionOperacion` | `operationDescription` | descripcionOperacion | TXT |
+| 12 | `unidades` | `units` | unidades | NUM |
+| 13 | `magnitud` | `magnitude` | magnitud | NUM |
+| 14 | `importeNetoUnitario` | `netUnitAmount` | importeNetoUnitario | NUM |
+| 15 | `codigoImpuesto` | `taxCode` | codigoImpuesto | ENUM |
+| 16 | `claveRegimen` | `regimeKey` | claveRegimen | ENUM |
+| 17 | `calificacionOperacion` | `operationClassification` | calificacionOperacion | ENUM |
+| 18 | `operacionExenta` | `exemptOperation` | operacionExenta | ENUM |
+| 19 | `inversionSujetoPasivo` | `reverseCharge` | inversionSujetoPasivo | BOOL |
+| 20 | `cuentaContable` | `accountCode` | cuentaContable | TXT |
+| 21 | `tipoRecargoEquivalencia` | `surchargeRate` | tipoRecargoEquivalencia | NUM |
+| 22 | `cuotaRecargoEquivalencia` | `surchargeAmount` | cuotaRecargoEquivalencia | NUM |
+| 23 | `importeRetencionIRPF` | `irpfWithholdingAmount` | importeRetencionIRPF | NUM |
+| 24 | `tipoRetencionIRPF` | `irpfWithholdingRate` | tipoRetencionIRPF | NUM |
+
+---
+
+## 7. `AsientosContables`
+
+| # | old | new | visible | tipo |
+|---|---|---|---|---|
+| 1 | `_id` | `_id` | id | SYS |
+| 2 | `_createdDate` | `_createdDate` | fechaCreacion | SYS |
+| 3 | `_updatedDate` | `_updatedDate` | fechaActualizacion | SYS |
+| 4 | `_owner` | `_owner` | propietario | SYS |
+| 5 | `sequenceNumber` | `sequenceNumber` | secuenciaNumerica | NUM |
+| 6 | `operationDate` | `operationDate` | fechaOperacion | DATE |
+| 7 | `fiscalPeriod` | `fiscalPeriod` | periodoFiscal | TXT |
+| 8 | `entryStatus` | `entryStatus` | estadoAsiento | ENUM |
+| 9 | `journalEntryId` | `journalEntryId` | idAsientoDiario | TXT |
+| 10 | `previousHash` | `previousHash` | huellaAnteriorLegacy | TXT |
+| 11 | `hashOrigen` | `sourceHash` | huellaOrigen | TXT |
+| 12 | `invoiceNumber` | `invoiceNumber` | numSerieFactura | TXT |
+| 13 | `totalDocumentAmount` | `totalDocumentAmount` | importeTotalDocumento | NUM |
+| 14 | `eventoOrigenId` | `sourceEventId` | eventoOrigenId | TXT |
+| 15 | `terceroId` | `thirdPartyId` | terceroId | TXT |
+| 16 | `payloadFiscalSnapshot` | `fiscalPayloadSnapshot` | payloadFiscalSnapshot | OBJ |
+| 17 | `desgloseDetallado` | `detailedBreakdown` | desgloseDetallado | ARR |
+| 18 | `claveRegimen` | `regimeKey` | claveRegimen | TXT |
+| 19 | `calificacionOperacion` | `operationClassification` | calificacionOperacion | TXT |
+| 20 | `operacionExenta` | `exemptOperation` | operacionExenta | TXT |
+| 21 | `inversionSujetoPasivo` | `reverseCharge` | inversionSujetoPasivo | BOOL |
+| 22 | `sistemaInformatico` | `computerSystem` | sistemaInformatico | OBJ |
+| 23 | `huella` | `recordHash` | huella | TXT |
+| 24 | `huellaAnterior` | `previousRecordHash` | huellaAnterior | TXT |
+| 25 | `idFacturaAnterior` | `previousInvoiceId` | idFacturaAnterior | TXT |
+| 26 | `numSerieFacturaAnterior` | `previousInvoiceNumber` | numSerieFacturaAnterior | TXT |
+| 27 | `fechaExpedicionFacturaAnterior` | `previousInvoiceIssueDate` | fechaExpedicionFacturaAnterior | DATE |
+
+**Eliminados:** `sourceHash` (= `hashOrigen` → `sourceHash`), `externalReference` (= `invoiceNumber`).
+
+---
+
+## 8. `HistoricoCierresZ`
+
+| # | old | new | visible | tipo |
+|---|---|---|---|---|
+| 1 | `_id` | `_id` | id | SYS |
+| 2 | `_createdDate` | `_createdDate` | fechaCreacion | SYS |
+| 3 | `operationDate` | `operationDate` | fechaOperacion | DATE |
+| 4 | `saldosPorMetodo` | `balancesByMethod` | saldosPorMetodo | OBJ |
+| 5 | `eventoOrigenId` | `sourceEventId` | eventoOrigenId | TXT |
+| 6 | `desglosePorRegimen` | `breakdownByRegime` | desglosePorRegimen | ARR |
+| 7 | `desglosePorTipoOperacion` | `breakdownByOperationType` | desglosePorTipoOperacion | ARR |
+| 8 | `desglosePorTipoImpositivo` | `breakdownByTaxRate` | desglosePorTipoImpositivo | ARR |
+| 9 | `resumenVerifactu` | `verifactuSummary` | resumenVerifactu | OBJ |
+| 10 | `estadoEnvioAeat` | `aeatSubmissionStatus` | estadoEnvioAeat | ENUM |
+| 11 | `fechaEnvioAeat` | `aeatSubmissionDate` | fechaEnvioAeat | DATE |
+| 12 | `respuestaAeat` | `aeatResponse` | respuestaAeat | OBJ |
+| 13 | `csvAeat` | `aeatCsv` | csvAeat | TXT |
+
+---
+
+## 9. `FacturasRecibidas`
+
+| # | old | new | visible | tipo |
+|---|---|---|---|---|
+| 1 | `_id` | `_id` | id | SYS |
+| 2 | `_createdDate` | `_createdDate` | fechaCreacion | SYS |
+| 3 | `_updatedDate` | `_updatedDate` | fechaActualizacion | SYS |
+| 4 | `numeroRecepcion` | `receptionNumber` | numeroRecepcion | TXT |
+| 5 | `numSerieFactura` | `invoiceNumber` | numSerieFactura | TXT |
+| 6 | `fechaExpedicionFactura` | `invoiceIssueDate` | fechaExpedicionFactura | DATE |
+| 7 | `fechaOperacion` | `operationDate` | fechaOperacion | DATE |
+| 8 | `fechaRecepcion` | `receptionDate` | fechaRecepcion | DATE |
+| 9 | `fechaRegistroContable` | `accountingEntryDate` | fechaRegistroContable | DATE |
+| 10 | `terceroId` | `thirdPartyId` | terceroId | TXT |
+| 11 | `nifEmisor` | `issuerTaxId` | nifEmisor | TXT |
+| 12 | `nombreRazonEmisor` | `issuerLegalName` | nombreRazonEmisor | TXT |
+| 13 | `nifDestinatario` | `recipientTaxId` | nifDestinatario | TXT |
+| 14 | `nombreRazonDestinatario` | `recipientLegalName` | nombreRazonDestinatario | TXT |
+| 15 | `tipoFactura` | `invoiceType` | tipoFactura | ENUM |
+| 16 | `descripcionOperacion` | `operationDescription` | descripcionOperacion | TXT |
+| 17 | `importeTotal` | `totalAmount` | importeTotal | NUM |
+| 18 | `baseImponibleTotal` | `totalTaxableBase` | baseImponibleTotal | NUM |
+| 19 | `cuotaIvaTotal` | `totalVatAmount` | cuotaIvaTotal | NUM |
+| 20 | `cuotaRecargoEquivalencia` | `surchargeAmount` | cuotaRecargoEquivalencia | NUM |
+| 21 | `importeRetencionIRPF` | `irpfWithholdingAmount` | importeRetencionIRPF | NUM |
+| 22 | `tipoRetencionIRPF` | `irpfWithholdingRate` | tipoRetencionIRPF | NUM |
+| 23 | `desgloseDetallado` | `detailedBreakdown` | desgloseDetallado | ARR |
+| 24 | `claveRegimen` | `regimeKey` | claveRegimen | TXT |
+| 25 | `calificacionOperacion` | `operationClassification` | calificacionOperacion | TXT |
+| 26 | `operacionExenta` | `exemptOperation` | operacionExenta | TXT |
+| 27 | `inversionSujetoPasivo` | `reverseCharge` | inversionSujetoPasivo | BOOL |
+| 28 | `regimenEspecial` | `specialRegime` | regimenEspecial | OBJ |
+| 29 | `deducible` | `deductible` | deducible | BOOL |
+| 30 | `porcentajeDeduccion` | `deductionPercentage` | porcentajeDeduccion | NUM |
+| 31 | `cuotaDeducible` | `deductibleAmount` | cuotaDeducible | NUM |
+| 32 | `estadoPago` | `paymentStatus` | estadoPago | ENUM |
+| 33 | `fechaPago` | `paymentDate` | fechaPago | DATE |
+| 34 | `medioPago` | `paymentMethod` | medioPago | ENUM |
+| 35 | `cuentaContableGasto` | `expenseAccountCode` | cuentaContableGasto | TXT |
+| 36 | `cuentaContableIva` | `vatAccountCode` | cuentaContableIva | TXT |
+| 37 | `cuentaContableProveedor` | `supplierAccountCode` | cuentaContableProveedor | TXT |
+| 38 | `asientoContableId` | `accountingEntryId` | asientoContableId | TXT |
+| 39 | `eventoOrigenId` | `sourceEventId` | eventoOrigenId | TXT |
+| 40 | `facturaRectificadaId` | `correctedInvoiceId` | facturaRectificadaId | TXT |
+| 41 | `motivoRectificacion` | `correctionReason` | motivoRectificacion | TXT |
+| 42 | `documentoAdjuntoUrl` | `attachmentUrl` | documentoAdjuntoUrl | URL |
+| 43 | `archivoHash` | `fileHash` | archivoHash | TXT |
+| 44 | `origenRecepcion` | `receptionSource` | origenRecepcion | ENUM |
+| 45 | `estadoValidacion` | `validationStatus` | estadoValidacion | ENUM |
+| 46 | `traceId` | `traceId` | trazaId | TXT |
+
+---
+
+## 10. `CitasF2`
+
+| # | old | new | visible | tipo |
+|---|---|---|---|---|
+| 1 | `_id` | `_id` | id | SYS |
+| 2 | `_createdDate` | `_createdDate` | fechaCreacion | SYS |
+| 3 | `_updatedDate` | `_updatedDate` | fechaActualizacion | SYS |
+| 4 | `bookingId` | `bookingId` | reservaId | TXT |
+| 5 | `pairToken` | `pairToken` | parToken | TXT |
+| 6 | `revision` | `revision` | revision | NUM |
+| 7 | `serviceId` | `serviceId` | servicioId | TXT |
+| 8 | `scheduleId` | `scheduleId` | horarioId | TXT |
+| 9 | `resourceId` | `resourceId` | recursoId | TXT |
+| 10 | `staffResourceId` | `staffResourceId` | personalRecursoId | TXT |
+| 11 | `startDate` | `startDate` | inicioFecha | DT |
+| 12 | `endDate` | `endDate` | finFecha | DT |
+| 13 | `dateYmd` | `dateYmd` | fechaYmd | TXT |
+| 14 | `bookingType` | `bookingType` | reservaTipo | ENUM |
+| 15 | `status` | `status` | estado | ENUM |
+| 16 | `paymentStatus` | `paymentStatus` | pagoEstado | ENUM |
+| 17 | `meta` | `meta` | meta | OBJ |
+| 18 | `contactDetails` | `contactDetails` | contactoDetalles | OBJ |
+| 19 | `terceroId` | `thirdPartyId` | terceroId | TXT |
+| 20 | `catalogoId` | `catalogId` | catalogoId | TXT |
+| 21 | `eventoOrigenId` | `sourceEventId` | eventoOrigenId | TXT |
+| 22 | `datosFiscales` | `fiscalData` | datosFiscales | OBJ |
+| 23 | `movimientoCajaId` | `cashMovementId` | movimientoCajaId | TXT |
+| 24 | `fechaFacturacion` | `invoicingDate` | fechaFacturacion | DATE |
+| 25 | `traceId` | `traceId` | trazaId | TXT |
+
+---
+
+## 11. `MovimientosInventario`
+
+| # | old | new | visible | tipo |
+|---|---|---|---|---|
+| 1 | `_id` | `_id` | id | SYS |
+| 2 | `wixProductId` | `wixProductId` | wixProductoId | TXT |
+| 3 | `sku` | `sku` | sku | TXT |
+| 4 | `orderId` | `orderId` | pedidoId | TXT |
+| 5 | `refundId` | `refundId` | reembolsoId | TXT |
+| 6 | `eventoOrigenId` | `sourceEventId` | eventoOrigenId | TXT |
+| 7 | `catalogoId` | `catalogId` | catalogoId | TXT |
+| 8 | `magnitud` | `magnitude` | magnitud | NUM |
+| 9 | `terceroId` | `thirdPartyId` | terceroId | TXT |
+| 10 | `traceId` | `traceId` | trazaId | TXT |
+
+---
+
+## 12. `RegistrosHorariosStaff`
+
+| # | old | new | visible | tipo |
+|---|---|---|---|---|
+| 1 | `_id` | `_id` | id | SYS |
+| 2 | `resourceId` | `resourceId` | recursoId | TXT |
+| 3 | `fecha` | `date` | fecha | DATE |
+| 4 | `horas` | `hours` | horas | NUM |
+| 5 | `eventoOrigenId` | `sourceEventId` | eventoOrigenId | TXT |
+| 6 | `terceroId` | `thirdPartyId` | terceroId | TXT |
+| 7 | `traceId` | `traceId` | trazaId | TXT |
+
+---
+
+## 13. `CompensacionesPendientes`
+
+| # | old | new | visible | tipo |
+|---|---|---|---|---|
+| 1 | `_id` | `_id` | id | SYS |
+| 2 | `kind` | `kind` | tipo | ENUM |
+| 3 | `status` | `status` | estado | ENUM |
+| 4 | `attempts` | `attempts` | intentos | NUM |
+| 5 | `errorCode` | `errorCode` | errorCodigo | TXT |
+| 6 | `errorMessage` | `errorMessage` | errorMensaje | TXT |
+| 7 | `eventoOrigenId` | `sourceEventId` | eventoOrigenId | TXT |
+| 8 | `terceroId` | `thirdPartyId` | terceroId | TXT |
+| 9 | `traceId` | `traceId` | trazaId | TXT |
+
+---
+
+## 14. `ConfiguracionFiscal`
+
+| # | old | new | visible | tipo |
+|---|---|---|---|---|
+| 1 | `_id` | `_id` | id | SYS |
+| 2 | `sistemaInformatico` | `computerSystem` | sistemaInformatico | OBJ |
+| 3 | `nifProductor` | `producerTaxId` | nifProductor | TXT |
+| 4 | `nombreRazonProductor` | `producerLegalName` | nombreRazonProductor | TXT |
+| 5 | `idSistemaInformatico` | `computerSystemId` | idSistemaInformatico | TXT |
+| 6 | `version` | `version` | version | TXT |
+| 7 | `numeroInstalacion` | `installationNumber` | numeroInstalacion | TXT |
+| 8 | `tipoUsoPosibleSoloVerifactu` | `possibleUseOnlyVerifactu` | tipoUsoPosibleSoloVerifactu | ENUM |
+| 9 | `tipoUsoPosibleMultiOT` | `possibleUseMultiOT` | tipoUsoPosibleMultiOT | ENUM |
+| 10 | `indicadorMultiplesOT` | `multipleOTIndicator` | indicadorMultiplesOT | ENUM |
+| 11 | `fechaInicioVerifactu` | `verifactuStartDate` | fechaInicioVerifactu | DATE |
+
+---
+
+## Resumen cuantitativo
+
+| Colección | Total campos | Renombrados old→new | Sin cambio |
+|---|---:|---:|---:|
+| `DatosFiscales` | 27 | 22 | 5 |
+| `MapaStaff` | 5 | 2 | 3 |
+| `ServiciosCatalogo` | 31 | 12 | 19 |
+| `ComplementosCatalogo` | 5 | 4 | 1 |
+| `MovimientosCaja` | 70 | 45 | 25 |
+| `LibroAsientosContablesDetalle` | 24 | 17 | 7 |
+| `AsientosContables` | 27 | 13 | 14 |
+| `HistoricoCierresZ` | 13 | 7 | 6 |
+| `FacturasRecibidas` | 46 | 30 | 16 |
+| `CitasF2` | 25 | 8 | 17 |
+| `MovimientosInventario` | 10 | 5 | 5 |
+| `RegistrosHorariosStaff` | 7 | 4 | 3 |
+| `CompensacionesPendientes` | 9 | 3 | 6 |
+| `ConfiguracionFiscal` | 11 | 6 | 5 |
+| **TOTAL** | **310** | **178** | **132** |
+
+---
+
+## Patrones de traducción aplicados (referencia)
+
+| Patrón español | Patrón inglés | Ejemplo |
+|---|---|---|
+| `nif*` | `*taxId` | `nifEmisor` → `issuerTaxId` |
+| `nombreRazon*` | `*legalName` | `nombreRazonEmisor` → `issuerLegalName` |
+| `fecha*` (como emisión) | `*Date` | `fechaExpedicionFactura` → `invoiceIssueDate` |
+| `importe*` | `*Amount` | `importeTotal` → `totalAmount` |
+| `cuota*` | `*Amount` / `*TaxAmount` | `cuotaTotal` → `taxAmount` |
+| `tipo*` (categoría) | `*Type` | `tipoFactura` → `invoiceType` |
+| `*Tasa` (ratio) | `*Rate` | `impuestoTasa` → `taxRate` |
+| `claveRegimen` | `regimeKey` | — |
+| `numero*` | `*Number` | `numeroLinea` → `lineNumber` |
+| `*Id` (FK) | `*Id` (sin cambio) | `terceroId` → `thirdPartyId` |
+| `*Vinculada` | `*Linked` | `reservaIdVinculada` → `linkedBookingIds` |
+| `*Origen` | `source*` | `eventoOrigenId` → `sourceEventId` |
+| `descripcion*` | `*Description` | `descripcionOperacion` → `operationDescription` |
+| `*Aeat` | `aeat*` | `estadoEnvioAeat` → `aeatSubmissionStatus` |
+
+---
+
+## Excepciones (ID permanece en español por obligación AEAT)
+
+Solo el **contenido** de estos objetos mantiene nombres AEAT oficiales en español, no sus claves de colección:
+
+- `MovimientosCaja.fiscalPayload` — cuerpo JSON con nombres AEAT (`IDEmisorFactura`, `NumSerieFactura`, etc.)
+- `MovimientosCaja.computerSystem` — snapshot que replica estructura oficial
+- `AsientosContables.fiscalPayloadSnapshot` — copia del anterior
+- `ConfiguracionFiscal.computerSystem` — idem
+- `LibroAsientosContablesDetalle.detailedBreakdown[]` — cada línea contiene nombres AEAT dentro del objeto
+
+**Razón:** AEAT exige esos nombres literales en el JSON firmado y enviado. La directriz V20 se aplica a los **IDs de colección**, no al payload normativo.
+
+---
+
+**Uso recomendado:** esta matriz es el input directo de un script de migración/refactor mecánico. Los patrones de traducción permiten auditar que no falte ningún campo. Los anexos indican dónde NO aplicar la traducción.

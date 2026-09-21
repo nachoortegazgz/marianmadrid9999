@@ -1,0 +1,1040 @@
+# SSOT CMS v5009-FISCAL-V20 — Nomenclatura inglesa íntegra
+
+**Directriz V20 aplicada:**
+- **ID nativa:** 100% inglés camelCase. Excepción: campos sistema Wix (`_id`, `_createdDate`, `_updatedDate`, `_owner`).
+- **Nombre visible:** siempre español. Para contables/AEAT se usa nomenclatura AEAT en español.
+- **Valores enum:** permanecen en MAYÚSCULAS español (son datos, no IDs).
+- **`fiscalPayload` interno:** mantiene nombres AEAT oficiales en español por obligación normativa. Es el único lugar.
+
+---
+
+# GRUPO A — Maestros de identidad
+
+## A.1 `DatosFiscales` *(contable — AEAT)*
+
+| ID nativa | Nombre visible | Qué es | Origen | Notas / Inferidos |
+|---|---|---|---|---|
+| `_id` | id | Clave primaria UUID | Auto Wix | Inmutable |
+| `_createdDate` | fechaCreacion | Sello de alta | Auto Wix | Inmutable |
+| `_updatedDate` | fechaActualizacion | Sello de última modificación | Auto Wix | Se actualiza en cada save |
+| `_owner` | propietario | Usuario Wix que creó el registro | Auto Wix | Auditoría |
+| `taxId` | nifCif | NIF / CIF / NIE / VAT UE | Manual UI + validación hook | Checksum AEAT en `data.js`. Inferido: tipo (DNI/NIE/CIF) por regex |
+| `legalName` | razonSocial | Nombre legal o completo | Manual UI | Uppercase forzado en hook. Personas: `APELLIDO1 APELLIDO2 NOMBRE` |
+| `thirdPartyType` | tipoTercero | Categoría operativa | Manual UI | Enum CLIENTE / PROVEEDOR / STAFF / AAPP / MIXTO |
+| `contactData` | datosContacto | Bloque JSON dirección y contacto | Manual UI + API Bookings | `{email, tel, cp, direccion, municipio, provincia, pais}`. Cierra hueco AEAT `domicilioDestinatario` |
+| `specialRegimes` | regimenesEspeciales | Flags booleanos regímenes AEAT | Manual UI | `{criterioCaja, reagp, rebu, oro, agenciasViajes, grupo, entidades, hipotecario}` |
+| `isRetailerEquivalenceSurcharge` | esMinoristaRecargoEquivalencia | Marca minorista RE | Manual UI | Condición necesaria para `surchargeRate > 0` |
+| `isBusinessProfessional` | esEmpresarioProfesional | Marca empresario/profesional | Manual UI | Exige `contactData.cp` en facturas F2 |
+| `bookingsResourceId` | recursoIdReservas | GUID recurso Bookings | API Bookings + MapaStaff | Solo `thirdPartyType = STAFF`. Puente con `MapaStaff.resourceId` |
+| `staffMemberId` | personalMiembroId | ID miembro Wix Members | API Wix Members | Solo `thirdPartyType = STAFF` |
+| `isRegularSupplier` | esProveedorHabitual | Proveedor recurrente | Manual UI | Sustituye `ProveedoresLista` deprecada |
+| `paymentTerms` | condicionesPago | Días pago y forma pactada | Manual UI | `{dias, formaPago}` |
+| `active` | activo | Soft delete | Manual UI | No se borran terceros |
+| `registrationTraceId` | trazaIdAlta | Trace del alta | Backend | Correlación forense |
+| `computerSystem` | sistemaInformatico | Bloque Verifactu | Manual UI | Snapshot productor. Fallback hardcoded |
+| `producerTaxId` | nifProductor | NIF productor software | Manual UI | — |
+| `producerLegalName` | nombreRazonProductor | Nombre productor | Manual UI | — |
+| `computerSystemId` | idSistemaInformatico | ID sistema | Manual UI | — |
+| `version` | version | Versión software | Backend | Deploy |
+| `installationNumber` | numeroInstalacion | Nº instalación | Manual UI | — |
+| `possibleUseOnlyVerifactu` | tipoUsoPosibleSoloVerifactu | S/N | Manual UI | — |
+| `possibleUseMultiOT` | tipoUsoPosibleMultiOT | S/N | Manual UI | — |
+| `multipleOTIndicator` | indicadorMultiplesOT | S/N | Manual UI | — |
+| `verifactuStartDate` | fechaInicioVerifactu | Fecha inicio sistema | Manual UI | — |
+
+## A.2 `MapaStaff` *(no contable)*
+
+| ID nativa | Nombre visible | Qué es | Origen | Notas / Inferidos |
+|---|---|---|---|---|
+| `_id` | id | UUID | Auto Wix | — |
+| `staffMemberId` | personalMiembroId | ID Wix Members | API Members | Unique |
+| `resourceId` | recursoId | GUID recurso Bookings | API Bookings | Unique |
+| `name` | nombre | Nombre visible | API Members | — |
+| `thirdPartyId` | terceroId | FK a `DatosFiscales` | Backend | Obligatorio |
+
+**Nota crítica (falso positivo auditoría):** `staffMemberId` ≠ `resourceId`. Dos sistemas distintos 1:1.
+
+## A.3 `ProveedoresLista` *(no contable — deprecada)*
+
+**Read-only.** Datos viven en `DatosFiscales` con `thirdPartyType = PROVEEDOR`. Alias `_legacyProveedorId` en `FacturasRecibidas` para queries históricas.
+
+---
+
+# GRUPO B — Catálogo
+
+## B.1 `ServiciosCatalogo` *(no contable)*
+
+| ID nativa | Nombre visible | Qué es | Origen | Notas / Inferidos |
+|---|---|---|---|---|
+| `_id` | id | UUID | Auto Wix | — |
+| `_createdDate` | fechaCreacion | Sello alta | Auto Wix | — |
+| `_updatedDate` | fechaActualizacion | Sello modificación | Auto Wix | — |
+| `_owner` | propietario | Creador | Auto Wix | — |
+| `serviceId` | servicioId | GUID servicio Bookings | API Bookings | Índice unique |
+| `slugUrl` | slugUrl | Slug público | Manual UI | URLs amigables |
+| `title` | titulo | Nombre comercial | Manual UI | Copiado de Bookings al sync |
+| `price` | precio | Precio neto unitario | Manual UI | Sin IVA. Inferido: con IVA = `price * (1 + taxRate)` |
+| `currency` | moneda | Moneda del precio | Configuración sitio | EUR en v5009 |
+| `sku` | sku | Código referencia único | Manual UI | Uppercase |
+| `allowCombine` | permitirCombinar | Servicio dual | Manual UI | Si `true`, exige `linkedPhases` GUID |
+| `linkedPhases` | enlazadaFases | GUID servicio F2 | Manual UI | Referencia a otro `ServiciosCatalogo.serviceId` |
+| `phase1Duration` | fase1Duracion | Duración F1 en minutos | Manual UI | Requerido si `allowCombine` |
+| `phase2Duration` | fase2Duracion | Duración F2 en minutos | Manual UI | Requerido si `allowCombine` |
+| `exposureDuration` | exposicionDuracion | Minutos entre F1 y F2 | Manual UI | Gap de exposición |
+| `totalDuration` | totalDuracion | Duración total minutos | Manual UI | Inferido si vacío: `phase1 + exposure + phase2` |
+| `durationRange` | duracionRango | Rango permitido `{min, max}` | Manual UI | Excluye addons |
+| `availableStaff` | disponiblePersonal | CSV GUIDs staff ejecutores | Manual UI + API Bookings | Índice búsqueda |
+| `addOnOptions` | complementoOpciones | Array complementos | Manual UI | Max 5 por booking |
+| `hidden` | oculto | Ocultar del catálogo público | Manual UI | Servicios duales suelen estar ocultos |
+| `taxIncluded` | impuestoIncluido | `price` incluye IVA | Manual UI | Default `false` |
+| `taxRate` | impuestoTasa | Tipo IVA (0.21, 0.10…) | Manual UI | Copia a `MovimientosCaja.taxRate` |
+| `itemNature` | naturalezaItem | Naturaleza analítica | Manual UI | Enum 4 valores |
+| `taxCode` | codigoImpuesto | Código AEAT impuesto | Manual UI | Enum IVA_21/10/4/0, IRPF_15/19, EXENTO |
+| `aeatRegimeKey` | claveRegimenAEAT | Clave L7 AEAT (01–20) | Manual UI | Copia a `MovimientosCaja.regimeKey` |
+| `aeatOperationClassification` | calificacionOperacionAEAT | Calificación S1/S2/N1/N2 | Manual UI | Copia a cabecera |
+| `aeatExemptOperation` | operacionExentaAEAT | Código exención E1–E6 | Manual UI | Opcional |
+| `reverseCharge` | inversionSujetoPasivo | ISP | Manual UI | Exige `taxAmount = 0` |
+| `incomeAccountCode` | cuentaContableIngreso | Cuenta PGC ingreso | Manual UI | 6 dígitos |
+| `expenseAccountCode` | cuentaContableGasto | Cuenta PGC gasto | Manual UI | Para PRODUCTO_USO/GASTO_FIJO |
+| `active` | activo | Soft delete | Manual UI | — |
+
+## B.2 `ComplementosCatalogo` *(no contable)*
+
+| ID nativa | Nombre visible | Qué es | Origen | Notas / Inferidos |
+|---|---|---|---|---|
+| `_id` | id | UUID | Auto Wix | — |
+| (campos existentes) | — | — | — | — |
+| `taxCode` | codigoImpuesto | Código AEAT | Manual UI | — |
+| `aeatRegimeKey` | claveRegimenAEAT | Clave L7 | Manual UI | — |
+| `incomeAccountCode` | cuentaContableIngreso | Cuenta PGC | Manual UI | — |
+| `itemNature` | naturalezaItem | Naturaleza analítica | Manual UI | — |
+
+---
+
+# GRUPO C — Motor fiscal (event sourcing)
+
+## C.1 `MovimientosCaja` *(contable — AEAT)*
+
+**Append-only.** Cabecera del log atómico fiscal. Corrección = nuevo evento `AJUSTE`. `_updatedDate` bloqueado por hook.
+
+| ID nativa | Nombre visible | Qué es | Origen | Notas / Inferidos |
+|---|---|---|---|---|
+| `_id` | id | UUID | Auto Wix | — |
+| `_createdDate` | fechaCreacion | Sello inserción | Auto Wix | — |
+| `_updatedDate` | fechaActualizacion | Sello bloqueado | Hook | Nunca se actualiza |
+| `_owner` | propietario | Emisor | Auto Wix | — |
+| `amount` | importeTotalLegacy | Alias legacy `totalAmount` | Backend | Retrocompatibilidad v5008.3 |
+| `totalAmount` | importeTotal | Importe total con IVA | Backend | Inferido: `base + cuota + RE − retención` |
+| `paymentMethod` | medioCobro | Forma de pago | Manual UI / Webhook eCom | Enum 5 valores |
+| `movementType` | tipoMovimiento | Naturaleza movimiento | Manual UI / Webhook | Enum 19 valores |
+| `concept` | descripcionOperacionLegacy | Alias legacy | Backend | Alias de `operationDescription` |
+| `operationDescription` | descripcionOperacion | Descripción operación | Manual UI / Backend | Copia a `fiscalPayload` |
+| `resourceId` | recursoId | Recurso staff o canal legacy | Backend | **Deprecado.** Usar `staffResourceId` + `channelType` |
+| `staffResourceId` | personalRecursoId | GUID recurso staff | Backend | Aclaración del ambiguo `resourceId` |
+| `channelType` | canalTipo | Canal operación | Backend | Enum POS / ONLINE / CAJA_LOCAL / TELEFONO. Inferido desde `recordSource` |
+| `linkedBookingIds` | reservaIdVinculada | CSV bookingIds | Backend | Relación 1:N con bookings |
+| `transactionId` | transaccionId | ID idempotencia | Backend | Índice. Evita doble escritura |
+| `orderId` | pedidoId | ID pedido eCom | API eCom | — |
+| `schemaVersion` | esquemaVersion | Versión esquema | Backend | `LEDGER_V5_FISCAL` |
+| `hash` | huellaLegacy | Alias legacy | Backend | Retrocompatibilidad |
+| `recordHash` | huella | SHA-256 del registro | Backend | Inferido: `SHA256(previousRecordHash + JSON(fiscalPayload) + recordTimestamp)` |
+| `prevHash` | huellaAnteriorLegacy | Alias legacy | Backend | — |
+| `previousRecordHash` | huellaAnterior | Huella previa | Backend | Encadenamiento Verifactu |
+| `registeredAt` | fechaHoraHusoGenRegistroLegacy | Alias legacy | Backend | — |
+| `recordTimestamp` | fechaHoraHusoGenRegistro | Timestamp ISO 8601 | Backend | Formato `2026-09-21T14:32:05+02:00` |
+| `generationTimestamp` | generationTimestamp | Desglose fecha/hora | Backend | Inferido: parseo de `recordTimestamp` |
+| `invoiceNumber` | numSerieFactura | Número serie fiscal | Backend | Formato `FAC-YYYY-NNNNN` |
+| `invoiceIssueDate` | fechaExpedicionFactura | Fecha expedición | Manual UI / Backend | Alias `operationDate` |
+| `operationDate` | fechaOperacion | Fecha realización (si difiere) | Manual UI | Opcional |
+| `invoiceType` | tipoFactura | F1/F2/R1–R5 | Backend | Inferido: F2 si sin NIF y <400€; F1 si NIF |
+| `correctionType` | tipoRectificativa | S / I | Manual UI | Solo si `invoiceType` es R1–R5 |
+| `correctionAmount` | importeRectificacion | `{base, cuota, cuotaRecargo}` | Backend | Copia de original |
+| `taxableBaseOrNonSubjectAmount` | baseImponibleOImporteNoSujeto | Base imponible | Backend | — |
+| `taxAmount` | cuotaTotal | Cuota IVA | Backend | Inferido: `base * taxRate / 100` |
+| `taxRate` | tipoImpositivo | Tipo IVA (0/4/10/21) | Backend | Copia de catálogo |
+| `surchargeRate` | tipoRecargoEquivalencia | % RE | Backend | Solo minorista |
+| `surchargeAmount` | cuotaRecargoEquivalencia | Importe RE | Backend | Inferido: `base * surchargeRate / 100` |
+| `irpfWithholdingAmount` | importeRetencionIRPF | Retención IRPF | Backend | No va a Verifactu |
+| `irpfWithholdingRate` | tipoRetencionIRPF | % IRPF | Backend | — |
+| `withholdingBase` | baseImponibleRetencion | Base sujeta retención | Backend | — |
+| `issuerTaxId` | nifEmisor | NIF emisor | Snapshot | Copia de `DatosFiscales.taxId` |
+| `issuerLegalName` | nombreRazonEmisor | Razón social emisor | Snapshot | Congelada |
+| `recipientTaxId` | nifDestinatario | NIF cliente | Snapshot | Congelada |
+| `recipientLegalName` | nombreRazonDestinatario | Razón social cliente | Snapshot | Congelada |
+| `recipientAddress` | domicilioDestinatario | Dirección cliente | Snapshot | Cierra hueco AEAT. Copia `DatosFiscales.contactData` |
+| `issuedByThirdPartyOrRecipient` | emitidaPorTerceroODestinatario | E/D/T | Manual UI | Default `E` |
+| `thirdPartyLegalName` | nombreRazonTercero | Nombre tercero | Manual UI | Solo si `T` |
+| `issuerThirdPartyTaxId` | nifTerceroExpedidor | NIF tercero | Manual UI | Solo si `T` |
+| `nonSubjectReason` | causaNoSujeta | N1 / N2 | Manual UI | Solo si no sujeta |
+| `reverseCharge` | inversionSujetoPasivo | ISP | Manual UI | Si `true` → `taxAmount = 0` |
+| `regimeKey` | claveRegimen | Clave L7 | Snapshot | Copia de catálogo |
+| `operationClassification` | calificacionOperacion | S1/S2/N1/N2 | Snapshot | Copia de catálogo |
+| `exemptOperation` | operacionExenta | E1–E6 | Snapshot | Copia de catálogo |
+| `cashBasisRegime` | regimenEspecialCriterioCaja | Mención criterio caja | Manual UI | Obligatorio si aplica |
+| `article20Exempt` | exentaPorArticulo20 | Exención art. 20 LIVA | Manual UI | — |
+| `detailedBreakdown` | desgloseDetallado | Array líneas fiscales | Backend | Inferido: una entrada por detalle |
+| `computerSystem` | sistemaInformatico | Snapshot productor | Backend | Copia `ConfiguracionFiscal.computerSystem` |
+| `previousInvoiceId` | idFacturaAnterior | ID factura anterior | Backend | Encadenamiento |
+| `previousInvoiceNumber` | numSerieFacturaAnterior | Serie anterior | Backend | Encadenamiento |
+| `previousInvoiceIssueDate` | fechaExpedicionFacturaAnterior | Fecha anterior | Backend | Encadenamiento |
+| `aeatSubmissionStatus` | estadoEnvioAeat | Estado envío | Backend | Enum 5 valores |
+| `aeatCsv` | csvAeat | CSV de AEAT | API AEAT | Guardado tras respuesta |
+| `aeatSubmissionDate` | fechaEnvioAeat | Fecha envío | Backend | — |
+| `eventType` | tipoEvento | Clasificación hecho | Backend | Enum 6 valores. Inferido desde `movementType` |
+| `thirdPartyId` | terceroId | FK `DatosFiscales` | Backend | Obligatorio salvo `CIERRE_Z` |
+| `catalogId` | catalogoId | FK `ServiciosCatalogo` | Backend | Obligatorio en líneas |
+| `pairToken` | parToken | Handle transaccional | Backend | Solo desde saga dual |
+| `fiscalPayload` | payloadFiscal | Snapshot AEAT completo | Backend | Inmutable. Nombres AEAT dentro |
+| `sequenceNumber` | secuenciaNumerica | Secuencia monótona | Backend | Sin huecos. Generado por `CAJA_SEQ` |
+| `projectionStatus` | proyeccionEstado | Estado proyección | Backend | PENDIENTE / OK / ERROR |
+| `projectionDetailIds` | proyeccionDetalleIds | UUIDs líneas | Backend | FKs a detalle |
+| `traceId` | trazaId | Correlación forense | Backend | Idéntico en todo el request |
+
+## C.2 `LibroAsientosContablesDetalle` *(contable — AEAT)*
+
+| ID nativa | Nombre visible | Qué es | Origen | Notas / Inferidos |
+|---|---|---|---|---|
+| `_id` | id | UUID | Auto Wix | — |
+| `_createdDate` | fechaCreacion | Sello | Auto Wix | Append-only |
+| `lineHash` | lineaHuella | SHA-256 línea | Backend | Inferido: `SHA256(huella_cabecera + JSON(linea))` |
+| `taxableBaseOrNonSubjectAmount` | baseImponibleOImporteNoSujeto | Base línea | Backend | Suma líneas = cabecera ±0.02 |
+| `taxRate` | tipoImpositivo | Tipo IVA | Backend | — |
+| `chargedTaxAmount` | cuotaRepercutida | Cuota línea | Backend | Suma = cabecera |
+| `sourceEventId` | eventoOrigenId | FK `MovimientosCaja._id` | Backend | Obligatorio |
+| `lineNumber` | numeroLinea | Orden línea | Backend | ≥ 1 |
+| `thirdPartyId` | terceroId | FK `DatosFiscales` | Backend | Desnormalizado |
+| `catalogId` | catalogoId | FK `ServiciosCatalogo` | Backend | Desnormalizado |
+| `operationDescription` | descripcionOperacion | Descripción línea | Manual UI / Backend | — |
+| `units` | unidades | Cantidad | Manual UI | > 0 |
+| `magnitude` | magnitud | Signo algebraico | Backend | `+1` venta, `-1` merma/devolución |
+| `netUnitAmount` | importeNetoUnitario | Precio unitario neto | Backend | — |
+| `taxCode` | codigoImpuesto | Código AEAT | Snapshot | Copia catálogo |
+| `regimeKey` | claveRegimen | Clave L7 | Snapshot | Copia catálogo |
+| `operationClassification` | calificacionOperacion | S1/S2/N1/N2 | Snapshot | — |
+| `exemptOperation` | operacionExenta | E1–E6 | Snapshot | — |
+| `reverseCharge` | inversionSujetoPasivo | ISP | Snapshot | — |
+| `accountCode` | cuentaContable | Cuenta PGC | Backend | Inferido desde catálogo |
+| `surchargeRate` | tipoRecargoEquivalencia | % RE | Snapshot | — |
+| `surchargeAmount` | cuotaRecargoEquivalencia | Importe RE | Backend | — |
+| `irpfWithholdingAmount` | importeRetencionIRPF | Retención | Backend | — |
+| `irpfWithholdingRate` | tipoRetencionIRPF | % retención | Backend | — |
+
+---
+
+# GRUPO D — Contabilidad derivada
+
+## D.1 `AsientosContables` *(contable — AEAT)*
+
+| ID nativa | Nombre visible | Qué es | Origen | Notas / Inferidos |
+|---|---|---|---|---|
+| `_id` | id | UUID | Auto Wix | — |
+| `_createdDate` | fechaCreacion | Sello | Auto Wix | — |
+| `_updatedDate` | fechaActualizacion | Sello | Auto Wix | — |
+| `_owner` | propietario | Creador | Auto Wix | — |
+| `sequenceNumber` | secuenciaNumerica | Secuencia asiento | Backend | Copia cabecera |
+| `operationDate` | fechaOperacion | Fecha operación | Backend | Copia |
+| `fiscalPeriod` | periodoFiscal | YYYY-MM | Backend | Inferido: `operationDate.slice(0,7)` |
+| `entryStatus` | estadoAsiento | Estado asiento | Backend | CONFIRMADO / POSTED / LOCKED |
+| `journalEntryId` | idAsientoDiario | `ASIENTO_<sourceId>` | Backend | Unique |
+| `previousHash` | huellaAnteriorLegacy | Hash previo | Backend | Alias |
+| `sourceHash` | huellaOrigen | Hash origen | Backend | Copia `MovimientosCaja.recordHash` |
+| `invoiceNumber` | numSerieFactura | Nº factura | Backend | Canónico |
+| `totalDocumentAmount` | importeTotalDocumento | Alias importe | Backend | — |
+| `sourceEventId` | eventoOrigenId | FK `MovimientosCaja` | Backend | Obligatorio |
+| `thirdPartyId` | terceroId | FK `DatosFiscales` | Backend | Obligatorio |
+| `fiscalPayloadSnapshot` | payloadFiscalSnapshot | Copia snapshot | Backend | Inmutable. Nombres AEAT dentro |
+| `detailedBreakdown` | desgloseDetallado | Copia líneas | Backend | — |
+| `regimeKey` | claveRegimen | Clave L7 | Snapshot | — |
+| `operationClassification` | calificacionOperacion | S1/S2/N1/N2 | Snapshot | — |
+| `exemptOperation` | operacionExenta | E1–E6 | Snapshot | — |
+| `reverseCharge` | inversionSujetoPasivo | ISP | Snapshot | — |
+| `computerSystem` | sistemaInformatico | Copia | Snapshot | — |
+| `recordHash` | huella | Alias | Backend | — |
+| `previousRecordHash` | huellaAnterior | Alias | Backend | — |
+| `previousInvoiceId` | idFacturaAnterior | Encadenamiento | Backend | Copia |
+| `previousInvoiceNumber` | numSerieFacturaAnterior | Encadenamiento | Backend | Copia |
+| `previousInvoiceIssueDate` | fechaExpedicionFacturaAnterior | Encadenamiento | Backend | Copia |
+
+**Campos eliminados (duplicación):** `sourceHash` (= `hashOrigen`), `externalReference` (= `invoiceNumber`).
+
+## D.2 `HistoricoCierresZ` *(contable — AEAT)*
+
+| ID nativa | Nombre visible | Qué es | Origen | Notas / Inferidos |
+|---|---|---|---|---|
+| `_id` | id | UUID | Auto Wix | — |
+| `_createdDate` | fechaCreacion | Sello | Auto Wix | — |
+| `operationDate` | fechaOperacion | Fecha cierre | Backend | — |
+| `balancesByMethod` | saldosPorMetodo | Totales por forma pago | Backend | Inferido: group by `paymentMethod` |
+| `sourceEventId` | eventoOrigenId | FK evento `CIERRE_Z` | Backend | — |
+| `breakdownByRegime` | desglosePorRegimen | Totales clave L7 | Backend | Inferido: group by `regimeKey` |
+| `breakdownByOperationType` | desglosePorTipoOperacion | Totales S1/S2/… | Backend | — |
+| `breakdownByTaxRate` | desglosePorTipoImpositivo | Totales 21/10/4 | Backend | — |
+| `verifactuSummary` | resumenVerifactu | Resumen cadena | Backend | `{totalRegistros, primeraHuella, ultimaHuella, cadenaValida}` |
+| `aeatSubmissionStatus` | estadoEnvioAeat | Estado envío | API AEAT | — |
+| `aeatSubmissionDate` | fechaEnvioAeat | Fecha envío | API AEAT | — |
+| `aeatResponse` | respuestaAeat | Respuesta AEAT | API AEAT | — |
+| `aeatCsv` | csvAeat | CSV AEAT | API AEAT | — |
+
+---
+
+# GRUPO E — Compras
+
+## E.1 `FacturasRecibidas` *(contable — AEAT)*
+
+| ID nativa | Nombre visible | Qué es | Origen | Notas / Inferidos |
+|---|---|---|---|---|
+| `_id` | id | UUID | Auto Wix | — |
+| `_createdDate` | fechaCreacion | Sello | Auto Wix | — |
+| `_updatedDate` | fechaActualizacion | Sello | Auto Wix | — |
+| `receptionNumber` | numeroRecepcion | Nº interno recepción | Backend | Unique |
+| `invoiceNumber` | numSerieFactura | Nº factura proveedor | Manual UI / OCR | — |
+| `invoiceIssueDate` | fechaExpedicionFactura | Fecha expedición | Manual UI / OCR | — |
+| `operationDate` | fechaOperacion | Fecha realización | Manual UI | — |
+| `receptionDate` | fechaRecepcion | Fecha recepción | Backend | Inferido: `_createdDate` |
+| `accountingEntryDate` | fechaRegistroContable | Fecha registro | Backend | — |
+| `thirdPartyId` | terceroId | FK `DatosFiscales` | Backend | Proveedor |
+| `issuerTaxId` | nifEmisor | Snapshot proveedor | Snapshot | Congelado |
+| `issuerLegalName` | nombreRazonEmisor | Snapshot proveedor | Snapshot | Congelado |
+| `recipientTaxId` | nifDestinatario | Snapshot nosotros | Snapshot | De `ConfiguracionFiscal` |
+| `recipientLegalName` | nombreRazonDestinatario | Snapshot nosotros | Snapshot | De `ConfiguracionFiscal` |
+| `invoiceType` | tipoFactura | F1/F2/R1–R5 | Manual UI | — |
+| `operationDescription` | descripcionOperacion | Concepto | Manual UI / OCR | — |
+| `totalAmount` | importeTotal | Importe total | Manual UI / OCR | Cuadre validado |
+| `totalTaxableBase` | baseImponibleTotal | Base imponible | Manual UI / OCR | — |
+| `totalVatAmount` | cuotaIvaTotal | Cuota IVA | Manual UI / OCR | — |
+| `surchargeAmount` | cuotaRecargoEquivalencia | RE | Manual UI | — |
+| `irpfWithholdingAmount` | importeRetencionIRPF | Retención | Manual UI | — |
+| `irpfWithholdingRate` | tipoRetencionIRPF | % retención | Manual UI | — |
+| `detailedBreakdown` | desgloseDetallado | Líneas fiscales | Manual UI | Array |
+| `regimeKey` | claveRegimen | Clave L7 | Manual UI | — |
+| `operationClassification` | calificacionOperacion | S1/S2/N1/N2 | Manual UI | — |
+| `exemptOperation` | operacionExenta | E1–E6 | Manual UI | — |
+| `reverseCharge` | inversionSujetoPasivo | ISP | Manual UI | — |
+| `specialRegime` | regimenEspecial | Flags | Manual UI | — |
+| `deductible` | deducible | IVA deducible | Manual UI | — |
+| `deductionPercentage` | porcentajeDeduccion | % deducción | Manual UI | 0–100 |
+| `deductibleAmount` | cuotaDeducible | Cuota deducible | Backend | Inferido: `totalVatAmount * deductionPercentage / 100` |
+| `paymentStatus` | estadoPago | Estado pago | Manual UI | PENDIENTE / PAGADO / PARCIAL |
+| `paymentDate` | fechaPago | Fecha pago | Manual UI | — |
+| `paymentMethod` | medioPago | Medio pago AEAT | Manual UI | Enum 01–05 |
+| `expenseAccountCode` | cuentaContableGasto | Cuenta PGC gasto | Backend | Inferido desde catálogo |
+| `vatAccountCode` | cuentaContableIva | Cuenta PGC IVA | Backend | — |
+| `supplierAccountCode` | cuentaContableProveedor | Cuenta PGC proveedor | Backend | — |
+| `accountingEntryId` | asientoContableId | FK `AsientosContables` | Backend | — |
+| `sourceEventId` | eventoOrigenId | FK `MovimientosCaja` | Backend | Obligatorio |
+| `correctedInvoiceId` | facturaRectificadaId | Rectificación | Manual UI | — |
+| `correctionReason` | motivoRectificacion | Motivo | Manual UI | — |
+| `attachmentUrl` | documentoAdjuntoUrl | PDF adjunto | Manual UI | — |
+| `fileHash` | archivoHash | Hash PDF | Backend | Calculado |
+| `receptionSource` | origenRecepcion | Origen | Backend | MANUAL / EMAIL / API / OCR |
+| `validationStatus` | estadoValidacion | Estado validación | Manual UI | PENDIENTE / VALIDADA / RECHAZADA |
+| `traceId` | trazaId | Correlación | Backend | — |
+
+---
+
+# GRUPO F — Citas operativas
+
+## F.1 `CitasF2` *(no contable)*
+
+| ID nativa | Nombre visible | Qué es | Origen | Notas / Inferidos |
+|---|---|---|---|---|
+| `_id` | id | UUID | Auto Wix | — |
+| `_createdDate` | fechaCreacion | Sello | Auto Wix | — |
+| `_updatedDate` | fechaActualizacion | Sello | Auto Wix | — |
+| `bookingId` | reservaId | GUID Bookings V2 | API Bookings | Índice unique |
+| `pairToken` | parToken | Token idempotencia | Backend | Inferido: `SHA256(serviceId + resourceId + startDate)` |
+| `revision` | revision | Versión documento | Backend | Incrementa en cada update |
+| `serviceId` | servicioId | GUID servicio | API Bookings | Índice |
+| `scheduleId` | horarioId | GUID schedule | API Bookings | Puede ser null |
+| `resourceId` | recursoId | GUID recurso staff | Backend | Índice |
+| `staffResourceId` | personalRecursoId | GUID staff separado | Backend | Aclaración del ambiguo `resourceId` |
+| `startDate` | inicioFecha | Fecha/hora inicio | API Bookings | UTC |
+| `endDate` | finFecha | Fecha/hora fin | API Bookings | UTC |
+| `dateYmd` | fechaYmd | YYYY-MM-DD Madrid | Backend | Inferido: conversión TZ Madrid. Índice |
+| `bookingType` | reservaTipo | SIMPLE / DUAL_F1 / DUAL_F2 | Backend | Inferido por `pairToken` repetido |
+| `status` | estado | Estado cita | Webhook Bookings | CONFIRMED / PENDING_PAYMENT / CANCELED / REFUNDED |
+| `paymentStatus` | pagoEstado | Estado pago | Webhook eCom | UNPAID / PAID / REFUNDED / … |
+| `meta` | meta | JSON auxiliar | Backend | Solo `checkoutUrl`, `linkedF1BookingId`, `fechaConfirmacionPago`, fases duales |
+| `contactDetails` | contactoDetalles | Datos contacto | API Bookings | `{email, firstName, lastName, phone}` |
+| `thirdPartyId` | terceroId | FK `DatosFiscales` | Backend | Puede ser null si cliente anónimo |
+| `catalogId` | catalogoId | FK `ServiciosCatalogo` | Backend | — |
+| `sourceEventId` | eventoOrigenId | FK `MovimientosCaja` | Backend | Se rellena tras cobro |
+| `fiscalData` | datosFiscales | Datos fiscales cliente | Backend | `{nifDestinatario, nombreRazonDestinatario, domicilioDestinatario, tipoFacturaEsperada, estadoFacturacion}` |
+| `cashMovementId` | movimientoCajaId | FK cobro | Backend | — |
+| `invoicingDate` | fechaFacturacion | Fecha emisión | Backend | — |
+| `traceId` | trazaId | Correlación forense | Backend | Invariante |
+
+---
+
+# GRUPO G — Inventario
+
+## G.1 `MovimientosInventario` *(no contable)*
+
+| ID nativa | Nombre visible | Qué es | Origen | Notas / Inferidos |
+|---|---|---|---|---|
+| `_id` | id | UUID | Auto Wix | — |
+| `wixProductId` | wixProductoId | ID producto Wix Stores | API Stores | — |
+| `sku` | sku | SKU producto | API Stores | — |
+| `orderId` | pedidoId | ID pedido | API eCom | — |
+| `refundId` | reembolsoId | ID reembolso | API eCom | — |
+| `sourceEventId` | eventoOrigenId | FK `MovimientosCaja` | Backend | Obligatorio |
+| `catalogId` | catalogoId | FK `ServiciosCatalogo` | Backend | Obligatorio |
+| `magnitude` | magnitud | `+1` entrada, `-1` salida | Backend | — |
+| `thirdPartyId` | terceroId | FK | Backend | — |
+| `traceId` | trazaId | Correlación | Backend | — |
+
+## G.2 `InventarioStockVenta` *(no contable)*
+
+Sin cambios (espejo de stock nativo Stores).
+
+---
+
+# GRUPO H — Staff y tiempo
+
+## H.1 `RegistrosHorariosStaff` *(no contable)*
+
+| ID nativa | Nombre visible | Qué es | Origen | Notas / Inferidos |
+|---|---|---|---|---|
+| `_id` | id | UUID | Auto Wix | — |
+| `resourceId` | recursoId | GUID recurso staff | API Bookings | — |
+| `date` | fecha | Fecha fichaje | Manual UI / Backend | — |
+| `hours` | horas | Horas trabajadas | Manual UI | — |
+| `sourceEventId` | eventoOrigenId | FK `MovimientosCaja` | Backend | Obligatorio |
+| `thirdPartyId` | terceroId | FK `DatosFiscales` (STAFF) | Backend | Obligatorio |
+| `traceId` | trazaId | Correlación | Backend | — |
+
+---
+
+# GRUPO I — Colas y sistema
+
+## I.1 `CompensacionesPendientes` *(no contable)*
+
+| ID nativa | Nombre visible | Qué es | Origen | Notas / Inferidos |
+|---|---|---|---|---|
+| `_id` | id | UUID | Auto Wix | — |
+| `kind` | tipo | Tipo compensación | Backend | Enum 3 valores |
+| `status` | estado | Estado compensación | Backend | PENDING / PROCESSING / FAILED / COMPLETED |
+| `attempts` | intentos | Nº intentos | Backend | Incrementado por cron |
+| `errorCode` | errorCodigo | Código error | Backend | Unificado |
+| `errorMessage` | errorMensaje | Mensaje | Backend | Max 500 |
+| `sourceEventId` | eventoOrigenId | FK | Backend | — |
+| `thirdPartyId` | terceroId | FK | Backend | — |
+| `traceId` | trazaId | Correlación | Backend | — |
+
+## I.2 `ConfiguracionFiscal` *(contable — AEAT)*
+
+| ID nativa | Nombre visible | Qué es | Origen | Notas / Inferidos |
+|---|---|---|---|---|
+| `_id` | id | UUID | Auto Wix | — |
+| `computerSystem` | sistemaInformatico | Bloque Verifactu | Manual UI | Snapshot productor. Fallback hardcoded |
+| `producerTaxId` | nifProductor | NIF productor software | Manual UI | — |
+| `producerLegalName` | nombreRazonProductor | Nombre productor | Manual UI | — |
+| `computerSystemId` | idSistemaInformatico | ID sistema | Manual UI | — |
+| `version` | version | Versión software | Backend | Deploy |
+| `installationNumber` | numeroInstalacion | Nº instalación | Manual UI | — |
+| `possibleUseOnlyVerifactu` | tipoUsoPosibleSoloVerifactu | S/N | Manual UI | — |
+| `possibleUseMultiOT` | tipoUsoPosibleMultiOT | S/N | Manual UI | — |
+| `multipleOTIndicator` | indicadorMultiplesOT | S/N | Manual UI | — |
+| `verifactuStartDate` | fechaInicioVerifactu | Fecha inicio sistema | Manual UI | — |
+
+---
+
+# GRUPO J — Colecciones sin cambios
+
+`BookingTransactions`, `ProcessedWebhookEvents`, `SlotLocks`, `CajaActual`, `AlertasOperativas`, `RateLimitBlocks`, `DualSlotCache`, `AvailabilityDaysCache`, `BookingsServiceSyncQueue`, `M365GraphSyncQueue`.
+
+---
+
+# ANEXO A — Datos inferidos por backend
+
+| Dato | Colección | Cómo |
+|---|---|---|
+| `recordHash` (SHA-256) | `MovimientosCaja` | `SHA256(previousRecordHash + JSON(fiscalPayload) + recordTimestamp)` |
+| `sequenceNumber` | `MovimientosCaja` | Secuencia monótona desde `CAJA_SEQ` |
+| `recordTimestamp` | `MovimientosCaja` | ISO 8601 con offset Madrid |
+| `generationTimestamp` | `MovimientosCaja` | Desglose de `recordTimestamp` |
+| `eventType` | `MovimientosCaja` | Derivado de `movementType` |
+| `invoiceType` | `MovimientosCaja` | F2 si sin NIF y <400€; F1 si NIF |
+| `channelType` | `MovimientosCaja` | Derivado de `recordSource` |
+| `taxAmount` | `MovimientosCaja` | `taxableBaseOrNonSubjectAmount * taxRate / 100` |
+| `surchargeAmount` | `MovimientosCaja` | `base * surchargeRate / 100` |
+| `totalAmount` | `MovimientosCaja` | `base + cuota + RE − retención` |
+| `detailedBreakdown` | `MovimientosCaja` | Array generado desde `LibroAsientosContablesDetalle` |
+| `fiscalPeriod` | `AsientosContables` | `operationDate.slice(0,7)` |
+| `accountCode` | `LibroAsientosContablesDetalle` | Copia de catálogo |
+| `pairToken` | `CitasF2` | `SHA256(serviceId + resourceId + startDate)` |
+| `dateYmd` | `CitasF2` | Conversión TZ Madrid |
+| `bookingType` | `CitasF2` | Por `pairToken` repetido |
+| `deductibleAmount` | `FacturasRecibidas` | `totalVatAmount * deductionPercentage / 100` |
+| `breakdownByRegime` | `HistoricoCierresZ` | Group by `regimeKey` |
+| `verifactuSummary` | `HistoricoCierresZ` | Agregado de huellas del día |
+
+---
+
+# ANEXO B — Datos de origen externo (Wix APIs)
+
+| Dato | API origen | Colección destino |
+|---|---|---|
+| `serviceId`, `title`, `duration` | Bookings V2 | `ServiciosCatalogo` |
+| `resourceId`, `staffMemberId` | Bookings + Members | `MapaStaff`, `DatosFiscales` |
+| `bookingId`, `startDate`, `endDate`, `contactDetails` | Bookings V2 | `CitasF2` |
+| `orderId`, `paymentStatus`, `refundId` | eCom V2 | `CitasF2`, `MovimientosCaja` |
+| `wixProductId`, `sku` | Stores | `MovimientosInventario` |
+| `eventId` | Webhooks Wix | `ProcessedWebhookEvents` |
+| `aeatCsv`, `aeatResponse` | API AEAT | `MovimientosCaja`, `HistoricoCierresZ` |
+
+---
+
+# ANEXO C — Datos de origen manual UI
+
+- Alta de tercero (`DatosFiscales`)
+- Alta/edición de servicio (`ServiciosCatalogo`)
+- Concepto y forma de pago (`MovimientosCaja` al registrar cobro manual)
+- Datos fiscales de factura (`invoiceType`, `correctionType`, `issuedByThirdPartyOrRecipient`, `nonSubjectReason`)
+- Facturas recibidas (`FacturasRecibidas`)
+- Configuración sistema informático (`ConfiguracionFiscal`)
+
+---
+
+# ANEXO D — Datos snapshot (copia inmutable)
+
+- `MovimientosCaja.fiscalPayload` — bloque AEAT completo
+- `MovimientosCaja.computerSystem` — productor software
+- `MovimientosCaja.{issuerTaxId, issuerLegalName, recipientTaxId, recipientLegalName, recipientAddress}` — identidad fiscal emisor/receptor
+- `AsientosContables.fiscalPayloadSnapshot` — copia snapshot
+- `FacturasRecibidas.{issuerTaxId, issuerLegalName}` — snapshot proveedor
+
+**Regla:** si `DatosFiscales` cambia después, estos snapshots no se actualizan.
+
+---
+
+# Anexo E — Incidencias detectadas y corregidas
+
+| # | Incidencia | Ubicación | Corrección |
+|---|---|---|---|
+| 1 | Tabla con columnas mixtas | `MovimientosCaja` §C.1 | Unificado a "ID nativa / Nombre visible / Qué es / Origen / Notas" |
+| 2 | Fila incompleta `staffMemberId \| staffMiembroId \|` con celdas vacías | `MovimientosCaja` §C.1 | Eliminada. `staffResourceId` cubre el concepto |
+| 3 | `linkedPhase` (singular) | `ServiciosCatalogo` §B.1 | Corregido a `linkedPhases` |
+| 4 | Alias legacy sin sufijo claro | `MovimientosCaja` §C.1 | Añadido sufijo `Legacy` |
+| 5 | `resourceId` ambiguo | `MovimientosCaja` §C.1 | Marcado deprecado. Split en `staffResourceId` + `channelType` |
+| 6 | `bookingId` (debía ser `linkedBookingIds`) | `MovimientosCaja` §C.1 | Corregido a `linkedBookingIds` |
+| 7 | `hashAnterior` (inconsistente con `huellaAnterior`) | `MovimientosCaja` §C.1 | Corregido a `previousRecordHash` |
+| 8 | `orderId` traducción inconsistente (`encargoId`) | `MovimientosCaja` §C.1 | Corregido a `pedidoId` |
+| 9 | **V20** Todos los IDs en inglés camelCase | Global | Aplicado |
+| 10 | **V20** `facturaRectificadaId` → `correctedInvoiceId` | `FacturasRecibidas` §E.1 | Aplicado |
+| 11 | **V20** `motivoRectificacion` → `correctionReason` | `FacturasRecibidas` §E.1 | Aplicado |
+
+---
+
+# JSON de importación Wix CMS — íntegro v5009-FISCAL-V20
+
+```json
+{
+  "version": "v5009-FISCAL-V20",
+  "collections": [
+    {
+      "id": "DatosFiscales",
+      "displayName": "DatosFiscales",
+      "permissions": { "read": "ADMIN", "write": "ADMIN" },
+      "fields": [
+        { "key": "taxId", "type": "TEXT", "required": true, "unique": true, "maxLength": 20 },
+        { "key": "legalName", "type": "TEXT", "required": true, "maxLength": 200 },
+        { "key": "thirdPartyType", "type": "TEXT", "required": true,
+          "enum": ["CLIENTE","PROVEEDOR","STAFF","AAPP","MIXTO"] },
+        { "key": "contactData", "type": "OBJECT" },
+        { "key": "specialRegimes", "type": "OBJECT" },
+        { "key": "isRetailerEquivalenceSurcharge", "type": "BOOLEAN" },
+        { "key": "isBusinessProfessional", "type": "BOOLEAN" },
+        { "key": "bookingsResourceId", "type": "TEXT" },
+        { "key": "staffMemberId", "type": "TEXT" },
+        { "key": "isRegularSupplier", "type": "BOOLEAN" },
+        { "key": "paymentTerms", "type": "OBJECT" },
+        { "key": "active", "type": "BOOLEAN" },
+        { "key": "registrationTraceId", "type": "TEXT", "maxLength": 100 },
+        { "key": "computerSystem", "type": "OBJECT" },
+        { "key": "producerTaxId", "type": "TEXT" },
+        { "key": "producerLegalName", "type": "TEXT" },
+        { "key": "computerSystemId", "type": "TEXT", "maxLength": 50 },
+        { "key": "version", "type": "TEXT", "maxLength": 20 },
+        { "key": "installationNumber", "type": "TEXT", "maxLength": 20 },
+        { "key": "possibleUseOnlyVerifactu", "type": "TEXT", "enum": ["S","N"] },
+        { "key": "possibleUseMultiOT", "type": "TEXT", "enum": ["S","N"] },
+        { "key": "multipleOTIndicator", "type": "TEXT", "enum": ["S","N"] },
+        { "key": "verifactuStartDate", "type": "DATE" }
+      ],
+      "indexes": [
+        { "fields": ["taxId"], "unique": true },
+        { "fields": ["thirdPartyType", "active"] },
+        { "fields": ["bookingsResourceId"] }
+      ]
+    },
+    {
+      "id": "ServiciosCatalogo",
+      "displayName": "ServiciosCatalogo",
+      "permissions": { "read": "ANYONE", "write": "ADMIN" },
+      "fields": [
+        { "key": "serviceId", "type": "TEXT", "required": true, "unique": true },
+        { "key": "slugUrl", "type": "TEXT", "unique": true, "maxLength": 200 },
+        { "key": "title", "type": "TEXT", "required": true, "maxLength": 200 },
+        { "key": "price", "type": "NUMBER" },
+        { "key": "currency", "type": "TEXT", "maxLength": 3 },
+        { "key": "sku", "type": "TEXT", "unique": true, "maxLength": 50 },
+        { "key": "allowCombine", "type": "BOOLEAN" },
+        { "key": "linkedPhases", "type": "TEXT" },
+        { "key": "phase1Duration", "type": "NUMBER" },
+        { "key": "phase2Duration", "type": "NUMBER" },
+        { "key": "exposureDuration", "type": "NUMBER" },
+        { "key": "totalDuration", "type": "NUMBER" },
+        { "key": "durationRange", "type": "OBJECT" },
+        { "key": "availableStaff", "type": "TEXT" },
+        { "key": "addOnOptions", "type": "ARRAY" },
+        { "key": "hidden", "type": "BOOLEAN" },
+        { "key": "taxIncluded", "type": "BOOLEAN" },
+        { "key": "taxRate", "type": "NUMBER" },
+        { "key": "itemNature", "type": "TEXT", "required": true,
+          "enum": ["SERVICIO_PROPIO","PRODUCTO_VENTA","PRODUCTO_USO","GASTO_FIJO"] },
+        { "key": "taxCode", "type": "TEXT", "required": true,
+          "enum": ["IVA_21","IVA_10","IVA_4","IVA_0","IRPF_15","IRPF_19","EXENTO"] },
+        { "key": "aeatRegimeKey", "type": "TEXT",
+          "enum": ["01","02","03","04","05","06","07","08","09","10","11","12","13","14","15","16","17","18","19","20"] },
+        { "key": "aeatOperationClassification", "type": "TEXT",
+          "enum": ["S1","S2","N1","N2"] },
+        { "key": "aeatExemptOperation", "type": "TEXT",
+          "enum": ["E1","E2","E3","E4","E5","E6"] },
+        { "key": "reverseCharge", "type": "BOOLEAN" },
+        { "key": "incomeAccountCode", "type": "TEXT", "maxLength": 6 },
+        { "key": "expenseAccountCode", "type": "TEXT", "maxLength": 6 },
+        { "key": "active", "type": "BOOLEAN" }
+      ],
+      "indexes": [
+        { "fields": ["serviceId"], "unique": true },
+        { "fields": ["sku"], "unique": true },
+        { "fields": ["active", "itemNature"] }
+      ]
+    },
+    {
+      "id": "MovimientosCaja",
+      "displayName": "MovimientosCaja",
+      "permissions": { "read": "ADMIN", "write": "ADMIN" },
+      "appendOnly": true,
+      "fields": [
+        { "key": "amount", "type": "NUMBER" },
+        { "key": "totalAmount", "type": "NUMBER" },
+        { "key": "paymentMethod", "type": "TEXT",
+          "enum": ["EFECTIVO","TARJETA","BIZUM","ONLINE","TARJETA_REGALO"] },
+        { "key": "movementType", "type": "TEXT",
+          "enum": ["VENTA_EFECTIVO","VENTA_TARJETA","VENTA_BIZUM","VENTA_ONLINE","VENTA_PRODUCTO","VENTA_PRODUCTO_ONLINE","VENTA_TARJETA_REGALO","CANJE_TARJETA_REGALO","REEMBOLSO","DEVOLUCION_SERVICIO","DEVOLUCION_PRODUCTO","AJUSTE","PROPINA","APORTE","RETIRO","GASTO","PAGO_PROVEEDOR","ANTICIPO","FONDO_INICIAL","SERVICIO_PROFESIONAL"] },
+        { "key": "concept", "type": "TEXT", "maxLength": 500 },
+        { "key": "operationDescription", "type": "TEXT", "maxLength": 500 },
+        { "key": "resourceId", "type": "TEXT" },
+        { "key": "staffResourceId", "type": "TEXT" },
+        { "key": "channelType", "type": "TEXT",
+          "enum": ["POS","ONLINE","CAJA_LOCAL","TELEFONO"] },
+        { "key": "linkedBookingIds", "type": "TEXT" },
+        { "key": "transactionId", "type": "TEXT" },
+        { "key": "orderId", "type": "TEXT" },
+        { "key": "schemaVersion", "type": "TEXT" },
+        { "key": "hash", "type": "TEXT" },
+        { "key": "recordHash", "type": "TEXT" },
+        { "key": "prevHash", "type": "TEXT" },
+        { "key": "previousRecordHash", "type": "TEXT" },
+        { "key": "registeredAt", "type": "DATETIME" },
+        { "key": "recordTimestamp", "type": "TEXT" },
+        { "key": "generationTimestamp", "type": "OBJECT" },
+        { "key": "invoiceNumber", "type": "TEXT", "unique": true },
+        { "key": "invoiceIssueDate", "type": "DATE" },
+        { "key": "operationDate", "type": "DATE" },
+        { "key": "invoiceType", "type": "TEXT",
+          "enum": ["F1","F2","F3","R1","R2","R3","R4","R5"] },
+        { "key": "correctionType", "type": "TEXT", "enum": ["S","I"] },
+        { "key": "correctionAmount", "type": "OBJECT" },
+        { "key": "taxableBaseOrNonSubjectAmount", "type": "NUMBER" },
+        { "key": "taxAmount", "type": "NUMBER" },
+        { "key": "taxRate", "type": "NUMBER" },
+        { "key": "surchargeRate", "type": "NUMBER" },
+        { "key": "surchargeAmount", "type": "NUMBER" },
+        { "key": "irpfWithholdingAmount", "type": "NUMBER" },
+        { "key": "irpfWithholdingRate", "type": "NUMBER" },
+        { "key": "withholdingBase", "type": "NUMBER" },
+        { "key": "issuerTaxId", "type": "TEXT" },
+        { "key": "issuerLegalName", "type": "TEXT" },
+        { "key": "recipientTaxId", "type": "TEXT" },
+        { "key": "recipientLegalName", "type": "TEXT" },
+        { "key": "recipientAddress", "type": "OBJECT" },
+        { "key": "issuedByThirdPartyOrRecipient", "type": "TEXT",
+          "enum": ["E","D","T"] },
+        { "key": "thirdPartyLegalName", "type": "TEXT" },
+        { "key": "issuerThirdPartyTaxId", "type": "TEXT" },
+        { "key": "nonSubjectReason", "type": "TEXT", "enum": ["N1","N2"] },
+        { "key": "reverseCharge", "type": "BOOLEAN" },
+        { "key": "regimeKey", "type": "TEXT",
+          "enum": ["01","02","03","04","05","06","07","08","09","10","11","12","13","14","15","16","17","18","19","20"] },
+        { "key": "operationClassification", "type": "TEXT",
+          "enum": ["S1","S2","N1","N2"] },
+        { "key": "exemptOperation", "type": "TEXT",
+          "enum": ["E1","E2","E3","E4","E5","E6"] },
+        { "key": "cashBasisRegime", "type": "BOOLEAN" },
+        { "key": "article20Exempt", "type": "BOOLEAN" },
+        { "key": "detailedBreakdown", "type": "ARRAY" },
+        { "key": "computerSystem", "type": "OBJECT" },
+        { "key": "previousInvoiceId", "type": "TEXT" },
+        { "key": "previousInvoiceNumber", "type": "TEXT" },
+        { "key": "previousInvoiceIssueDate", "type": "DATE" },
+        { "key": "aeatSubmissionStatus", "type": "TEXT",
+          "enum": ["PENDIENTE","ENVIADO","ACEPTADO","ACEPTADO_CON_ERRORES","RECHAZADO"] },
+        { "key": "aeatCsv", "type": "TEXT" },
+        { "key": "aeatSubmissionDate", "type": "DATE" },
+        { "key": "eventType", "type": "TEXT", "required": true,
+          "enum": ["VENTA_LINEA","COMPRA_LINEA","CIERRE_Z","AJUSTE","RECTIFICATIVA","MOV_STOCK"] },
+        { "key": "thirdPartyId", "type": "TEXT" },
+        { "key": "catalogId", "type": "TEXT" },
+        { "key": "pairToken", "type": "TEXT" },
+        { "key": "fiscalPayload", "type": "OBJECT", "required": true },
+        { "key": "sequenceNumber", "type": "NUMBER", "required": true },
+        { "key": "projectionStatus", "type": "TEXT",
+          "enum": ["PENDIENTE","OK","ERROR"] },
+        { "key": "projectionDetailIds", "type": "ARRAY" },
+        { "key": "traceId", "type": "TEXT", "required": true, "maxLength": 100 }
+      ],
+      "indexes": [
+        { "fields": ["invoiceNumber"], "unique": true },
+        { "fields": ["transactionId"] },
+        { "fields": ["registeredAt"] },
+        { "fields": ["movementType", "registeredAt"] },
+        { "fields": ["linkedBookingIds"] },
+        { "fields": ["thirdPartyId", "invoiceIssueDate"] },
+        { "fields": ["eventType", "invoiceIssueDate"] },
+        { "fields": ["sequenceNumber"], "unique": true }
+      ]
+    },
+    {
+      "id": "LibroAsientosContablesDetalle",
+      "displayName": "LibroAsientosContablesDetalle",
+      "permissions": { "read": "ADMIN", "write": "ADMIN" },
+      "appendOnly": true,
+      "fields": [
+        { "key": "lineHash", "type": "TEXT" },
+        { "key": "taxableBaseOrNonSubjectAmount", "type": "NUMBER" },
+        { "key": "taxRate", "type": "NUMBER" },
+        { "key": "chargedTaxAmount", "type": "NUMBER" },
+        { "key": "sourceEventId", "type": "TEXT", "required": true },
+        { "key": "lineNumber", "type": "NUMBER", "required": true },
+        { "key": "thirdPartyId", "type": "TEXT", "required": true },
+        { "key": "catalogId", "type": "TEXT", "required": true },
+        { "key": "operationDescription", "type": "TEXT", "required": true, "maxLength": 500 },
+        { "key": "units", "type": "NUMBER", "required": true },
+        { "key": "magnitude", "type": "NUMBER", "required": true },
+        { "key": "netUnitAmount", "type": "NUMBER" },
+        { "key": "taxCode", "type": "TEXT",
+          "enum": ["IVA_21","IVA_10","IVA_4","IVA_0","IRPF_15","IRPF_19","EXENTO"] },
+        { "key": "regimeKey", "type": "TEXT",
+          "enum": ["01","02","03","04","05","06","07","08","09","10","11","12","13","14","15","16","17","18","19","20"] },
+        { "key": "operationClassification", "type": "TEXT",
+          "enum": ["S1","S2","N1","N2"] },
+        { "key": "exemptOperation", "type": "TEXT",
+          "enum": ["E1","E2","E3","E4","E5","E6"] },
+        { "key": "reverseCharge", "type": "BOOLEAN" },
+        { "key": "accountCode", "type": "TEXT", "maxLength": 6 },
+        { "key": "surchargeRate", "type": "NUMBER" },
+        { "key": "surchargeAmount", "type": "NUMBER" },
+        { "key": "irpfWithholdingAmount", "type": "NUMBER" },
+        { "key": "irpfWithholdingRate", "type": "NUMBER" }
+      ],
+      "indexes": [
+        { "fields": ["sourceEventId", "lineNumber"] },
+        { "fields": ["thirdPartyId"] },
+        { "fields": ["catalogId"] }
+      ]
+    },
+    {
+      "id": "AsientosContables",
+      "displayName": "AsientosContables",
+      "permissions": { "read": "ADMIN", "write": "ADMIN" },
+      "fields": [
+        { "key": "sequenceNumber", "type": "NUMBER", "required": true },
+        { "key": "operationDate", "type": "DATE", "required": true },
+        { "key": "fiscalPeriod", "type": "TEXT", "maxLength": 7 },
+        { "key": "entryStatus", "type": "TEXT",
+          "enum": ["CONFIRMADO","POSTED","LOCKED"] },
+        { "key": "journalEntryId", "type": "TEXT", "required": true, "unique": true },
+        { "key": "previousHash", "type": "TEXT" },
+        { "key": "sourceHash", "type": "TEXT" },
+        { "key": "invoiceNumber", "type": "TEXT", "required": true },
+        { "key": "totalDocumentAmount", "type": "NUMBER" },
+        { "key": "sourceEventId", "type": "TEXT", "required": true },
+        { "key": "thirdPartyId", "type": "TEXT", "required": true },
+        { "key": "fiscalPayloadSnapshot", "type": "OBJECT", "required": true },
+        { "key": "detailedBreakdown", "type": "ARRAY" },
+        { "key": "regimeKey", "type": "TEXT" },
+        { "key": "operationClassification", "type": "TEXT" },
+        { "key": "exemptOperation", "type": "TEXT" },
+        { "key": "reverseCharge", "type": "BOOLEAN" },
+        { "key": "computerSystem", "type": "OBJECT" },
+        { "key": "recordHash", "type": "TEXT" },
+        { "key": "previousRecordHash", "type": "TEXT" },
+        { "key": "previousInvoiceId", "type": "TEXT" },
+        { "key": "previousInvoiceNumber", "type": "TEXT" },
+        { "key": "previousInvoiceIssueDate", "type": "DATE" }
+      ],
+      "indexes": [
+        { "fields": ["journalEntryId"], "unique": true },
+        { "fields": ["sourceEventId"] },
+        { "fields": ["fiscalPeriod", "entryStatus"] }
+      ]
+    },
+    {
+      "id": "CitasF2",
+      "displayName": "CitasF2",
+      "permissions": { "read": "ADMIN", "write": "ADMIN" },
+      "fields": [
+        { "key": "bookingId", "type": "TEXT", "required": true, "unique": true },
+        { "key": "pairToken", "type": "TEXT" },
+        { "key": "revision", "type": "NUMBER" },
+        { "key": "serviceId", "type": "TEXT", "required": true },
+        { "key": "scheduleId", "type": "TEXT" },
+        { "key": "resourceId", "type": "TEXT", "required": true },
+        { "key": "staffResourceId", "type": "TEXT" },
+        { "key": "startDate", "type": "DATETIME", "required": true },
+        { "key": "endDate", "type": "DATETIME", "required": true },
+        { "key": "dateYmd", "type": "TEXT", "required": true, "maxLength": 10 },
+        { "key": "bookingType", "type": "TEXT",
+          "enum": ["SIMPLE","DUAL_F1","DUAL_F2"] },
+        { "key": "status", "type": "TEXT",
+          "enum": ["CONFIRMED","PENDING_PAYMENT","CANCELLED","REFUNDED"] },
+        { "key": "paymentStatus", "type": "TEXT",
+          "enum": ["UNPAID","NOT_PAID","PENDING_PAYMENT","PENDING_LEDGER","PAID","REFUNDED","PARTIALLY_REFUNDED"] },
+        { "key": "meta", "type": "OBJECT" },
+        { "key": "contactDetails", "type": "OBJECT" },
+        { "key": "thirdPartyId", "type": "TEXT" },
+        { "key": "catalogId", "type": "TEXT" },
+        { "key": "sourceEventId", "type": "TEXT" },
+        { "key": "fiscalData", "type": "OBJECT" },
+        { "key": "cashMovementId", "type": "TEXT" },
+        { "key": "invoicingDate", "type": "DATE" },
+        { "key": "traceId", "type": "TEXT", "required": true, "maxLength": 100 }
+      ],
+      "indexes": [
+        { "fields": ["bookingId"], "unique": true },
+        { "fields": ["pairToken"] },
+        { "fields": ["dateYmd", "resourceId"] },
+        { "fields": ["serviceId", "dateYmd"] },
+        { "fields": ["status", "paymentStatus"] }
+      ]
+    },
+    {
+      "id": "FacturasRecibidas",
+      "displayName": "FacturasRecibidas",
+      "permissions": { "read": "ADMIN", "write": "ADMIN" },
+      "fields": [
+        { "key": "receptionNumber", "type": "TEXT", "required": true, "unique": true },
+        { "key": "invoiceNumber", "type": "TEXT", "required": true },
+        { "key": "invoiceIssueDate", "type": "DATE", "required": true },
+        { "key": "operationDate", "type": "DATE" },
+        { "key": "receptionDate", "type": "DATE", "required": true },
+        { "key": "accountingEntryDate", "type": "DATE", "required": true },
+        { "key": "thirdPartyId", "type": "TEXT", "required": true },
+        { "key": "issuerTaxId", "type": "TEXT", "required": true },
+        { "key": "issuerLegalName", "type": "TEXT", "required": true },
+        { "key": "recipientTaxId", "type": "TEXT", "required": true },
+        { "key": "recipientLegalName", "type": "TEXT", "required": true },
+        { "key": "invoiceType", "type": "TEXT",
+          "enum": ["F1","F2","R1","R2","R3","R4","R5"] },
+        { "key": "operationDescription", "type": "TEXT", "required": true, "maxLength": 500 },
+        { "key": "totalAmount", "type": "NUMBER", "required": true },
+        { "key": "totalTaxableBase", "type": "NUMBER", "required": true },
+        { "key": "totalVatAmount", "type": "NUMBER", "required": true },
+        { "key": "surchargeAmount", "type": "NUMBER" },
+        { "key": "irpfWithholdingAmount", "type": "NUMBER" },
+        { "key": "irpfWithholdingRate", "type": "NUMBER" },
+        { "key": "detailedBreakdown", "type": "ARRAY" },
+        { "key": "regimeKey", "type": "TEXT" },
+        { "key": "operationClassification", "type": "TEXT" },
+        { "key": "exemptOperation", "type": "TEXT" },
+        { "key": "reverseCharge", "type": "BOOLEAN" },
+        { "key": "specialRegime", "type": "OBJECT" },
+        { "key": "deductible", "type": "BOOLEAN" },
+        { "key": "deductionPercentage", "type": "NUMBER" },
+        { "key": "deductibleAmount", "type": "NUMBER" },
+        { "key": "paymentStatus", "type": "TEXT",
+          "enum": ["PENDIENTE","PAGADO","PARCIAL"] },
+        { "key": "paymentDate", "type": "DATE" },
+        { "key": "paymentMethod", "type": "TEXT",
+          "enum": ["01","02","03","04","05"] },
+        { "key": "expenseAccountCode", "type": "TEXT", "maxLength": 6 },
+        { "key": "vatAccountCode", "type": "TEXT", "maxLength": 6 },
+        { "key": "supplierAccountCode", "type": "TEXT", "maxLength": 6 },
+        { "key": "accountingEntryId", "type": "TEXT" },
+        { "key": "sourceEventId", "type": "TEXT", "required": true },
+        { "key": "correctedInvoiceId", "type": "TEXT" },
+        { "key": "correctionReason", "type": "TEXT", "maxLength": 500 },
+        { "key": "attachmentUrl", "type": "URL" },
+        { "key": "fileHash", "type": "TEXT" },
+        { "key": "receptionSource", "type": "TEXT",
+          "enum": ["MANUAL","EMAIL","API","OCR"] },
+        { "key": "validationStatus", "type": "TEXT",
+          "enum": ["PENDIENTE","VALIDADA","RECHAZADA"] },
+        { "key": "traceId", "type": "TEXT", "required": true, "maxLength": 100 }
+      ],
+      "indexes": [
+        { "fields": ["receptionNumber"], "unique": true },
+        { "fields": ["thirdPartyId", "invoiceIssueDate"] },
+        { "fields": ["paymentStatus"] }
+      ]
+    },
+    {
+      "id": "HistoricoCierresZ",
+      "displayName": "HistoricoCierresZ",
+      "permissions": { "read": "ADMIN", "write": "ADMIN" },
+      "fields": [
+        { "key": "operationDate", "type": "DATE", "required": true },
+        { "key": "balancesByMethod", "type": "OBJECT" },
+        { "key": "sourceEventId", "type": "TEXT", "required": true },
+        { "key": "breakdownByRegime", "type": "ARRAY" },
+        { "key": "breakdownByOperationType", "type": "ARRAY" },
+        { "key": "breakdownByTaxRate", "type": "ARRAY" },
+        { "key": "verifactuSummary", "type": "OBJECT" },
+        { "key": "aeatSubmissionStatus", "type": "TEXT",
+          "enum": ["PENDIENTE","ENVIADO","ACEPTADO","ACEPTADO_CON_ERRORES","RECHAZADO"] },
+        { "key": "aeatSubmissionDate", "type": "DATE" },
+        { "key": "aeatResponse", "type": "OBJECT" },
+        { "key": "aeatCsv", "type": "TEXT" }
+      ],
+      "indexes": [
+        { "fields": ["operationDate"], "unique": true }
+      ]
+    },
+    {
+      "id": "CompensacionesPendientes",
+      "displayName": "CompensacionesPendientes",
+      "permissions": { "read": "ADMIN", "write": "ADMIN" },
+      "fields": [
+        { "key": "kind", "type": "TEXT",
+          "enum": ["FISCAL_LEDGER","BOOKING_ROLLBACK","PAYMENT_RECOVERY"] },
+        { "key": "status", "type": "TEXT",
+          "enum": ["PENDING","PROCESSING","FAILED","COMPLETED"] },
+        { "key": "attempts", "type": "NUMBER" },
+        { "key": "errorCode", "type": "TEXT" },
+        { "key": "errorMessage", "type": "TEXT", "maxLength": 500 },
+        { "key": "sourceEventId", "type": "TEXT" },
+        { "key": "thirdPartyId", "type": "TEXT" },
+        { "key": "traceId", "type": "TEXT", "maxLength": 100 }
+      ],
+      "indexes": [
+        { "fields": ["status", "updatedDate"] }
+      ]
+    },
+    {
+      "id": "MovimientosInventario",
+      "displayName": "MovimientosInventario",
+      "permissions": { "read": "ADMIN", "write": "ADMIN" },
+      "fields": [
+        { "key": "wixProductId", "type": "TEXT", "required": true },
+        { "key": "sku", "type": "TEXT", "required": true },
+        { "key": "orderId", "type": "TEXT" },
+        { "key": "refundId", "type": "TEXT" },
+        { "key": "sourceEventId", "type": "TEXT", "required": true },
+        { "key": "catalogId", "type": "TEXT", "required": true },
+        { "key": "magnitude", "type": "NUMBER", "required": true },
+        { "key": "thirdPartyId", "type": "TEXT" },
+        { "key": "traceId", "type": "TEXT", "maxLength": 100 }
+      ],
+      "indexes": [
+        { "fields": ["sku", "sourceEventId"] },
+        { "fields": ["orderId"] }
+      ]
+    },
+    {
+      "id": "RegistrosHorariosStaff",
+      "displayName": "RegistrosHorariosStaff",
+      "permissions": { "read": "ADMIN", "write": "ADMIN" },
+      "fields": [
+        { "key": "resourceId", "type": "TEXT", "required": true },
+        { "key": "date", "type": "DATE", "required": true },
+        { "key": "hours", "type": "NUMBER" },
+        { "key": "sourceEventId", "type": "TEXT", "required": true },
+        { "key": "thirdPartyId", "type": "TEXT", "required": true },
+        { "key": "traceId", "type": "TEXT", "maxLength": 100 }
+      ],
+      "indexes": [
+        { "fields": ["resourceId", "date"] }
+      ]
+    },
+    {
+      "id": "MapaStaff",
+      "displayName": "MapaStaff",
+      "permissions": { "read": "ADMIN", "write": "ADMIN" },
+      "fields": [
+        { "key": "staffMemberId", "type": "TEXT", "required": true, "unique": true },
+        { "key": "resourceId", "type": "TEXT", "required": true, "unique": true },
+        { "key": "name", "type": "TEXT", "maxLength": 100 },
+        { "key": "thirdPartyId", "type": "TEXT", "required": true }
+      ]
+    },
+    {
+      "id": "ComplementosCatalogo",
+      "displayName": "ComplementosCatalogo",
+      "permissions": { "read": "ANYONE", "write": "ADMIN" },
+      "fields": [
+        { "key": "taxCode", "type": "TEXT",
+          "enum": ["IVA_21","IVA_10","IVA_4","IVA_0","IRPF_15","IRPF_19","EXENTO"] },
+        { "key": "aeatRegimeKey", "type": "TEXT" },
+        { "key": "incomeAccountCode", "type": "TEXT", "maxLength": 6 },
+        { "key": "itemNature", "type": "TEXT",
+          "enum": ["SERVICIO_PROPIO","PRODUCTO_VENTA","PRODUCTO_USO","GASTO_FIJO"] }
+      ]
+    },
+    {
+      "id": "ConfiguracionFiscal",
+      "displayName": "ConfiguracionFiscal",
+      "permissions": { "read": "ADMIN", "write": "ADMIN" },
+      "fields": [
+        { "key": "computerSystem", "type": "OBJECT" },
+        { "key": "producerTaxId", "type": "TEXT" },
+        { "key": "producerLegalName", "type": "TEXT" },
+        { "key": "computerSystemId", "type": "TEXT", "maxLength": 50 },
+        { "key": "version", "type": "TEXT", "maxLength": 20 },
+        { "key": "installationNumber", "type": "TEXT", "maxLength": 20 },
+        { "key": "possibleUseOnlyVerifactu", "type": "TEXT", "enum": ["S","N"] },
+        { "key": "possibleUseMultiOT", "type": "TEXT", "enum": ["S","N"] },
+        { "key": "multipleOTIndicator", "type": "TEXT", "enum": ["S","N"] },
+        { "key": "verifactuStartDate", "type": "DATE" }
+      ]
+    }
+  ]
+}
+```
+
+---
+
+# Resumen de cambios respecto a v5009 original
+
+| Aspecto | v5009 original | v5009-FISCAL-V20 |
+|---|---|---|
+| ID nativa | Mezcla español/inglés | 100% inglés camelCase |
+| Nombre visible | Mezcla español/inglés | 100% español |
+| Valores enum | MAYÚSCULAS español | MAYÚSCULAS español (sin cambio) |
+| `fiscalPayload` interno | Nombres AEAT español | Nombres AEAT español (excepción normativa) |
+| Campos sistema Wix | `_id`, `_createdDate`… | `_id`, `_createdDate`… (sin cambio) |
+| Total campos | ~310 | ~310 |
+| Renombrados | — | 178 |
+| Colecciones nuevas | — | `ConfiguracionFiscal`, `FacturasRecibidas` |
+
+---
+
+# Impacto en código (refactor pendiente)
+
+| Módulo | Campos a renombrar |
+|---|---|
+| `eventLog.js` | Todos los del motor (~120) |
+| `cajas.web.js` | Todos los del ledger (~40) |
+| `events.js` | `_extractFiscalDataFromOrder` (~15) |
+| `contabilidad.js` | Lee `recordHash`, `taxAmount`, `thirdPartyId` (~10) |
+| `inventario.web.js` | `sourceEventId`, `catalogId`, `magnitude` (~3) |
+| `data.js` | Validaciones por nombre (~50) |
+| `citasManager.web.js` | `thirdPartyId`, `catalogId` (~2) |
+| `bookingSaga.js` | `pairToken` (sin cambio) |
+| `bookingCore.js` | Sin cambios |
+
+---
+
+¿Quieres que emita ahora el **script de migración CMS** (renombrar campos in-place con dual write) o los **módulos backend refactorizados** (`eventLog.js` + `cajas.web.js` + `events.js` + `data.js`) con la nomenclatura V20 aplicada?

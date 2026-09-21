@@ -110,7 +110,6 @@
 | `CITAS_F2` | CitasF2 |
 | `COMPENSACIONES_PENDIENTES` | CompensacionesPendientes |
 | `COMPLEMENTOS_CATALOGO` | ComplementosCatalogo |
-| `CONFIGURACION_FISCAL` | ConfiguracionFiscal |
 | `DATOS_FISCALES` | DatosFiscales |
 | `DUAL_SLOT_CACHE` | DualSlotCache |
 | `HISTORICO_CIERRES_Z` | HistoricoCierresZ |
