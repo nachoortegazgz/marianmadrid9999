@@ -1,28 +1,22 @@
 /**
  * ============================================================================
  * FILE: backend/reservas.web.js
- * VERSION: v5008.13-STAFF-LOAD-BALANCE
+ * VERSION: v5009-FISCAL-V20.1
+ * BASE: v5008.13-STAFF-LOAD-BALANCE + Directriz V20 (IDs nativa en ingles)
  * RESPONSIBILITY: Availability engine, dual slots, staff pairing and caching.
  * STANDARDS: G10 ASCII Strict.
  *
- * FIXES APLICADOS:
- *  - FIX-21: getAvailableSlots rechaza durationRange+addons.
- *  - FIX-22: getAvailableSlots rechaza servicios duales.
- *  - FIX-23: Consolidacion con bookingUtils.
- *  - FIX-24: Dead code eliminado.
- *  - FIX-30: withTimeout con fabrica en las 8 llamadas.
- *  - FIX-R1: Reconstruccion de _getCertifiedDualSlotsInternal,
- *            _invalidateCachesInternal, _resolveStaffForSlotInternal,
- *            getAvailableDays, getCertifiedDualSlots, resolveStaffForSlot.
- *  - FIX-R2: Balanceo de carga staff en dual (menor carga del dia en
- *            CITAS_F2, excluye CANCELLED). Fallback determinista.
- *            Mismo resourceId en F1 y F2.
+ * FIXES APLICADOS v5009-FISCAL-V20.1:
+ *  - V20-01: import ESTADO_CITA -> BOOKING_STATUS (internalConfig V20.1).
+ *  - V20-02: uso de BOOKING_STATUS.CANCELLED en _countStaffLoadForDay.
+ *  - V20-03: resto del modulo sin cambios funcionales (campos CMS
+ *            ya estaban en ingles).
  *
- * FIXES v5008.13:
- *  - FIX-DOC-BALANCE-A: el export se aplica a _getCertifiedDualSlotsInternal,
- *            no a _countStaffLoadForDay. Necesario para bookingCore.
- *  - FIX-DOC-BALANCE-B: pickStaffByLowestLoad ya disponible en bookingUtils.
+ * FIXES APLICADOS v5008.13 (heredados):
+ *  - FIX-DOC-BALANCE-A: export movido a _getCertifiedDualSlotsInternal.
+ *  - FIX-DOC-BALANCE-B: pickStaffByLowestLoad desde bookingUtils v5008.3.
  *  - FIX-DOC-BALANCE-C: limite del conteo desde SDK_CONFIG.JOBS.
+ *  - FIX-21..24, FIX-30, FIX-R1, FIX-R2.
  * ============================================================================
  */
 
@@ -36,7 +30,7 @@ import {
   SLOT_SEARCH,
   API,
   STAFF_DEFAULT_NAME,
-  ESTADO_CITA
+  BOOKING_STATUS
 } from "backend/internalConfig";
 
 import {
@@ -92,7 +86,7 @@ function _normalizeImport2Addon(addon) {
   return {
     ...addon,
     id: _safeTrim(addon.id || addon._id || addon.addonId),
-    nombre: _safeTrim(addon.name || addon.name || addon.title),
+    nombre: _safeTrim(addon.nombre || addon.name || addon.title),
     precio: Number(addon.precio ?? addon.price ?? 0) || 0
   };
 }
@@ -482,7 +476,6 @@ export async function _mapServiceImport2ToUX(service, traceId) {
   const taxIncluded = _readImport2Field(service, "taxIncluded") === true;
   const taxRate = Number(_readImport2Field(service, "taxRate")) || 0;
   const categoryId = _safeTrim(_readImport2Field(service, "categoryId")) || null;
-  // categoryName es campo legacy prohibido (SSOT R10); se omite
   const locationId = _safeTrim(_readImport2Field(service, "locationId")) || null;
   const location = _safeTrim(_readImport2Field(service, "location")) || null;
   const imageUrl = _safeTrim(_readImport2Field(service, "mainMedia")) || "";
@@ -870,10 +863,7 @@ export const getAvailableDays = webMethod(
 );
 
 // ============================================================================
-// [FIX-R2] STAFF LOAD COUNTS FOR DAY (CITAS_F2)
-//
-// Funcion privada. Cuenta citas no canceladas por resourceId en un dia.
-// Usado por _getCertifiedDualSlotsInternal y revalidateExactAvailabilitySlot.
+// STAFF LOAD COUNTS FOR DAY (CITAS_F2)
 // ============================================================================
 
 async function _countStaffLoadForDay(dateYMD, resourceIds, traceId) {
@@ -889,7 +879,7 @@ async function _countStaffLoadForDay(dateYMD, resourceIds, traceId) {
     return loadByResource;
   }
 
-  const cancelled = String(ESTADO_CITA?.CANCELLED || "CANCELLED");
+  const cancelled = String(BOOKING_STATUS?.CANCELLED || "CANCELLED");
   const idSet = new Set(ids);
 
   try {
@@ -930,10 +920,6 @@ async function _countStaffLoadForDay(dateYMD, resourceIds, traceId) {
 
 // ============================================================================
 // DISPONIBILIDAD DUAL
-//
-// FIX-DOC-BALANCE-A: export aplicado a _getCertifiedDualSlotsInternal.
-// bookingCore.getCertifiedDualSlotsOptimized importa dinamicamente esta
-// funcion.
 // ============================================================================
 
 export async function _getCertifiedDualSlotsInternal(serviceId, resourceId, dateYMD, addonIds = []) {
@@ -1265,9 +1251,6 @@ export async function _invalidateCachesInternal(serviceId, dateYMD, resourceId, 
 
 // ============================================================================
 // REVALIDACION EXACTA
-//
-// FIX-R2: si no hay requiredResourceId y hay >1 candidato, se aplica
-// balanceo de carga via pickStaffByLowestLoad.
 // ============================================================================
 
 export async function revalidateExactAvailabilitySlot({

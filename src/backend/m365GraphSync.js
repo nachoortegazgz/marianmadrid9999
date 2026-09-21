@@ -1,13 +1,17 @@
 /*
 =============================================================================
 MODULE: backend/m365GraphSync.js
-VERSION: v5007.4-FINAL (CORREGIDO)
-BASE: BIBLIA v5002.5 + DOSSIER CAJA
-CORRECTIONS APPLIED:
-  [M365-01] desiredPayload en INSERT de M365GraphSyncQueue (antes payload).
-  [M365-02] Lectura correcta de desiredPayload en procesamiento.
-  [M365-03] Maquina de estados con RECOVERABLE/NO_RECOVERABLE.
-  [M365-04] Lock distribuido con expiracion.
+VERSION: v5009-FISCAL-V20.1
+BASE: v5007.4-FINAL + Directriz V20 (IDs nativa en ingles)
+CORRECTIONS APPLIED v5009-FISCAL-V20.1:
+  - V20-01: sin renombrados funcionales. El modulo no importa constantes
+            renombradas ni toca campos CMS con nomenclatura cambiada.
+            Los campos del payload Graph (eventType, transactionId,
+            bookingReference, amount, correlationId, integrityHash) son
+            contrato externo de Microsoft Graph, no CMS.
+
+CORRECTIONS (heredadas):
+  [M365-01..M365-04].
 =============================================================================
 */
 
@@ -28,7 +32,6 @@ const MAX_BACKOFF_MS = 3600000;
 const LOCK_EXPIRY_MS = 900000;
 const GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0";
 
-// [M365-03] Estados de maquina de estados
 const STATES = {
   PENDING: "PENDING",
   PROCESSING: "PROCESSING",
@@ -37,7 +40,6 @@ const STATES = {
   RETRY: "RETRY",
 };
 
-// [M365-03] Clasificacion de errores
 const RECOVERABLE_ERRORS = [
   "M365_GRAPH_TOKEN_FAILED",
   "M365_GRAPH_POST_FAILED",
@@ -131,7 +133,6 @@ async function _postListItem(config, token, payload) {
 
 // ============================================================================
 // ENCOLAR REGISTRO
-// [M365-01] desiredPayload en lugar de payload
 // ============================================================================
 
 export async function enqueueM365LedgerRecord(movement, traceId) {
@@ -141,7 +142,7 @@ export async function enqueueM365LedgerRecord(movement, traceId) {
     eventType: "LEDGER_MOVEMENT",
     correlationId: traceId || movement?.traceId,
     transactionId: movement?.transactionId,
-    bookingReference: movement?.linkedBookingIds || movement?.bookingId || movement?._id,
+    bookingReference: movement?.linkedBookingIds || movement?.reservaIdVinculada || movement?.bookingId || movement?._id,
     amount: movement?.accountingAmount,
     currency: "EUR",
     occurredAt: movement?.registeredAt || new Date(),
@@ -152,7 +153,6 @@ export async function enqueueM365LedgerRecord(movement, traceId) {
   const queueId = _queueId(payload);
   const queue = {
     _id: queueId,
-    // [M365-01] Campo canonico: desiredPayload
     desiredPayload: payload,
     payloadHash: payload.integrityHash,
     status: STATES.PENDING,
@@ -172,7 +172,6 @@ export async function enqueueM365LedgerRecord(movement, traceId) {
 
 // ============================================================================
 // PROCESAR COLA
-// [M365-02] Lectura correcta de desiredPayload
 // ============================================================================
 
 export async function processM365GraphSyncQueue(options = {}) {
@@ -195,7 +194,6 @@ export async function processM365GraphSyncQueue(options = {}) {
 
   for (const queue of pending.items) {
     try {
-      // [M365-02] Leer desiredPayload (campo canonico)
       const payload = queue.desiredPayload || queue.payload;
       const postResult = await _postListItem(config, token, payload);
 

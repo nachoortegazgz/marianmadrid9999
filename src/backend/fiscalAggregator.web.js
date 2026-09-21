@@ -1,19 +1,28 @@
 /*
 =============================================================================
 MODULE: backend/fiscalAggregator.web.js
-VERSION: v5002.2-FINAL
-BASE: BIBLIA v5002.5 + DOSSIER CAJA S29
+VERSION: v5009-FISCAL-V20.1
+BASE: v5002.2-FINAL + Directriz V20 (IDs nativa en ingles)
 RESPONSIBILITY: Resumenes fiscales trimestrales y extractos del ledger
  para reporting fiscal interno. Usa Stream Accumulator Pattern con
  paginacion acotada.
-STANDARDS: G10 ASCII Strict (0 non-ASCII characters).
+STANDARDS: G10 ASCII Strict.
+
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: import TIPO_MOVIMIENTO -> MOVEMENT_TYPE.
+  - V20-02: lectura de campos de MovimientosCaja con nomenclatura V20.1
+            (taxableBaseOrNonSubjectAmount, recordHash, linkedBookingIds,
+            operationDescription, previousInvoiceId) + fallback legacy.
+  - V20-03: lectura de ConfiguracionFiscal con nomenclatura V20.1
+            (producerTaxId) + fallback legacy (businessTaxId, taxId,
+            nifEmisor).
 =============================================================================
 */
 
 import { webMethod, Permissions } from "wix-web-module";
 import wixData from "wix-data";
 
-import { COLLECTIONS, SDK_CONFIG, TIPO_MOVIMIENTO } from "backend/internalConfig";
+import { COLLECTIONS, SDK_CONFIG, MOVEMENT_TYPE } from "backend/internalConfig";
 import { makeTraceId, _safeTrim, _roundMoney, withTimeout } from "public/mmUtils";
 import { requireCajero, requireAdmin, requireMarianManager, rateLimiter } from "backend/security";
 import { logger } from "backend/logger";
@@ -24,6 +33,62 @@ const log = logger;
 const CHUNK_PAGE_SIZE = 100;
 const MAX_PAGES = SDK_CONFIG?.JOBS?.FISCAL_DAILY_MAX_PAGES || 50;
 const CMS_TIMEOUT_MS = Number(SDK_CONFIG?.TIMEOUTS?.CMS_MS) || 15000;
+
+// =============================================================================
+// BLOQUE 0 - HELPERS DE LECTURA (V20.1 + fallback legacy)
+// =============================================================================
+
+function _readTaxableAmount(m) {
+  return Number(m.taxableBaseOrNonSubjectAmount ?? m.taxableAmount ?? 0);
+}
+
+function _readTaxAmount(m) {
+  return Number(m.taxAmount ?? m.cuotaIva ?? 0);
+}
+
+function _readTaxRate(m) {
+  return Number(m.taxRate ?? m.tasaIva ?? 0);
+}
+
+function _readMovementType(m) {
+  return _safeTrim(m.movementType ?? m.tipoMovimiento);
+}
+
+function _readOperationNature(m) {
+  return _safeTrim(m.operationNature ?? m.naturalezaOperacion).toUpperCase();
+}
+
+function _readPaymentMethod(m) {
+  return _safeTrim(m.paymentMethod ?? m.medioPago).toLowerCase();
+}
+
+function _readRecordHash(m) {
+  return _safeTrim(m.recordHash ?? m.currentRecordHash ?? m.hashCadena);
+}
+
+function _readLinkedBookingIds(m) {
+  return _safeTrim(m.linkedBookingIds ?? m.reservaIdVinculada);
+}
+
+function _readInvoiceNumber(m) {
+  return _safeTrim(m.invoiceNumber ?? m.numTicketFactura);
+}
+
+function _readOperationDate(m) {
+  return _safeTrim(m.operationDate ?? m.diaKey);
+}
+
+function _readOperationDescription(m) {
+  return _safeTrim(m.operationDescription ?? m.description ?? m.concepto);
+}
+
+function _readRecordSource(m) {
+  return _safeTrim(m.recordSource ?? m.origen);
+}
+
+function _readPreviousInvoiceId(m) {
+  return _safeTrim(m.previousInvoiceId ?? m.rectifiedInvoiceReference ?? m.referenciaRectificativa) || null;
+}
 
 // =============================================================================
 // BLOQUE 1 - HELPERS
@@ -81,17 +146,17 @@ function _accumulatePage(items, state) {
   for (const m of items) {
     state.totalOperations++;
     const accountingAmount = Number(m.accountingAmount || 0);
-    const taxableAmount = Number(m.taxableAmount || 0);
-    const taxAmount = Number(m.taxAmount || 0);
+    const taxableAmount = _readTaxableAmount(m);
+    const taxAmount = _readTaxAmount(m);
     const mes = _safeTrim(m.fiscalPeriod || m.mesKey);
-    const paymentMethod = _safeTrim(m.paymentMethod || m.paymentMethod || "").toLowerCase();
-    const taxRate = Number(m.taxRate || m.tasaIva || 0);
+    const paymentMethod = _readPaymentMethod(m);
+    const taxRate = _readTaxRate(m);
     const taxRateKey = String(taxRate);
-    const movementType = _safeTrim(m.movementType || m.movementType || "").toUpperCase();
-    const operationNature = _safeTrim(m.operationNature || m.naturalezaOperacion || "").toUpperCase() || (
-      movementType === TIPO_MOVIMIENTO.PROPINA ? "PROPINA" :
-      movementType === TIPO_MOVIMIENTO.REEMBOLSO || accountingAmount < 0 ? "DEVOLUCION" :
-      movementType === TIPO_MOVIMIENTO.AJUSTE ? "AJUSTE" : "VENTA"
+    const movementType = _readMovementType(m).toUpperCase();
+    const operationNature = _readOperationNature(m) || (
+      movementType === MOVEMENT_TYPE.PROPINA ? "PROPINA" :
+      movementType === MOVEMENT_TYPE.REEMBOLSO || accountingAmount < 0 ? "DEVOLUCION" :
+      movementType === MOVEMENT_TYPE.AJUSTE ? "AJUSTE" : "VENTA"
     );
 
     if (state.breakdownByPaymentMethod[paymentMethod] !== undefined) {
@@ -282,35 +347,35 @@ export async function getLibroRegistroFacturasExpedidasInternal(year, quarter, o
 
   for (const m of fetchResult.items) {
     const accountingAmount = Number(m.accountingAmount || 0);
-    const movementType = _safeTrim(m.movementType || m.movementType || "").toUpperCase();
-    const operationNature = _safeTrim(m.operationNature || m.naturalezaOperacion || "").toUpperCase();
-    const isTip = operationNature === "PROPINA" || movementType === TIPO_MOVIMIENTO.PROPINA;
-    const isAdjustment = operationNature === "AJUSTE" || movementType === TIPO_MOVIMIENTO.AJUSTE;
-    const isRefund = operationNature === "DEVOLUCION" || movementType === TIPO_MOVIMIENTO.REEMBOLSO || accountingAmount < 0;
+    const movementType = _readMovementType(m).toUpperCase();
+    const operationNature = _readOperationNature(m);
+    const isTip = operationNature === "PROPINA" || movementType === MOVEMENT_TYPE.PROPINA;
+    const isAdjustment = operationNature === "AJUSTE" || movementType === MOVEMENT_TYPE.AJUSTE;
+    const isRefund = operationNature === "DEVOLUCION" || movementType === MOVEMENT_TYPE.REEMBOLSO || accountingAmount < 0;
 
     libroFilas.push({
       orden: orderIndex++,
-      invoiceNumber: _safeTrim(m.invoiceNumber || m.numTicketFactura),
-      fechaExpedicion: _safeTrim(m.operationDate || m.diaKey),
+      invoiceNumber: _readInvoiceNumber(m),
+      fechaExpedicion: _readOperationDate(m),
       tipoFactura: isRefund ? "R1" : (isTip || isAdjustment ? "BORRADOR_INTERNO" : "BORRADOR_INTERNO"),
-      movementType: _safeTrim(m.movementType || m.movementType),
+      movementType: _readMovementType(m),
       operationNature: operationNature || "VENTA",
-      taxTreatment: _safeTrim(m.taxTreatment || m.taxTreatment) || "PENDIENTE_VALIDACION",
+      taxTreatment: _safeTrim(m.taxTreatment) || "PENDIENTE_VALIDACION",
       incluidoEnBorradorIva: !isTip && !isAdjustment,
-      referenciaRectificativa: _safeTrim(m.rectifiedInvoiceReference || m.referenciaRectificativa) || null,
-      paymentMethod: _safeTrim(m.paymentMethod || m.paymentMethod),
-      taxableAmount: _roundMoney(m.taxableAmount || m.baseImponible || 0),
-      taxRate: `${Math.round((Number(m.taxRate || m.tasaIva || 0)) * 100)}%`,
-      taxAmount: _roundMoney(m.taxAmount || m.cuotaIva || 0),
+      referenciaRectificativa: _readPreviousInvoiceId(m),
+      paymentMethod: _safeTrim(m.paymentMethod ?? m.medioPago),
+      taxableAmount: _roundMoney(_readTaxableAmount(m)),
+      taxRate: `${Math.round(_readTaxRate(m) * 100)}%`,
+      taxAmount: _roundMoney(_readTaxAmount(m)),
       totalAmount: _roundMoney(accountingAmount),
-      concepto: _safeTrim(m.description || m.concepto),
-      origen: _safeTrim(m.recordSource || m.origen),
+      concepto: _readOperationDescription(m),
+      origen: _readRecordSource(m),
       orderId: _safeTrim(m.orderId) || null,
       refundId: _safeTrim(m.refundId) || null,
       fechaHoraRegistro: m.registeredAt || null,
-      huellaSha256: _safeTrim(m.currentRecordHash || "").slice(0, 8).toUpperCase(),
-      hashCompleto: _safeTrim(m.currentRecordHash || ""),
-      reservaVinculada: _safeTrim(m.linkedBookingIds) || null,
+      huellaSha256: _readRecordHash(m).slice(0, 8).toUpperCase(),
+      hashCompleto: _readRecordHash(m),
+      reservaVinculada: _readLinkedBookingIds(m) || null,
       transactionId: _safeTrim(m.transactionId),
     });
   }
@@ -340,7 +405,7 @@ async function _getBusinessTaxId(traceId) {
       "getBusinessTaxId"
     );
     const item = config?.items?.[0];
-    return item?.businessTaxId || item?.taxId || item?.issuerTaxId || "BXXXXXXXX";
+    return item?.producerTaxId || item?.businessTaxId || item?.taxId || item?.issuerTaxId || item?.nifEmisor || "BXXXXXXXX";
   } catch (err) {
     log.warn("_getBusinessTaxId failed, using fallback", { traceId, error: err?.message });
     return "BXXXXXXXX";

@@ -1,28 +1,22 @@
 /*
 =============================================================================
 MODULE: backend/booking/bookingCore.js
-VERSION: v5008.6-FINAL
-BASE: BIBLIA v5002.5 Bloque 12.2 + MOTOR DE RESERVAS + DIRECTRICES V19
+VERSION: v5009-FISCAL-V20.1
+BASE: v5008.6-FINAL + Directriz V20 (IDs nativa en ingles)
 RESPONSIBILITY: Capa de acceso y primitivas atomicas para reservas.
 STANDARDS: ASCII only. No Node builtins.
-HISTORIAL DE CAMBIOS:
-  v5008.6 | 2026-09-20 | Alineacion final:
-           |            | [FIX-32] _extractResourceIdsFromSlot usa
-           |            |   API.STAFF_RESOURCE_TYPE_ID (SSOT) en lugar de
-           |            |   GUID hardcoded.
-           |            | [FIX-33] _areSlotsContiguous delega en
-           |            |   computeGapMinutes de bookingUtils. Unifica
-           |            |   tolerancia con bookingSaga y citasManager.
-           |            | [FIX-43] Fallback de lectura lockOwnerId ||
-           |            |   traceId en _getLock y chequeos de owner. Los
-           |            |   locks creados antes del rename (campo traceId)
-           |            |   siguen funcionando sin ventana de downtime.
-  v5008.5 | 2026-09-19 | COHERENCIA scheduleId Writer<->CitasF2:
-           |            | [CORE-16] _resolveScheduleIdForResource.
-           |            | [CORE-17] getCertifiedDualSlotsOptimized
-           |            |   filtra por coherencia del cache.
-  v5008.4 | 2026-09-19 | Date range, scheduleId obligatorio, cache
-           |            | validaciones, imports no usados retirados.
+
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: sin renombrados funcionales. El modulo solo usa nombres cortos
+            (bookingId, pairToken, status, paymentStatus, traceId) que no
+            cambian en V20.1. CitasF2 mantiene su esquema corto; los campos
+            V20.1 nuevos (thirdPartyId, sourceEventId, fiscalData, etc.) los
+            escriben los modulos de nivel superior (bookingSaga, events).
+
+HISTORIAL (heredado):
+  v5008.6 | 2026-09-20 | Alineacion final: FIX-32, FIX-33, FIX-43.
+  v5008.5 | 2026-09-19 | COHERENCIA scheduleId: CORE-16, CORE-17.
+  v5008.4 | 2026-09-19 | Date range, scheduleId obligatorio, cache validaciones.
   v5008.3 | 2026-09-19 | Restauracion de exports faltantes.
   v5008.2 | 2026-09-15 | Aligned + dead code removed.
 =============================================================================
@@ -186,22 +180,6 @@ async function _resolveScheduleIdByResourceId(resourceId) {
     return scheduleId && _looksLikeGuid(scheduleId) ? scheduleId : null;
 }
 
-/**
- * [CORE-16] Devuelve el scheduleId canonico para un recurso a partir de un
- * slot fuente, aplicando el MISMO orden de prioridad que
- * _forceStaffInPristineSlot:
- *   1. sourceSlot.scheduleId
- *   2. sourceSlot.slot.scheduleId
- *   3. sourceSlot.schedule.id
- *   4. sourceSlot.resource.scheduleId
- *   5. getStaffScheduleId(resourceId)  (fallback)
- *
- * Uso previsto: el Saga lo invoca ANTES de persistir para garantizar que el
- * scheduleId persistido en CitasF2 sea exactamente el mismo que se envio a
- * Writer V2 en el slot pristine.
- *
- * @returns {Promise<string|null>} GUID del scheduleId o null si no se pudo resolver.
- */
 export async function _resolveScheduleIdForResource(resourceId, sourceSlot) {
     const resourceIdClean = _safeTrim(resourceId);
     if (!resourceIdClean || !_looksLikeGuid(resourceIdClean)) return null;
@@ -220,13 +198,6 @@ export async function _resolveScheduleIdForResource(resourceId, sourceSlot) {
 // BLOQUE 6 - NORMALIZACION DE SLOTS PARA WRITER V2
 // =============================================================================
 
-/**
- * Build the official Writer V2 slot shape.
- * Required: serviceId, scheduleId, startDate/endDate (ISO),
- *           timezone, resource.id, location.id + locationType OWNER_BUSINESS.
- *
- * [CORE-10] Valida explicitamente que endDate > startDate.
- */
 export async function _forceStaffInPristineSlot(slot, resourceId, serviceIdOverride, defaultDurationMinutes) {
     if (!slot || typeof slot !== "object") return null;
 
@@ -281,7 +252,6 @@ export async function _forceStaffInPristineSlot(slot, resourceId, serviceIdOverr
     const endDate = getUtcDateFromMadridLocal(localEndDate);
     if (!startDate || !endDate) return null;
 
-    // [CORE-10] Validacion explicita del rango temporal
     if (endDate.getTime() <= startDate.getTime()) {
         log.error("_forceStaffInPristineSlot: invalid date range (endDate <= startDate)", {
             localStartDate,
@@ -338,11 +308,6 @@ export async function getCheckoutUrlSafe(checkoutSessionOrId) {
 
 // =============================================================================
 // BLOQUE 8 - MUTEX LOCKS (SlotLocks)
-//
-// FIX-43: compatibilidad con documentos previos al rename traceId ->
-// lockOwnerId. Los chequeos leen `lockOwnerId || traceId` para que los
-// locks creados por versiones anteriores sigan siendo renovables y
-// liberables.
 // =============================================================================
 
 const MUTEX_TTL_MS = Number(CONCURRENCY?.MUTEX_TTL_MS);
@@ -368,10 +333,6 @@ async function _getLock(slotClave) {
     return item;
 }
 
-/**
- * FIX-43: lee el owner del lock aceptando tanto `lockOwnerId` (nuevo) como
- * `traceId` (legacy). Devuelve string vacio si no hay ninguno.
- */
 function _getLockOwnerId(lock) {
     if (!lock || typeof lock !== "object") return "";
     return _safeTrim(lock.lockOwnerId || lock.traceId || "");
@@ -589,8 +550,6 @@ export async function _failTransaction(pairToken, errorMessage) {
 
 // =============================================================================
 // BLOQUE 11 - PERSISTENCIA EN CITAS_F2
-//
-// [CORE-11] scheduleId obligatorio (GUID valido).
 // =============================================================================
 
 const CITAS_COL = COLLECTIONS.CITAS_F2;
@@ -810,8 +769,6 @@ export function _sumAddons(addons) {
 
 // =============================================================================
 // BLOQUE 15 - EXTRACCION DE RESOURCEIDS DESDE SLOTS
-//
-// FIX-32: STAFF_RESOURCE_TYPE_ID via API.STAFF_RESOURCE_TYPE_ID (SSOT).
 // =============================================================================
 
 export function _extractResourceIdsFromSlot(slot) {
@@ -847,11 +804,6 @@ export function isValidGuid(id) {
 
 // =============================================================================
 // BLOQUE 17 - VERIFICACION DE CONTIGUIDAD/GAP ENTRE SLOTS
-//
-// FIX-33: delega en computeGapMinutes de bookingUtils (SSOT de la
-// tolerancia). Se mantiene la tolerancia de -1 min para solapamiento por
-// redondeo, que se calcula con la diferencia directa antes de invocar el
-// helper canonico.
 // =============================================================================
 
 export function _areSlotsContiguous(slot1, slot2, maxGapMinutes) {
@@ -867,10 +819,8 @@ export function _areSlotsContiguous(slot1, slot2, maxGapMinutes) {
 
     const rawDiffMinutes = (start2Utc.getTime() - end1Utc.getTime()) / 60000;
 
-    // Solapamiento tolerado: -1 min por redondeo.
     if (rawDiffMinutes < -1) return false;
 
-    // Gap canonico: computeGapMinutes devuelve 0 si start2 < end1.
     const gapMinutes = computeGapMinutes(end1Utc, start2Utc);
 
     return gapMinutes <= maxGap;
@@ -944,8 +894,6 @@ export function _projectWriterSlotFromAvailability(slot, resourceId, serviceId) 
 
 // =============================================================================
 // BLOQUE 19 - SLOTS DUALES OPTIMIZADOS CON CACHE PRE-WARM
-//
-// [CORE-17] Filtrado por coherencia del cache antes de devolver.
 // =============================================================================
 
 export async function getCertifiedDualSlotsOptimized(serviceId, resourceId, dateYMD, addonIds = []) {

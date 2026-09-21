@@ -1,16 +1,24 @@
 /*
 =============================================================================
 MODULE: backend/data.js
-VERSION: v5009-FISCAL-V20
-BASE: SSOT CMS v5009-FISCAL-V20 + Matriz de Cambio v5009 → v5009-V20
+VERSION: v5009-FISCAL-V20.1
+BASE: v5009-FISCAL + Directriz V20 (IDs nativa en ingles)
 RESPONSIBILITY: Hooks de inmutabilidad y validacion para Wix Data.
 STANDARDS: G10 ASCII Strict.
 
-FIXES APLICADOS v5009-FISCAL-V20:
-  - V20-01: Migracion completa de IDs nativas old→new segun Matriz de Cambio.
-  - V20-02: Eliminados helpers de traduccion legacy (lectura directa V20).
-  - V20-03: Validaciones fiscales usan exclusivamente campos V20.
-  - V20-04: Compatibilidad de lectura para datos historicos mantenida.
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: imports alineados a internalConfig V20.1.
+  - V20-02: hooks validan campos CMS V20.1 (ingles camelCase).
+  - V20-03: helpers _read* aceptan aliases legacy durante transicion.
+  - V20-04: mensajes de error se mantienen en espanol (operadores).
+  - V20-05: validaciones nuevas para fiscalRole, linkedAdvanceId,
+            vatAccrualStatus, bankReconciliationReference, isB2B,
+            issuerInvoiceNumber, correctionType, nonSubjectReason.
+
+FIXES APLICADOS v5009-FISCAL (heredados):
+  - FIX-50, FIX-51, FIX-65.
+  - D-01..D-13.
+  - FIX-FISCAL-04.
 =============================================================================
 */
 
@@ -19,10 +27,10 @@ import wixData from "wix-data";
 import {
     COLLECTIONS,
     EU_VAT_PREFIXES,
-    ROL_FISCAL,
-    TIPO_EVENTO,
-    TIPO_TERCERO,
-    NATURALEZA_ITEM,
+    FISCAL_ROLE,
+    EVENT_TYPE,
+    THIRD_PARTY_TYPE,
+    ITEM_NATURE,
 } from "backend/internalConfig";
 
 import { logger } from "backend/logger";
@@ -45,6 +53,7 @@ const ALLOWED_Z_UPDATE_FIELDS = new Set([
     "closingSignature",
     "closingSignatureStatus",
     "verifiedAt",
+    "approverUser",
     "_updatedDate",
 ]);
 
@@ -52,22 +61,26 @@ const NIF_LETRAS_DNI = "TRWAGMYFPDXBNJZSQVHLCKE";
 
 const LEDGER_SCHEMA_VERSION_AEAT = "LEDGER_V5_FISCAL";
 
-const TIPOS_TERCERO_VALIDOS = new Set([
+const VALID_THIRD_PARTY_TYPES = new Set([
     "CLIENTE", "PROVEEDOR", "STAFF", "AAPP", "MIXTO",
 ]);
 
-const NATURALEZAS_ITEM_VALIDAS = new Set([
+const VALID_ITEM_NATURES = new Set([
     "SERVICIO_PROPIO", "PRODUCTO_VENTA", "PRODUCTO_USO", "GASTO_FIJO",
 ]);
 
-const CODIGOS_IMPUESTO_VALIDOS = new Set([
+const VALID_TAX_CODES = new Set([
     "IVA_21", "IVA_10", "IVA_4", "IVA_0",
     "IRPF_15", "IRPF_19", "EXENTO",
 ]);
 
-const TIPOS_EVENTO_VALIDOS = new Set([
+const VALID_EVENT_TYPES = new Set([
     "VENTA_LINEA", "COMPRA_LINEA", "CIERRE_Z",
     "AJUSTE", "RECTIFICATIVA", "MOV_STOCK",
+]);
+
+const VALID_FISCAL_ROLES = new Set([
+    "EMISOR", "RECEPTOR",
 ]);
 
 // =============================================================================
@@ -140,7 +153,6 @@ function _isValidNifEspanol(nif) {
     return false;
 }
 
-// [FIX-FISCAL-04] Acepta NIF espanol o VAT ID europeo.
 function _isValidNifOrEuVat(nif) {
     const clean = _safeTrim(nif).toUpperCase().replace(/[-\s]/g, "");
     if (!clean) return false;
@@ -159,154 +171,145 @@ function _isValidNifOrEuVat(nif) {
 }
 
 // =============================================================================
-// HELPERS - LECTURA DIRECTA V20 (SIN TRADUCCION LEGACY)
+// HELPERS DE LECTURA — Aceptan nomenclatura V20.1 y aliases legacy
 // =============================================================================
 
-// [V20-02] Lectura directa de campos V20. Legacy solo para compatibilidad historica.
-function _readBaseImponible(item) {
-    const v = item.taxableBaseOrNonSubjectAmount ?? item.taxableBaseOrNonSubjectAmount;
+function _readTaxableBase(item) {
+    const v = item.taxableBaseOrNonSubjectAmount ?? item.baseImponibleOImporteNoSujeto ?? item.taxableAmount;
     return Number(v) || 0;
 }
 
-// [V20-02] Lectura directa de campos V20.
 function _readTaxAmount(item) {
-    const v = item.taxAmount ?? item.taxAmount;
+    const v = item.taxAmount ?? item.cuotaTotal;
     return Number(v) || 0;
 }
 
-// [V20-02] Lectura directa de campos V20.
 function _readTotalAmount(item) {
-    const v = item.totalAmount ?? item.totalAmount ?? item.amount;
+    const v = item.totalAmount ?? item.importeTotal ?? item.amount;
     return Number(v) || 0;
 }
 
-// [V20-02] Lectura directa de campos V20.
 function _readSurchargeAmount(item) {
-    const v = item.surchargeAmount ?? item.surchargeAmount;
+    const v = item.surchargeAmount ?? item.cuotaRecargoEquivalencia ?? item.importeRecargoEquivalencia;
     return Number(v) || 0;
 }
 
-// [V20-02] Lectura directa de campos V20.
 function _readRecipientTaxId(item) {
-    return _safeTrim(item.recipientTaxId || item.recipientTaxId);
+    return _safeTrim(item.recipientTaxId || item.nifDestinatario || item.nifTercero);
 }
 
-// [V20-02] Lectura directa de campos V20.
 function _readRecipientLegalName(item) {
-    return _safeTrim(item.recipientLegalName || item.recipientLegalName);
+    return _safeTrim(item.recipientLegalName || item.nombreRazonDestinatario || item.razonSocialTercero);
 }
 
-// [V20-02] Lectura directa de campos V20.
 function _readInvoiceType(item) {
-    return _safeTrim(item.invoiceType || item.invoiceType).toUpperCase();
+    return _safeTrim(item.invoiceType || item.tipoFactura || item.claveRegistroFactura).toUpperCase();
 }
 
-// [V20-03] Resuelve base desgloseDetallado o desgloseImpuestos con prioridad V20.
-function _readDesgloseBaseYCuota(item) {
+function _readBreakdownBaseAndTax(item) {
     let base = 0;
-    let cuota = 0;
+    let tax = 0;
 
-    const desglose =
+    const breakdown =
         item.detailedBreakdown ||
-        item.detailedBreakdown ||
+        item.desgloseDetallado ||
         item.desgloseImpuestos ||
         item.lineItems;
 
-    if (desglose) {
+    if (breakdown) {
         try {
-            const arr = typeof desglose === "string" ? JSON.parse(desglose) : desglose;
+            const arr = typeof breakdown === "string" ? JSON.parse(breakdown) : breakdown;
             if (Array.isArray(arr) && arr.length > 0) {
                 base = arr.reduce(
-                    (sum, d) => sum + Number(d.taxableBaseOrNonSubjectAmount ?? d.taxableBaseOrNonSubjectAmount ?? d.base ?? 0),
+                    (sum, d) => sum + Number(d.taxableBaseOrNonSubjectAmount ?? d.baseImponibleOImporteNoSujeto ?? d.base ?? 0),
                     0
                 );
-                cuota = arr.reduce(
-                    (sum, d) => sum + Number(d.chargedTaxAmount ?? d.chargedTaxAmount ?? d.cuota ?? 0),
+                tax = arr.reduce(
+                    (sum, d) => sum + Number(d.chargedTaxAmount ?? d.cuotaRepercutida ?? d.cuota ?? 0),
                     0
                 );
             }
         } catch (e) {
-            _schemaError("detailedBreakdown/desgloseDetallado/desgloseImpuestos no es JSON valido");
+            _schemaError("detailedBreakdown/desgloseDetallado no es JSON valido");
         }
     }
 
-    return { base, cuota };
+    return { base, tax };
 }
 
-// [V20-03] Valida requisitos de factura completa F1 con campos V20.
 function _validateF1Requirements(item) {
     if (_readInvoiceType(item) !== "F1") return;
 
-    const pf = item.fiscalPayload || item.fiscalPayload || {};
-    const nif = _readRecipientTaxId(item) || _safeTrim(pf.recipientTaxId || pf.recipientTaxId);
-    const nombre = _readRecipientLegalName(item) || _safeTrim(pf.recipientLegalName || pf.recipientLegalName);
-    const domicilio = item.recipientAddress || item.recipientAddress || pf.recipientAddress || pf.recipientAddress || {};
+    const pf = item.fiscalPayload || item.payloadFiscal || {};
+    const taxId = _readRecipientTaxId(item) || _safeTrim(pf.nifDestinatario);
+    const legalName = _readRecipientLegalName(item) || _safeTrim(pf.nombreRazonDestinatario);
+    const address = item.recipientAddress || pf.domicilioDestinatario || {};
 
-    if (!nif) {
-        _schemaError("Factura F1 exige recipientTaxId/nifDestinatario");
+    if (!taxId) {
+        _schemaError("Factura F1 exige recipientTaxId");
     }
-    if (!nombre) {
-        _schemaError("Factura F1 exige recipientLegalName/nombreRazonDestinatario");
+    if (!legalName) {
+        _schemaError("Factura F1 exige recipientLegalName");
     }
-    if (!domicilio || !_safeTrim(domicilio.cp)) {
-        _schemaError("Factura F1 exige recipientAddress/domicilioDestinatario con CP");
-    }
-}
-
-// [V20-03] Valida que ISP implica taxAmount = 0 con campos V20.
-function _validateISP(item) {
-    if (item.reverseCharge !== true && item.reverseCharge !== true) return;
-
-    const cuota = _readTaxAmount(item);
-    if (cuota > 0) {
-        _schemaError("reverseCharge/inversionSujetoPasivo implica taxAmount/cuotaTotal = 0");
+    if (!address || !_safeTrim(address.cp)) {
+        _schemaError("Factura F1 exige recipientAddress con CP");
     }
 }
 
-// [V20-03] Valida que AJUSTE exige referencia anterior con campos V20.
+function _validateReverseCharge(item) {
+    if (item.reverseCharge !== true) return;
+
+    const tax = _readTaxAmount(item);
+    if (tax > 0) {
+        _schemaError("reverseCharge implica taxAmount = 0");
+    }
+}
+
 function _validateAjuste(item) {
-    if (_safeTrim(item.eventType || item.eventType).toUpperCase() !== "AJUSTE") return;
+    if (_safeTrim(item.eventType).toUpperCase() !== "AJUSTE") return;
 
-    if (!_safeTrim(item.previousInvoiceId || item.previousInvoiceId)) {
-        _schemaError("eventType=AJUSTE exige previousInvoiceId/idFacturaAnterior");
+    if (!_safeTrim(item.previousInvoiceId)) {
+        _schemaError("eventType=AJUSTE exige previousInvoiceId");
     }
 }
 
-// [V20-03] Valida requisitos de la capa AEAT con campos V20.
+function _validateFiscalRole(item) {
+    const role = _safeTrim(item.fiscalRole).toUpperCase();
+    if (!role) return;
+    if (!VALID_FISCAL_ROLES.has(role)) {
+        _schemaError("fiscalRole invalido (EMISOR|RECEPTOR)");
+    }
+}
+
 function _validateFiscalPayload(item) {
     if (!_isV5Fiscal(item)) return;
 
-    const tipoEvento = _safeTrim(item.eventType || item.eventType).toUpperCase();
-    if (!tipoEvento || !TIPOS_EVENTO_VALIDOS.has(tipoEvento)) {
-        _schemaError("eventType/tipoEvento obligatorio y valido (VENTA_LINEA, COMPRA_LINEA, CIERRE_Z, AJUSTE, RECTIFICATIVA, MOV_STOCK)");
+    const eventType = _safeTrim(item.eventType).toUpperCase();
+    if (!eventType || !VALID_EVENT_TYPES.has(eventType)) {
+        _schemaError("eventType obligatorio y valido");
     }
 
-    // CIERRE_Z no exige tercero ni catalogo
-    if (tipoEvento !== "CIERRE_Z") {
+    if (eventType !== "CIERRE_Z") {
         if (!_isGuid(item.thirdPartyId)) {
             _schemaError("thirdPartyId obligatorio (FK DatosFiscales)");
         }
-        const fiscalPayload = item.fiscalPayload || item.fiscalPayload;
-        if (!fiscalPayload || typeof fiscalPayload !== "object") {
-            _schemaError("fiscalPayload/payloadFiscal obligatorio (snapshot AEAT)");
+        if (!item.fiscalPayload || typeof item.fiscalPayload !== "object") {
+            _schemaError("fiscalPayload obligatorio (snapshot AEAT)");
         }
     }
 
-    // Catalogo obligatorio en eventos de linea
-    if (["VENTA_LINEA", "COMPRA_LINEA", "RECTIFICATIVA", "MOV_STOCK"].includes(tipoEvento)) {
+    if (["VENTA_LINEA", "COMPRA_LINEA", "RECTIFICATIVA", "MOV_STOCK"].includes(eventType)) {
         if (!_isGuid(item.catalogId)) {
             _schemaError("catalogId obligatorio (FK ServiciosCatalogo)");
         }
     }
 
-    // Secuencia monotona
     if (!Number.isFinite(Number(item.sequenceNumber)) || Number(item.sequenceNumber) <= 0) {
         _schemaError("sequenceNumber obligatorio (> 0)");
     }
 
-    // Huella obligatoria (V20: recordHash es el campo canonico)
-    if (!_safeTrim(item.recordHash || item.recordHash)) {
-        _schemaError("recordHash/huella obligatorio (cadena SHA-256)");
+    if (!_safeTrim(item.recordHash)) {
+        _schemaError("recordHash obligatorio (cadena SHA-256)");
     }
 }
 
@@ -314,66 +317,69 @@ function _validateFiscalPayload(item) {
 // BLOQUE 1 - MOVIMIENTOS DE CAJA
 // =============================================================================
 
-// [V20-03] Validacion fiscal en insert de MovimientosCaja con campos V20.
 export function MovimientosCaja_beforeInsert(item) {
     if (!item || typeof item !== "object") return item;
 
-    // [V20-03] Validar NIF/VAT del tercero si viene (prioridad V20).
-    const nif = _readRecipientTaxId(item);
-    if (nif && !_isValidNifOrEuVat(nif)) {
-        _schemaError("recipientTaxId/nifDestinatario no tiene formato valido (espanol o VAT UE)");
+    // Validar NIF/VAT del destinatario
+    const taxId = _readRecipientTaxId(item);
+    if (taxId && !_isValidNifOrEuVat(taxId)) {
+        _schemaError("recipientTaxId no tiene formato valido (espanol o VAT UE)");
     }
 
-    // [V20-03] Validar cuadre fiscal segun rolFiscal con campos V20.
-    const { base, cuota } = _readDesgloseBaseYCuota(item);
+    // Validar cuadre fiscal segun fiscalRole
+    const { base, tax } = _readBreakdownBaseAndTax(item);
+    const finalBase = base > 0 ? base : _readTaxableBase(item);
+    const finalTax = tax > 0 ? tax : _readTaxAmount(item);
 
-    // Si no hay desglose, usar campos planos (prioridad V20)
-    const baseFinal = base > 0 ? base : _readBaseImponible(item);
-    const cuotaFinal = cuota > 0 ? cuota : _readTaxAmount(item);
-
-    const retencion = Number(item.irpfWithholdingAmount || item.irpfWithholdingAmount) || 0;
-    const recargo = _readSurchargeAmount(item);
+    const withholding = Number(item.irpfWithholdingAmount || item.importeRetencionIRPF) || 0;
+    const surcharge = _readSurchargeAmount(item);
     const total = _readTotalAmount(item);
 
-    if (baseFinal > 0 || cuotaFinal > 0 || retencion > 0 || recargo > 0) {
-        const rolFiscal = _safeTrim(item.fiscalRole || item.rolFiscal).toUpperCase() || ROL_FISCAL.EMISOR;
-        const factorRetencion = rolFiscal === ROL_FISCAL.RECEPTOR ? 1 : -1;
+    if (finalBase > 0 || finalTax > 0 || withholding > 0 || surcharge > 0) {
+        const role = _safeTrim(item.fiscalRole || item.rolFiscal).toUpperCase() || FISCAL_ROLE.EMISOR;
+        const withholdingFactor = role === FISCAL_ROLE.RECEPTOR ? 1 : -1;
 
-        const esperado = _roundItem(baseFinal + cuotaFinal + recargo + factorRetencion * retencion);
-        const diff = Math.abs(esperado - total);
+        const expected = _roundItem(finalBase + finalTax + surcharge + withholdingFactor * withholding);
+        const diff = Math.abs(expected - total);
         if (diff > 0.02) {
             _schemaError(
-                `Cuadre fiscal invalido (rol ${rolFiscal}): base ${baseFinal} + cuota ${cuotaFinal} + recargo ${recargo} ${factorRetencion > 0 ? "+" : "-"} retencion ${retencion} = ${esperado.toFixed(2)}, total ${total.toFixed(2)}`
+                `Cuadre fiscal invalido (rol ${role}): base ${finalBase} + cuota ${finalTax} + recargo ${surcharge} ${withholdingFactor > 0 ? "+" : "-"} retencion ${withholding} = ${expected.toFixed(2)}, total ${total.toFixed(2)}`
             );
         }
     }
 
-    // [V20-03] F1 exige recipientTaxId + recipientLegalName + recipientAddress.
+    // Validaciones nuevas V20.1
     _validateF1Requirements(item);
-
-    // [V20-03] reverseCharge implica taxAmount 0.
-    _validateISP(item);
-
-    // [V20-03] AJUSTE exige previousInvoiceId.
+    _validateReverseCharge(item);
     _validateAjuste(item);
+    _validateFiscalRole(item);
 
-    // [V20-03] Validaciones de la capa AEAT v5 con campos V20.
+    // Validaciones capa AEAT V5
     _validateFiscalPayload(item);
 
-    // Cuadre detailedBreakdown/desgloseDetallado vs cabecera (solo si viene poblado)
-    const breakdown = item.detailedBreakdown || item.detailedBreakdown;
-    if (Array.isArray(breakdown) && breakdown.length > 0) {
+    // Cuadre detailedBreakdown vs cabecera
+    if (Array.isArray(item.detailedBreakdown) && item.detailedBreakdown.length > 0) {
         let sumBase = 0;
-        let sumCuota = 0;
-        for (const d of breakdown) {
-            sumBase += Number(d.taxableBaseOrNonSubjectAmount ?? d.taxableBaseOrNonSubjectAmount ?? d.base ?? 0);
-            sumCuota += Number(d.chargedTaxAmount ?? d.chargedTaxAmount ?? d.cuota ?? 0);
+        let sumTax = 0;
+        for (const d of item.detailedBreakdown) {
+            sumBase += Number(d.taxableBaseOrNonSubjectAmount ?? d.base ?? 0);
+            sumTax += Number(d.chargedTaxAmount ?? d.cuota ?? 0);
         }
-        if (Math.abs(_roundItem(sumBase) - baseFinal) > 0.02) {
-            _schemaError(`detailedBreakdown/desgloseDetallado.base (${sumBase}) no cuadra con cabecera (${baseFinal})`);
+        if (Math.abs(_roundItem(sumBase) - finalBase) > 0.02) {
+            _schemaError(`detailedBreakdown.base (${sumBase}) no cuadra con cabecera (${finalBase})`);
         }
-        if (Math.abs(_roundItem(sumCuota) - cuotaFinal) > 0.02) {
-            _schemaError(`detailedBreakdown/desgloseDetallado.cuota (${sumCuota}) no cuadra con cabecera (${cuotaFinal})`);
+        if (Math.abs(_roundItem(sumTax) - finalTax) > 0.02) {
+            _schemaError(`detailedBreakdown.cuota (${sumTax}) no cuadra con cabecera (${finalTax})`);
+        }
+    }
+
+    // Validar regimeKey coherente con catalogo
+    if (item.catalogId) {
+        // Aqui solo validamos que si viene regimeKey, sea coherente con el payload
+        const payloadRegimeKey = _safeTrim(item.fiscalPayload?.claveRegimen);
+        const itemRegimeKey = _safeTrim(item.regimeKey);
+        if (payloadRegimeKey && itemRegimeKey && payloadRegimeKey !== itemRegimeKey) {
+            _schemaError("regimeKey no coincide con fiscalPayload.claveRegimen");
         }
     }
 
@@ -382,7 +388,7 @@ export function MovimientosCaja_beforeInsert(item) {
 
 export function MovimientosCaja_beforeUpdate() {
     _fiscalError(
-        "Modificacion de MovimientosCaja prohibida por normativa fiscal (append-only). Use tipoEvento=AJUSTE."
+        "Modificacion de MovimientosCaja prohibida por normativa fiscal (append-only). Use eventType=AJUSTE."
     );
 }
 
@@ -394,7 +400,6 @@ export function MovimientosCaja_beforeRemove() {
 
 // =============================================================================
 // BLOQUE 2 - CIERRES Z
-// [FIX-51] Update quirurgico permitido solo para campos de firma.
 // =============================================================================
 
 export function HistoricoCierresZ_beforeUpdate(item, context) {
@@ -425,13 +430,7 @@ export function HistoricoCierresZ_beforeRemove() {
 }
 
 // =============================================================================
-// BLOQUE 3 - EVENTOS DEL SISTEMA DE FACTURACION
-// [FIX-50] Hooks eliminados. Coleccion EventosSistemaFacturacion fue
-// retirada del SSOT en CLEAN-02 de cajas.web.js.
-// =============================================================================
-
-// =============================================================================
-// BLOQUE 4 - REGISTROS HORARIOS
+// BLOQUE 3 - REGISTROS HORARIOS
 // =============================================================================
 
 export function RegistrosHorariosStaff_beforeUpdate() {
@@ -447,11 +446,9 @@ export function RegistrosHorariosStaff_beforeRemove() {
 }
 
 // =============================================================================
-// BLOQUE 5 - CAJA ACTUAL
+// BLOQUE 4 - CAJA ACTUAL
 // =============================================================================
 
-// [FIX-65] Detectar modificaciones anomalas de sequenceCounters en
-// CAJA_PRINCIPAL. Tras FIX-48, los contadores viven en CAJA_SEQ.
 export function CajaActual_beforeUpdate(item, context) {
     const previous = context?.original || {};
 
@@ -479,7 +476,7 @@ export function CajaActual_beforeRemove() {
 }
 
 // =============================================================================
-// BLOQUE 6 - SERVICIOS CATALOGO
+// BLOQUE 5 - SERVICIOS CATALOGO
 // =============================================================================
 
 export function ServiciosCatalogo_beforeInsert(item) {
@@ -492,9 +489,7 @@ export function ServiciosCatalogo_beforeUpdate(item) {
 
 function _validateServiciosCatalogoSchema(item = {}) {
     const serviceId = _safeTrim(item.serviceId || item._id);
-
     const linkedPhases = _safeTrim(item.linkedPhases);
-
     const allowCombine = item.allowCombine === true;
 
     if (item.serviceId && !_isGuid(item.serviceId)) {
@@ -513,16 +508,16 @@ function _validateServiciosCatalogoSchema(item = {}) {
         _schemaError("linkedPhases no puede referenciar al propio servicio");
     }
 
-    // [V20-03] Validar naturalezaItem si viene (prioridad V20: itemNature).
-    const naturaleza = _safeTrim(item.itemNature || item.itemNature).toUpperCase();
-    if (naturaleza && !NATURALEZAS_ITEM_VALIDAS.has(naturaleza)) {
-        _schemaError("itemNature/naturalezaItem invalido");
+    // Validar itemNature si viene
+    const itemNature = _safeTrim(item.itemNature || item.naturalezaItem).toUpperCase();
+    if (itemNature && !VALID_ITEM_NATURES.has(itemNature)) {
+        _schemaError("itemNature invalido");
     }
 
-    // [V20-03] Validar codigoImpuesto si viene (prioridad V20: taxCode).
-    const codigoImpuesto = _safeTrim(item.taxCode || item.taxCode).toUpperCase();
-    if (codigoImpuesto && !CODIGOS_IMPUESTO_VALIDOS.has(codigoImpuesto)) {
-        _schemaError("taxCode/codigoImpuesto invalido");
+    // Validar taxCode si viene
+    const taxCode = _safeTrim(item.taxCode || item.codigoImpuesto).toUpperCase();
+    if (taxCode && !VALID_TAX_CODES.has(taxCode)) {
+        _schemaError("taxCode invalido");
     }
 
     const phase1Duration = Number(item.phase1Duration) || 0;
@@ -539,7 +534,7 @@ function _validateServiciosCatalogoSchema(item = {}) {
         _schemaError("Las duraciones deben ser numeros no negativos");
     }
 
-    // [D-13] Inferir totalDuration si allowCombine y falta.
+    // Inferir totalDuration si allowCombine y falta
     if (allowCombine && totalDuration === 0) {
         const inferred = phase1Duration + exposureDuration + phase2Duration;
         if (inferred > 0) {
@@ -551,10 +546,7 @@ function _validateServiciosCatalogoSchema(item = {}) {
         const expectedDuration =
             phase1Duration + exposureDuration + phase2Duration;
 
-        if (
-            expectedDuration > 0 &&
-            Math.abs(totalDuration - expectedDuration) > 1
-        ) {
+        if (expectedDuration > 0 && Math.abs(totalDuration - expectedDuration) > 1) {
             _schemaError(
                 `totalDuration (${totalDuration}) no coincide con la suma de fases (${expectedDuration})`
             );
@@ -565,7 +557,7 @@ function _validateServiciosCatalogoSchema(item = {}) {
 }
 
 // =============================================================================
-// BLOQUE 7 - MAPA STAFF
+// BLOQUE 6 - MAPA STAFF
 // =============================================================================
 
 export async function MapaStaff_beforeInsert(item) {
@@ -578,9 +570,7 @@ export async function MapaStaff_beforeUpdate(item) {
 
 async function _validateMapaStaffUniqueness(item = {}) {
     const itemId = _safeTrim(item._id);
-    // [V20-03] resourceId es campo canonico en V20 (sin cambio de nombre)
     const resourceId = _safeTrim(item.resourceId);
-    // [V20-03] staffMemberId es campo canonico en V20 (sin cambio de nombre)
     const staffMemberId = _safeTrim(item.staffMemberId);
     const email = _safeTrim(item.email).toLowerCase();
 
@@ -614,11 +604,24 @@ async function _validateMapaStaffUniqueness(item = {}) {
         }
     }
 
+    if (email) {
+        const existingByEmail = await wixData
+            .query(COLLECTIONS.MAPA_STAFF)
+            .eq("email", email)
+            .ne("_id", itemId)
+            .limit(1)
+            .find({ suppressAuth: true });
+
+        if (existingByEmail?.items?.length > 0) {
+            _schemaError("email duplicado en MapaStaff");
+        }
+    }
+
     return item;
 }
 
 // =============================================================================
-// BLOQUE 8 - ASIENTOS CONTABLES
+// BLOQUE 7 - ASIENTOS CONTABLES
 // =============================================================================
 
 export function AsientosContables_beforeUpdate(item) {
@@ -638,41 +641,48 @@ export function AsientosContables_beforeRemove(item) {
 }
 
 // =============================================================================
-// BLOQUE 9 - LINEAS DE ASIENTO
-// [V20-03] Validacion de cuenta PGC en beforeInsert.
-// [V20-03] Validacion ampliada con sourceEventId/thirdPartyId/catalogId en v5.
+// BLOQUE 8 - LINEAS DE ASIENTO
 // =============================================================================
 
 export function LibroAsientosContablesDetalle_beforeInsert(item) {
     if (!item || typeof item !== "object") return item;
 
-    // [V20-03] Cuenta PGC obligatoria y de 6 digitos (prioridad V20: accountCode).
-    const code = _safeTrim(item.accountCode || item.accountCode);
+    // Validar cuenta PGC obligatoria y de 6 digitos (solo si viene)
+    const code = _safeTrim(item.accountCode || item.cuentaContable);
     if (code) {
         if (!/^\d{6}$/.test(code)) {
-            _schemaError(`accountCode/cuentaContable "${code}" no tiene formato PGC (6 digitos)`);
+            _schemaError(`accountCode "${code}" no tiene formato PGC (6 digitos)`);
         }
     }
 
-    // [V20-03] Validaciones de la capa AEAT v5 con campos V20.
-    if (_isV5Fiscal(item) || _safeTrim(item.sourceEventId)) {
-        if (!_isGuid(item.sourceEventId)) {
+    // Validaciones capa AEAT v5
+    if (_isV5Fiscal(item) || _safeTrim(item.sourceEventId || item.eventoOrigenId)) {
+        const sourceEventId = _safeTrim(item.sourceEventId || item.eventoOrigenId);
+        const thirdPartyId = _safeTrim(item.thirdPartyId || item.terceroId);
+        const catalogId = _safeTrim(item.catalogId || item.catalogoId);
+
+        if (!_isGuid(sourceEventId)) {
             _schemaError("sourceEventId obligatorio (FK MovimientosCaja)");
         }
-        if (!_isGuid(item.thirdPartyId)) {
+        if (!_isGuid(thirdPartyId)) {
             _schemaError("thirdPartyId obligatorio (FK DatosFiscales)");
         }
-        if (!_isGuid(item.catalogId || item.catalogId)) {
+        if (!_isGuid(catalogId)) {
             _schemaError("catalogId obligatorio (FK ServiciosCatalogo)");
         }
-        if (!Number.isFinite(Number(item.lineNumber)) || Number(item.lineNumber) < 1) {
-            _schemaError("lineNumber/numeroLinea >= 1");
+
+        const lineNumber = Number(item.lineNumber ?? item.numeroLinea);
+        if (!Number.isFinite(lineNumber) || lineNumber < 1) {
+            _schemaError("lineNumber >= 1");
         }
+
         if (!Number.isFinite(Number(item.units)) || Number(item.units) <= 0) {
-            _schemaError("units/unidades > 0");
+            _schemaError("units > 0");
         }
-        if (!_safeTrim(item.operationDescription)) {
-            _schemaError("operationDescription/descripcionOperacion obligatoria en lineas v5");
+
+        const opDesc = _safeTrim(item.operationDescription || item.descripcionOperacion);
+        if (!opDesc) {
+            _schemaError("operationDescription obligatoria en lineas v5");
         }
     }
 
@@ -709,10 +719,7 @@ async function _validateAccountingLineParent(item = {}) {
         )
         .catch(() => null);
 
-    if (
-        parentEntry &&
-        _isImmutableStatus(parentEntry.entryStatus)
-    ) {
+    if (parentEntry && _isImmutableStatus(parentEntry.entryStatus)) {
         _fiscalError(
             "No se puede modificar o eliminar una linea de asiento POSTED o LOCKED"
         );
@@ -722,17 +729,15 @@ async function _validateAccountingLineParent(item = {}) {
 }
 
 // =============================================================================
-// BLOQUE 10 - SECUENCIA DE TICKETS
+// BLOQUE 9 - SECUENCIA DE TICKETS (deprecada)
 // =============================================================================
 
-// DEPRECATED: SecuenciaTickets ya no esta en SSOT COLLECTIONS.
-// No-op para evitar crash si la coleccion residual existe en CMS.
 export async function SecuenciaTickets_beforeUpdate(item) {
     return item;
 }
 
 // =============================================================================
-// BLOQUE 11 - CIERRES DE INVENTARIO
+// BLOQUE 10 - CIERRES DE INVENTARIO
 // =============================================================================
 
 export function InventarioStockVentaCierre_beforeUpdate(item) {
@@ -752,35 +757,34 @@ export function InventarioStockVentaCierre_beforeRemove(item) {
 }
 
 // =============================================================================
-// BLOQUE 12 - DATOS FISCALES [D-09]
+// BLOQUE 11 - DATOS FISCALES
 // =============================================================================
 
 export function DatosFiscales_beforeInsert(item) {
     if (!item || typeof item !== "object") return item;
 
-    // [V20-03] NIF obligatorio y valido (prioridad V20: taxId).
-    const nif = _safeTrim(item.taxId || item.taxId);
-    if (!nif || !_isValidNifOrEuVat(nif)) {
-        _schemaError("taxId/nifCif obligatorio y valido (espanol o VAT UE)");
+    const taxId = _safeTrim(item.taxId || item.nifCif);
+    if (!taxId || !_isValidNifOrEuVat(taxId)) {
+        _schemaError("taxId obligatorio y valido (espanol o VAT UE)");
     }
 
-    // [V20-03] razonSocial obligatoria (prioridad V20: legalName).
-    if (!_safeTrim(item.legalName || item.legalName)) {
-        _schemaError("legalName/razonSocial obligatoria");
+    const legalName = _safeTrim(item.legalName || item.razonSocial);
+    if (!legalName) {
+        _schemaError("legalName obligatoria");
     }
 
-    // [V20-03] tipoTercero obligatorio (prioridad V20: thirdPartyType).
-    const tipo = _safeTrim(item.thirdPartyType || item.thirdPartyType).toUpperCase();
-    if (!tipo || !TIPOS_TERCERO_VALIDOS.has(tipo)) {
-        _schemaError("thirdPartyType/tipoTercero invalido (CLIENTE, PROVEEDOR, STAFF, AAPP, MIXTO)");
+    const type = _safeTrim(item.thirdPartyType || item.tipoTercero).toUpperCase();
+    if (!type || !VALID_THIRD_PARTY_TYPES.has(type)) {
+        _schemaError("thirdPartyType invalido (CLIENTE, PROVEEDOR, STAFF, AAPP, MIXTO)");
     }
 
-    // Si es STAFF, exige puentes a Bookings + Members (prioridad V20)
-    if (tipo === "STAFF") {
-        if (!_isGuid(item.bookingsResourceId || item.bookingsResourceId)) {
-            _schemaError("thirdPartyType=STAFF exige bookingsResourceId/resourceIdBookings GUID");
+    if (type === "STAFF") {
+        const bookingsResourceId = _safeTrim(item.bookingsResourceId || item.resourceIdBookings);
+        const staffMemberId = _safeTrim(item.staffMemberId);
+        if (!_isGuid(bookingsResourceId)) {
+            _schemaError("thirdPartyType=STAFF exige bookingsResourceId GUID");
         }
-        if (!_safeTrim(item.staffMemberId)) {
+        if (!staffMemberId) {
             _schemaError("thirdPartyType=STAFF exige staffMemberId");
         }
     }
@@ -791,73 +795,68 @@ export function DatosFiscales_beforeInsert(item) {
 export function DatosFiscales_beforeUpdate(item) {
     if (!item || typeof item !== "object") return item;
 
-    // [V20-03] Validar taxId en update si viene.
-    const nif = _safeTrim(item.taxId || item.taxId);
-    if (nif && !_isValidNifOrEuVat(nif)) {
-        _schemaError("taxId/nifCif invalido en update");
+    const taxId = _safeTrim(item.taxId || item.nifCif);
+    if (taxId && !_isValidNifOrEuVat(taxId)) {
+        _schemaError("taxId invalido en update");
     }
 
     return item;
 }
 
 // =============================================================================
-// BLOQUE 13 - FACTURAS RECIBIDAS [D-10]
+// BLOQUE 12 - FACTURAS RECIBIDAS
 // =============================================================================
 
 export function FacturasRecibidas_beforeInsert(item) {
     if (!item || typeof item !== "object") return item;
 
-    // [V20-03] nifEmisor obligatorio y valido (prioridad V20: issuerTaxId).
-    const nifEmisor = _safeTrim(item.issuerTaxId || item.issuerTaxId);
-    if (!nifEmisor || !_isValidNifOrEuVat(nifEmisor)) {
-        _schemaError("FacturasRecibidas requiere issuerTaxId/nifEmisor valido (espanol o VAT UE)");
+    const issuerTaxId = _safeTrim(item.issuerTaxId || item.nifEmisor);
+    if (!issuerTaxId || !_isValidNifOrEuVat(issuerTaxId)) {
+        _schemaError("FacturasRecibidas requiere issuerTaxId valido (espanol o VAT UE)");
     }
 
-    // [V20-03] nombreRazonEmisor obligatorio (prioridad V20: issuerLegalName).
-    if (!_safeTrim(item.issuerLegalName || item.issuerLegalName)) {
-        _schemaError("FacturasRecibidas requiere issuerLegalName/nombreRazonEmisor");
+    if (!_safeTrim(item.issuerLegalName || item.nombreRazonEmisor)) {
+        _schemaError("FacturasRecibidas requiere issuerLegalName");
     }
 
-    // [V20-03] terceroId obligatorio (prioridad V20: thirdPartyId).
-    if (!_isGuid(item.thirdPartyId)) {
+    const thirdPartyId = _safeTrim(item.thirdPartyId || item.terceroId);
+    if (!_isGuid(thirdPartyId)) {
         _schemaError("FacturasRecibidas requiere thirdPartyId (FK DatosFiscales)");
     }
 
-    // [V20-03] eventoOrigenId obligatorio (prioridad V20: sourceEventId).
-    if (!_isGuid(item.sourceEventId)) {
+    const sourceEventId = _safeTrim(item.sourceEventId || item.eventoOrigenId);
+    if (!_isGuid(sourceEventId)) {
         _schemaError("FacturasRecibidas requiere sourceEventId (FK MovimientosCaja)");
     }
 
-    // [V20-03] Calculo de cuadre fiscal con prioridad V20.
-    const base = Number(item.totalTaxableBase || item.totalTaxableBase) || 0;
-    const cuota = Number(item.totalVatAmount || item.totalVatAmount) || 0;
-    const re = Number(item.surchargeAmount || item.surchargeAmount) || 0;
-    const ret = Number(item.irpfWithholdingAmount || item.irpfWithholdingAmount) || 0;
-    const total = Number(item.totalAmount || item.totalAmount) || 0;
+    const base = Number(item.totalTaxableBase || item.baseImponibleTotal) || 0;
+    const tax = Number(item.totalVatAmount || item.cuotaIvaTotal) || 0;
+    const surcharge = Number(item.surchargeAmount || item.cuotaRecargoEquivalencia) || 0;
+    const withholding = Number(item.irpfWithholdingAmount || item.importeRetencionIRPF) || 0;
+    const total = Number(item.totalAmount || item.importeTotal) || 0;
 
-    if (base || cuota || re || ret || total) {
-        const esperado = _roundItem(base + cuota + re - ret);
-        if (Math.abs(esperado - total) > 0.02) {
+    if (base || tax || surcharge || withholding || total) {
+        const expected = _roundItem(base + tax + surcharge - withholding);
+        if (Math.abs(expected - total) > 0.02) {
             _schemaError(
-                `Factura recibida descuadra: base ${base} + IVA ${cuota} + RE ${re} - ret ${ret} = ${esperado.toFixed(2)}, total ${total.toFixed(2)}`
+                `Factura recibida descuadra: base ${base} + IVA ${tax} + RE ${surcharge} - ret ${withholding} = ${expected.toFixed(2)}, total ${total.toFixed(2)}`
             );
         }
     }
 
-    // Cuadre detailedBreakdown/desgloseDetallado si viene (prioridad V20)
-    const breakdown = item.detailedBreakdown || item.detailedBreakdown;
-    if (Array.isArray(breakdown) && breakdown.length > 0) {
+    // Cuadre detailedBreakdown si viene
+    if (Array.isArray(item.detailedBreakdown) && item.detailedBreakdown.length > 0) {
         let sumBase = 0;
-        let sumCuota = 0;
-        for (const d of breakdown) {
-            sumBase += Number(d.taxableBaseOrNonSubjectAmount || d.taxableBaseOrNonSubjectAmount || d.base || 0);
-            sumCuota += Number(d.chargedTaxAmount || d.chargedTaxAmount || d.cuota || 0);
+        let sumTax = 0;
+        for (const d of item.detailedBreakdown) {
+            sumBase += Number(d.taxableBaseOrNonSubjectAmount ?? d.base ?? 0);
+            sumTax += Number(d.chargedTaxAmount ?? d.cuota ?? 0);
         }
         if (Math.abs(_roundItem(sumBase) - base) > 0.02) {
-            _schemaError("FacturasRecibidas detailedBreakdown/desgloseDetallado.base no cuadra");
+            _schemaError("FacturasRecibidas detailedBreakdown.base no cuadra");
         }
-        if (Math.abs(_roundItem(sumCuota) - cuota) > 0.02) {
-            _schemaError("FacturasRecibidas detailedBreakdown/desgloseDetallado.cuota no cuadra");
+        if (Math.abs(_roundItem(sumTax) - tax) > 0.02) {
+            _schemaError("FacturasRecibidas detailedBreakdown.cuota no cuadra");
         }
     }
 
@@ -866,6 +865,5 @@ export function FacturasRecibidas_beforeInsert(item) {
 
 export function FacturasRecibidas_beforeUpdate(item) {
     // No se bloquea el update (permite cambios de estado de pago, adjuntos, etc.)
-    // Las validaciones fiscales de identidad no se repiten aqui.
     return item;
 }

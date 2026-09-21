@@ -1,13 +1,18 @@
 /*
 =============================================================================
 MODULE: backend/mmSecrets.js
-VERSION: v5007.5-FINAL
-BASE: BIBLIA v5002.5 + Gestor de secretos actual
+VERSION: v5009-FISCAL-V20.1
+BASE: v5007.5-FINAL + Directriz V20 (IDs nativa en ingles)
 RESPONSIBILITY: Nombres canonicos de secretos Wix.
 STANDARDS: G10 ASCII Strict.
-CORRECTIONS APPLIED:
-  [VF-01] Anadidos FISCAL_SIGNER_ENDPOINT y FISCAL_SIGNER_BEARER para
-          delegacion de firma X.509 en microservicio externo.
+
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: sin renombrados funcionales. Los nombres de secretos son
+            externos (Wix Secrets Manager) y no forman parte de la
+            matriz V20.1.
+
+CORRECTIONS (heredadas):
+  [VF-01].
 =============================================================================
 */
 
@@ -16,11 +21,7 @@ export const SECRETS = Object.freeze({
     FISCAL_KEY: "SECRET_FISCALKEY",
     FISCAL_NIF_EMISOR: "FISCAL_NIF_EMISOR",
 
-    // [VF-01] Firma X.509 delegada en microservicio externo
-    // El certificado cualificado NO se almacena en Velo (limite de
-    // Secrets Manager y limitaciones de crypto en sandbox).
-    // El microservicio externo (AWS Lambda / Cloud Run / SaaS Veri*factu)
-    // posee el certificado y firma bajo demanda.
+    // Firma X.509 delegada en microservicio externo
     FISCAL_SIGNER_ENDPOINT: "FISCAL_SIGNER_ENDPOINT",
     FISCAL_SIGNER_BEARER: "FISCAL_SIGNER_BEARER",
 

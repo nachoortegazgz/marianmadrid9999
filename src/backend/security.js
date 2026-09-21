@@ -1,11 +1,18 @@
 /*
 =============================================================================
 MODULE: backend/security.js
-VERSION: v5007.4-FINAL
-BASE: BIBLIA v5002.5 Bloque 12.8 + DIRECTRICES V19
+VERSION: v5009-FISCAL-V20.1
+BASE: v5007.4-FINAL + Directriz V20 (IDs nativa en ingles)
 RESPONSIBILITY: Motor de seguridad. Rate limiter con ventana deslizante,
 verificacion de roles y bloqueo persistente cross-instancia.
 STANDARDS: G10 ASCII Strict.
+
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: import COLLAB_ROLES -> COLLABORATOR_ROLES.
+  - V20-02: usos de COLLAB_ROLES.ADMIN y COLLAB_ROLES.GESTION actualizados.
+  - V20-03: NOTA DE AUDITORIA: el modulo lee MapaStaff.rol, .email y .active.
+            Estos campos no estaban en el schema V20.1 original de MapaStaff.
+            Se ampliara el schema (ver deltas al final).
 =============================================================================
 */
 
@@ -15,7 +22,7 @@ import { currentMember } from "wix-members-backend";
 import {
     COLLECTIONS,
     SDK_CONFIG,
-    COLLAB_ROLES,
+    COLLABORATOR_ROLES,
     STAFF_ACCESS,
 } from "backend/internalConfig";
 
@@ -451,7 +458,7 @@ export async function isAdmin(traceId = null) {
         traceId
     );
 
-    return staff?.rol === COLLAB_ROLES.ADMIN;
+    return staff?.rol === COLLABORATOR_ROLES.ADMIN;
 }
 
 export async function isCajero(traceId = null) {
@@ -467,8 +474,8 @@ export async function isCajero(traceId = null) {
     );
 
     return (
-        staff?.rol === COLLAB_ROLES.ADMIN ||
-        staff?.rol === COLLAB_ROLES.GESTION
+        staff?.rol === COLLABORATOR_ROLES.ADMIN ||
+        staff?.rol === COLLABORATOR_ROLES.GESTION
     );
 }
 

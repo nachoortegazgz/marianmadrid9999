@@ -1,20 +1,25 @@
 /*
 =============================================================================
 MODULE: backend/horario.web.js
-VERSION: v5007.0-FINAL
-BASE: BIBLIA v5002.5 Bloque 12.7 + ESQUEMA CMS 4.29 + DOSSIER CAJA Flujo 16
+VERSION: v5009-FISCAL-V20.1
+BASE: v5007.0-FINAL + Directriz V20 (IDs nativa en ingles)
 RESPONSIBILITY: Registro horario laboral del personal. Fichajes inmutables,
                 estado de jornada, calculo de horas trabajadas y ajustes
                 administrativos. Cumplimiento Art. 34.9 ET y RD-ley 8/2019.
 STANDARDS: G10 ASCII Strict (0 non-ASCII characters).
            Registros inmutables (beforeUpdate/beforeRemove bloqueados en data.js).
            Minimizacion de datos personales (RGPD).
-CORRECTIONS APPLIED:
-  [HOR-01] Fichajes inmutables: solo INSERT, nunca UPDATE/REMOVE.
-  [HOR-02] dayKey y monthKey calculados en Europe/Madrid.
-  [HOR-03] Firma HMAC del registro para integridad.
-  [HOR-04] registeredBy: SELF o ADMIN.
-  [HOR-05] Ajustes solo por ADMIN con motivo obligatorio.
+
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: import TIPO_FICHAJE -> TIMECLOCK_TYPE.
+  - V20-02: usos de TIPO_FICHAJE.* -> TIMECLOCK_TYPE.*.
+  - V20-03: NOTA DE AUDITORIA: el modulo escribe en RegistrosHorariosStaff
+            con campos propios (dayKey, monthKey, clockEventType, recordedAt,
+            recordedTime, signature, etc.). Estos campos se anaden al schema
+            V20.1-EXPANDED-v3. No hay renombrado funcional adicional.
+
+CORRECTIONS (heredadas v5007.0):
+  [HOR-01..HOR-05].
 =============================================================================
 */
 
@@ -24,7 +29,7 @@ import { currentMember } from "wix-members-backend";
 
 import {
   COLLECTIONS,
-  TIPO_FICHAJE,
+  TIMECLOCK_TYPE,
   SDK_CONFIG,
 } from "backend/internalConfig";
 
@@ -159,7 +164,7 @@ export const registrarFichaje = webMethod(Permissions.SiteMember, async (options
   const traceId = options?.traceId || makeTraceId("fichaje");
   try {
     const clockEventType = _safeTrim(options?.clockEventType || options?.tipo).toUpperCase();
-    const validTypes = Object.values(TIPO_FICHAJE);
+    const validTypes = Object.values(TIMECLOCK_TYPE);
     if (!validTypes.includes(clockEventType)) {
       return { status: "ERROR", data: null, error: { code: "INVALID_CLOCK_TYPE", message: `Tipo de fichaje invalido. Validos: ${validTypes.join(", ")}` } };
     }
@@ -196,13 +201,13 @@ export const registrarFichaje = webMethod(Permissions.SiteMember, async (options
     const lastFichaje = lastFichajeRes?.items?.[0];
 
     // Validar secuencia logica de fichajes
-    if (clockEventType === TIPO_FICHAJE.SALIDA) {
-      if (!lastFichaje || lastFichaje.clockEventType === TIPO_FICHAJE.SALIDA) {
+    if (clockEventType === TIMECLOCK_TYPE.SALIDA) {
+      if (!lastFichaje || lastFichaje.clockEventType === TIMECLOCK_TYPE.SALIDA) {
         return { status: "ERROR", data: null, error: { code: "INVALID_SEQUENCE", message: "No se puede registrar SALIDA sin ENTRADA previa" } };
       }
     }
-    if (clockEventType === TIPO_FICHAJE.ENTRADA) {
-      if (lastFichaje && lastFichaje.clockEventType === TIPO_FICHAJE.ENTRADA) {
+    if (clockEventType === TIMECLOCK_TYPE.ENTRADA) {
+      if (lastFichaje && lastFichaje.clockEventType === TIMECLOCK_TYPE.ENTRADA) {
         return { status: "ERROR", data: null, error: { code: "INVALID_SEQUENCE", message: "Ya existe una ENTRADA sin SALIDA correspondiente" } };
       }
     }
@@ -272,10 +277,10 @@ export const getEstadoJornada = webMethod(Permissions.SiteMember, async (options
 
     let estadoActual = "SIN_FICHAJE";
     if (lastFichaje) {
-      if (lastFichaje.clockEventType === TIPO_FICHAJE.ENTRADA) estadoActual = "TRABAJANDO";
-      else if (lastFichaje.clockEventType === TIPO_FICHAJE.SALIDA) estadoActual = "FUERA";
-      else if (lastFichaje.clockEventType === TIPO_FICHAJE.PAUSA_INICIO) estadoActual = "EN_PAUSA";
-      else if (lastFichaje.clockEventType === TIPO_FICHAJE.PAUSA_FIN) estadoActual = "TRABAJANDO";
+      if (lastFichaje.clockEventType === TIMECLOCK_TYPE.ENTRADA) estadoActual = "TRABAJANDO";
+      else if (lastFichaje.clockEventType === TIMECLOCK_TYPE.SALIDA) estadoActual = "FUERA";
+      else if (lastFichaje.clockEventType === TIMECLOCK_TYPE.PAUSA_INICIO) estadoActual = "EN_PAUSA";
+      else if (lastFichaje.clockEventType === TIMECLOCK_TYPE.PAUSA_FIN) estadoActual = "TRABAJANDO";
     }
 
     return {
@@ -329,14 +334,14 @@ export const calcularHorasTrabajadas = webMethod(Permissions.SiteMember, async (
 
     for (const f of fichajes) {
       const ts = new Date(f.recordedAt).getTime();
-      if (f.clockEventType === TIPO_FICHAJE.ENTRADA) {
+      if (f.clockEventType === TIMECLOCK_TYPE.ENTRADA) {
         entradaMs = ts;
-      } else if (f.clockEventType === TIPO_FICHAJE.SALIDA && entradaMs !== null) {
+      } else if (f.clockEventType === TIMECLOCK_TYPE.SALIDA && entradaMs !== null) {
         totalMs += ts - entradaMs;
         entradaMs = null;
-      } else if (f.clockEventType === TIPO_FICHAJE.PAUSA_INICIO) {
+      } else if (f.clockEventType === TIMECLOCK_TYPE.PAUSA_INICIO) {
         pausaInicioMs = ts;
-      } else if (f.clockEventType === TIPO_FICHAJE.PAUSA_FIN && pausaInicioMs !== null) {
+      } else if (f.clockEventType === TIMECLOCK_TYPE.PAUSA_FIN && pausaInicioMs !== null) {
         totalMs -= ts - pausaInicioMs;
         pausaInicioMs = null;
       }
@@ -421,7 +426,7 @@ export const registrarAjusteHorario = webMethod(Permissions.Admin, async (option
     if (!adjustmentReason || adjustmentReason.length < 5) {
       return { status: "ERROR", data: null, error: { code: "REASON_REQUIRED", message: "Motivo de ajuste obligatorio (min 5 caracteres)" } };
     }
-    if (!Object.values(TIPO_FICHAJE).includes(clockEventType)) {
+    if (!Object.values(TIMECLOCK_TYPE).includes(clockEventType)) {
       return { status: "ERROR", data: null, error: { code: "INVALID_CLOCK_TYPE", message: "Tipo de fichaje invalido" } };
     }
 
@@ -528,14 +533,14 @@ export const getResumenHoras = webMethod(Permissions.SiteMember, async (options 
 
       for (const f of dayFichajes) {
         const ts = new Date(f.recordedAt).getTime();
-        if (f.clockEventType === TIPO_FICHAJE.ENTRADA) {
+        if (f.clockEventType === TIMECLOCK_TYPE.ENTRADA) {
           entradaMs = ts;
-        } else if (f.clockEventType === TIPO_FICHAJE.SALIDA && entradaMs !== null) {
+        } else if (f.clockEventType === TIMECLOCK_TYPE.SALIDA && entradaMs !== null) {
           totalMs += ts - entradaMs;
           entradaMs = null;
-        } else if (f.clockEventType === TIPO_FICHAJE.PAUSA_INICIO) {
+        } else if (f.clockEventType === TIMECLOCK_TYPE.PAUSA_INICIO) {
           pausaInicioMs = ts;
-        } else if (f.clockEventType === TIPO_FICHAJE.PAUSA_FIN && pausaInicioMs !== null) {
+        } else if (f.clockEventType === TIMECLOCK_TYPE.PAUSA_FIN && pausaInicioMs !== null) {
           totalMs -= ts - pausaInicioMs;
           pausaInicioMs = null;
         }

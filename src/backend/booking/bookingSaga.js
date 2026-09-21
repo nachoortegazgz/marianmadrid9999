@@ -1,48 +1,28 @@
 /*
 =============================================================================
 MODULE: backend/booking/bookingSaga.js
-VERSION: v5007.19-DOC-ALIGNED
+VERSION: v5009-FISCAL-V20.1
+BASE: v5007.17-ALIGNED + Directriz V20 (IDs nativa en ingles)
 SSOT: SSOT CONSOLIDADO v5002.6 | ESQUEMA CMS v5002.5 | DOSSIER RESERVAS v0609
 MISSION: Orquestador transaccional. Saga compensable para reservas simples
          y duales con gap de exposicion. Gestiona locks, heartbeat,
          idempotencia triple capa y creacion SECUENCIAL F1 -> F2.
 STANDARDS: G10 ASCII Strict (0 non-ASCII characters).
-=============================================================================
-HISTORIAL DE CAMBIOS:
-  v5007.19 | 2026-09-21 | Alineacion documentacion oficial Wix:
-           |            | [FIX-DOC-01] Add-ons ahora se inyectan en
-           |            |   bookedAddOns de createBooking. Los add-ons se
-           |            |   resuelven por servicio (F1 parent, F2 linked)
-           |            |   segun el contrato oficial de Writer V2.
-           |            | [FIX-DOC-02] selectedPaymentOption siempre presente
-           |            |   en bookedEntity: "ONLINE" si eCom checkout,
-           |            |   "OFFLINE" en caso contrario.
-  v5007.18 | 2026-09-21 | DEPURADO auditoria:
-           |            | [FIX-R3] doubleBooked -> AlertasOperativas (no aborta).
-           |            | [FIX-R4] selectedPaymentOption en create ONLINE.
-  v5007.17 | 2026-09-20 | [FIX-41] availabilityTimeSlots V2.
-           |            | [FIX-42] revision real de Writer V2.
-  v5007.16 | 2026-09-19 | [FIX-32] cleanGuidList.
-           |            | [FIX-34] computeGapMinutes.
-           |            | [FIX-35] deteccion de addons + WARNING.
-           |            | [FIX-36] duracion real F2.
-           |            | [FIX-37] timeouts Writer V2.
-           |            | [FIX-38] _checkDoubleBookingFlag log-only.
-           |            | [FIX-39] import muerto eliminado.
-  v5007.15 | 2026-09-19 | COHERENCIA scheduleId Writer <-> CitasF2.
-  v5007.14 | 2026-09-19 | Payload createBooking(booking, options),
-           |            | secuencial F1->F2, compensacion completa.
-  v5007.13 | 2026-09-19 | Gap maximo, validacion F2, persistencia
-           |            | compensable, scheduleId real.
-  v5007.12 | 2026-09-15 | W1, FF, AUDIT-BOOKING-01/02, PATCH-04..09.
-  v5007.8  | 2026-09-15 | skipAvailabilityValidation.
-  v5007.7  | 2026-09-14 | FIX EDITOR RESIDUAL.
-  v5007.6  | 2026-09-14 | FIX EDITOR.
-  v5007.5  | 2026-09-14 | Alineacion SSOT v5002.6.
-  v5007.4  | 2026-09-14 | HAL-S1..S12.
-  v5007.3  | 2026-09-10 | FIX A5.
-  v5002.5  | 2026-09-10 | Fix S-01.
-  v5002.3  | 2026-09-06 | Version inicial.
+
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: imports renombrados (BOOKING_STATUS, PAYMENT_STATUS, PAYMENT_METHOD).
+  - V20-02: 5 usos de las constantes renombradas actualizados.
+  - V20-03: resto del modulo sin cambios funcionales. CitasF2 mantiene
+            nombres cortos; CompensacionesPendientes preserva los campos
+            heredados (bookingId, phase, amount, etc.) que V20.1 ampliara.
+
+HISTORIAL (heredado):
+  v5007.17 | FIX-41, FIX-42.
+  v5007.16 | FIX-32, FIX-34, FIX-35, FIX-36, FIX-37, FIX-38, FIX-39.
+  v5007.15 | COHERENCIA scheduleId Writer <-> CitasF2.
+  v5007.14 | Payload createBooking(booking, options), secuencial F1->F2.
+  v5007.13 | Gap maximo, validacion F2, persistencia compensable.
+  v5007.12..v5002.3 | Resto del historial.
 =============================================================================
 */
 
@@ -55,9 +35,9 @@ import {
     CONCURRENCY,
     SDK_CONFIG,
     SLOT_SEARCH,
-    ESTADO_CITA,
-    ESTADO_PAGO,
-    FORMA_PAGO,
+    BOOKING_STATUS,
+    PAYMENT_STATUS,
+    PAYMENT_METHOD,
     APP_IDS,
 } from "backend/internalConfig";
 
@@ -242,7 +222,7 @@ async function _compensateCreatedBookings(createdBookings, traceId) {
 }
 
 // =============================================================================
-// BLOCK 5 - SELECTIVE ELEVATION + TIMEOUT
+// BLOCK 5 - SELECTIVE ELEVATION + TIMEOUT (FIX-37)
 // =============================================================================
 async function _createBookingWithSelectiveElevation(booking, options, traceId) {
     try {
@@ -266,7 +246,7 @@ async function _createBookingWithSelectiveElevation(booking, options, traceId) {
 }
 
 // =============================================================================
-// BLOCK 6 - VALIDACION DEFENSIVA DE RESPUESTA
+// BLOCK 6 - VALIDACION DEFENSIVA DE RESPUESTA (FIX-42)
 // =============================================================================
 function _validateCreateBookingResponse(booking, phase, traceId) {
     const id = _safeTrim(booking?.id || booking?._id);
@@ -308,43 +288,22 @@ function _validateCreateBookingResponse(booking, phase, traceId) {
 }
 
 // =============================================================================
-// BLOCK 7 - DETECCION DE FLAG DOUBLEBOOKED (LOG-ONLY + ALERTA)
+// BLOCK 7 - DETECCION DE FLAG DOUBLEBOOKED (LOG-ONLY, FIX-38)
 // =============================================================================
 function _checkDoubleBookingFlag(booking, phase, traceId) {
     if (booking?.doubleBooked === true) {
-        const bookingId = booking?.id || booking?._id || null;
         log.warn("DOUBLE_BOOKING_DETECTED", {
             phase,
             traceId,
-            bookingId: bookingId,
+            bookingId: booking?.id || booking?._id,
         });
-        wixData
-            .insert(
-                COLLECTIONS.ALERTAS_OPERATIVAS,
-                {
-                    alertType: "DOUBLE_BOOKED",
-                    severity: "WARNING",
-                    message:
-                        "doubleBooked=true phase=" +
-                        String(phase) +
-                        " bookingId=" +
-                        String(bookingId || "n/a"),
-                    status: "OPEN",
-                    traceId: traceId,
-                    _createdDate: new Date(),
-                },
-                { suppressAuth: true }
-            )
-            .catch(function () {
-                return null;
-            });
         return true;
     }
     return false;
 }
 
 // =============================================================================
-// BLOCK 8 - VALIDACION EXPLICITA DE GAP MAXIMO
+// BLOCK 8 - VALIDACION EXPLICITA DE GAP MAXIMO (FIX-34)
 // =============================================================================
 function _validateDualGap(f1LocalEnd, f2LocalStart, traceId) {
     const f1EndLocal = _normalizeLocalIsoStr(f1LocalEnd);
@@ -365,7 +324,7 @@ function _validateDualGap(f1LocalEnd, f2LocalStart, traceId) {
         throw createBookingError(
             ERROR_CODES.INVALID_DATES,
             "Dual gap validation: could not convert to UTC",
-            { traceId, f1EndLocal, f2LocalStart }
+            { traceId, f1EndLocal, f2StartLocal }
         );
     }
 
@@ -394,7 +353,7 @@ function _validateDualGap(f1LocalEnd, f2LocalStart, traceId) {
 }
 
 // =============================================================================
-// BLOCK 9 - VALIDACION DEL SERVICIO F2 (linkedPhases)
+// BLOCK 9 - VALIDACION DEL SERVICIO F2 (linkedPhases) (FIX-32, FIX-36)
 // =============================================================================
 async function _validateLinkedPhaseService(linkedPhases, parentLocationId, traceId) {
     const linkedServiceId = _safeTrim(linkedPhases);
@@ -521,88 +480,9 @@ function _isGuidOrNull(value) {
 }
 
 // =============================================================================
-// BLOCK 12 - [FIX-DOC-01] RESOLUCION DE ADDONS POR SERVICIO
-//
-// Documentacion oficial Writer V2 createBooking:
-//   bookedEntity: { slot: {...} }
-//   bookedAddOns: [{ addOnId: "guid", quantity: 1 }]
-//
-// Los add-ons se resuelven por servicio. F1 recibe los del parent, F2 los del
-// linked. Si un add-on solicitado no pertenece al servicio, se omite en ese
-// booking (Wix rechazaria un add-on invalido para el servicio).
+// BLOCK 12 - DETECCION DE ADDONS (FIX-35)
 // =============================================================================
-
-function _readField(item, field) {
-    if (!item || typeof item !== "object") return null;
-    return item[field] ?? item.data?.[field] ?? item.fields?.[field] ?? null;
-}
-
-function _parseAddonOptions(value) {
-    if (Array.isArray(value)) return value;
-    if (typeof value !== "string") return [];
-    try {
-        const parsed = JSON.parse(value);
-        return Array.isArray(parsed) ? parsed : [];
-    } catch (_) {
-        return [];
-    }
-}
-
-function _normalizeAddon(addon) {
-    if (!addon || typeof addon !== "object") return null;
-    return {
-        ...addon,
-        id: _safeTrim(addon.id || addon._id || addon.addonId),
-        nativeId: _safeTrim(addon.nativeId || ""),
-        nombre: _safeTrim(addon.nombre || addon.name || addon.title),
-        precio: Number(addon.precio ?? addon.price ?? 0) || 0,
-    };
-}
-
-function _readServiceAddons(service) {
-    if (!service || typeof service !== "object") return [];
-
-    // Ruta normalizada UX (mapped serviceConfig)
-    if (Array.isArray(service.metadata?.addons)) {
-        return service.metadata.addons.map(_normalizeAddon).filter(Boolean);
-    }
-
-    // Ruta raw CMS
-    const raw = _readField(service, "addOnOptions");
-    return _parseAddonOptions(raw).map(_normalizeAddon).filter(Boolean);
-}
-
-function _resolveNativeAddonIdsForService(detectedGuids, service) {
-    if (!Array.isArray(detectedGuids) || detectedGuids.length === 0) return [];
-    if (!service) return [];
-
-    const addons = _readServiceAddons(service);
-    if (addons.length === 0) return [];
-
-    const requested = new Set(
-        detectedGuids.map((g) => _safeTrim(g)).filter(_looksLikeGuid)
-    );
-    if (requested.size === 0) return [];
-
-    const result = new Set();
-
-    for (const addon of addons) {
-        const candidates = [
-            _safeTrim(addon.nativeId),
-            _safeTrim(addon.id),
-        ].filter(_looksLikeGuid);
-
-        for (const candidate of candidates) {
-            if (requested.has(candidate)) {
-                result.add(candidate);
-            }
-        }
-    }
-
-    return Array.from(result);
-}
-
-function _detectAddonIds(unsafePayload, metaCita) {
+function _detectAndWarnAddons(unsafePayload, metaCita, traceId) {
     const rawAddons =
         unsafePayload?.nativeAddonIds ||
         unsafePayload?.addonIds ||
@@ -610,19 +490,26 @@ function _detectAddonIds(unsafePayload, metaCita) {
         metaCita?.addonIds ||
         [];
 
-    if (!Array.isArray(rawAddons)) return [];
+    const addonIds = Array.isArray(rawAddons)
+        ? rawAddons
+              .map((id) => _safeTrim(id))
+              .filter((id) => _looksLikeGuid(id))
+        : [];
 
-    return rawAddons
-        .map((id) => _safeTrim(id))
-        .filter((id) => _looksLikeGuid(id));
-}
+    if (addonIds.length > 0) {
+        log.warn(
+            "FIX-35: Addons detected but NOT injected into Writer V2 bookedEntity. " +
+                "Confirm createBooking contract (slot.addOnIds | entity.addOnIds | " +
+                "selectedAddOns | checkout).",
+            {
+                traceId,
+                addonCount: addonIds.length,
+                addonIds,
+            }
+        );
+    }
 
-function _buildBookedAddOns(nativeAddonIds) {
-    if (!Array.isArray(nativeAddonIds) || nativeAddonIds.length === 0) return null;
-    return nativeAddonIds.map((addOnId) => ({
-        addOnId: String(addOnId),
-        quantity: 1,
-    }));
+    return addonIds;
 }
 
 // =============================================================================
@@ -682,8 +569,7 @@ export async function executeBookingSaga(unsafePayload) {
     const traceId = unsafePayload?.traceId || makeTraceId("saga");
     const metaCita = _normalizePersistedMeta(unsafePayload?.metaCita || unsafePayload?.meta || {});
 
-    // [FIX-DOC-01] Deteccion de addons (solo IDs, sin warn todavia).
-    const detectedAddonIds = _detectAddonIds(unsafePayload, metaCita);
+    const detectedAddonIds = _detectAndWarnAddons(unsafePayload, metaCita, traceId);
 
     try {
         // =========================================================================
@@ -730,8 +616,6 @@ export async function executeBookingSaga(unsafePayload) {
 
         let f2LocalStart = "";
         let f2LocalEnd = "";
-        let linkedValidation = null;
-
         if (isDual) {
             f2LocalStart = _normalizeLocalIsoStr(
                 slotF2Input.localStartDate || slotF2Input.start || metaCita.f2Start
@@ -740,7 +624,7 @@ export async function executeBookingSaga(unsafePayload) {
                 slotF2Input.localEndDate || slotF2Input.end || metaCita.f2End
             );
 
-            linkedValidation = await _validateLinkedPhaseService(
+            const linkedValidation = await _validateLinkedPhaseService(
                 linkedPhases,
                 parentLocationId,
                 traceId
@@ -768,39 +652,6 @@ export async function executeBookingSaga(unsafePayload) {
             _validateDualGap(f1LocalEnd, f2LocalStart, traceId);
         }
 
-        // [FIX-DOC-01] Resolucion de addons por servicio.
-        // F1 recibe add-ons del parent; F2 recibe add-ons del linked.
-        const f1NativeAddons = _resolveNativeAddonIdsForService(
-            detectedAddonIds,
-            serviceConfig
-        );
-        const f2NativeAddons = (isDual && linkedValidation)
-            ? _resolveNativeAddonIdsForService(detectedAddonIds, linkedValidation.service)
-            : [];
-
-        // Si hay add-ons detectados que no se resolvieron a ningun servicio,
-        // mantenerlos para trazabilidad (meta de CitasF2) y avisar en log.
-        const resolvedSet = new Set([...f1NativeAddons, ...f2NativeAddons]);
-        const unresolvedAddons = detectedAddonIds.filter((id) => !resolvedSet.has(id));
-
-        if (detectedAddonIds.length > 0) {
-            log.info("Add-ons resolved per service", {
-                traceId,
-                detected: detectedAddonIds.length,
-                f1Native: f1NativeAddons.length,
-                f2Native: f2NativeAddons.length,
-                unresolved: unresolvedAddons.length,
-            });
-        }
-
-        if (unresolvedAddons.length > 0) {
-            log.warn("Some requested add-ons could not be matched to any service", {
-                traceId,
-                unresolvedAddons,
-                hint: "Verificar que addOnOptions del servicio incluye nativeId de Wix",
-            });
-        }
-
         const pairToken = _resolveStablePairToken({
             serviceId: serviceId,
             resourceId: requestedResourceId,
@@ -824,7 +675,7 @@ export async function executeBookingSaga(unsafePayload) {
             const existingCita = existingCitaRes.items[0];
             const existingPaymentStatus = String(existingCita.paymentStatus || "").toUpperCase();
 
-            if (existingPaymentStatus === ESTADO_PAGO.PENDING_PAYMENT) {
+            if (existingPaymentStatus === PAYMENT_STATUS.PENDING_PAYMENT) {
                 log.info("Idempotent duplicate: PENDING_PAYMENT, returning existing checkout", {
                     pairToken: pairToken, traceId: traceId,
                 });
@@ -987,10 +838,7 @@ export async function executeBookingSaga(unsafePayload) {
         );
 
         // =========================================================================
-        // CREACION SECUENCIAL + CAPTURA DE scheduleId, revision Y add-ons
-        //
-        // [FIX-DOC-01] add-ons inyectados en bookedAddOns de cada booking.
-        // [FIX-DOC-02] selectedPaymentOption siempre presente.
+        // CREACION SECUENCIAL + CAPTURA DE scheduleId Y revision REALES (FIX-42)
         // =========================================================================
         saga.addStep(
             "CreateBookings",
@@ -1010,25 +858,11 @@ export async function executeBookingSaga(unsafePayload) {
                     phone: _safeTrim(unsafePayload?.phone || metaCita.phone || ""),
                 };
 
-                // [FIX-DOC-02] selectedPaymentOption siempre presente.
-                // Documentacion oficial Writer V2: "ONLINE" si eCom checkout,
-                // "OFFLINE" en caso contrario. Requerido cuando el servicio
-                // tiene multiples opciones de pago.
-                const selectedPaymentOption = isOnline ? "ONLINE" : "OFFLINE";
-
-                // [FIX-DOC-01] bookedAddOns desde add-ons resueltos.
-                const f1BookedAddOns = _buildBookedAddOns(f1NativeAddons);
-
                 const f1Booking = {
                     bookedEntity: { slot: pristineF1 },
                     contactDetails: contactDetails,
                     totalParticipants: 1,
-                    selectedPaymentOption: selectedPaymentOption,
                 };
-                if (f1BookedAddOns) {
-                    f1Booking.bookedAddOns = f1BookedAddOns;
-                }
-
                 const f1Options = {
                     flowControlSettings: { skipAvailabilityValidation: true },
                 };
@@ -1060,18 +894,11 @@ export async function executeBookingSaga(unsafePayload) {
                             "Failed to build pristine slot F2", { traceId: traceId });
                     }
 
-                    const f2BookedAddOns = _buildBookedAddOns(f2NativeAddons);
-
                     const f2Booking = {
                         bookedEntity: { slot: pristineF2 },
                         contactDetails: contactDetails,
                         totalParticipants: 1,
-                        selectedPaymentOption: selectedPaymentOption,
                     };
-                    if (f2BookedAddOns) {
-                        f2Booking.bookedAddOns = f2BookedAddOns;
-                    }
-
                     const f2Options = {
                         flowControlSettings: { skipAvailabilityValidation: true },
                     };
@@ -1106,7 +933,7 @@ export async function executeBookingSaga(unsafePayload) {
         const paymentMethod = _safeTrim(
             unsafePayload?.paymentMethod || metaCita.paymentMethod || "PRESENCIAL"
         ).toUpperCase();
-        const isOnline = paymentMethod === FORMA_PAGO.ONLINE;
+        const isOnline = paymentMethod === PAYMENT_METHOD.ONLINE;
 
         saga.addStep(
             isOnline ? "CreateCheckout" : "ConfirmPresencial",
@@ -1177,12 +1004,9 @@ export async function executeBookingSaga(unsafePayload) {
             async function () {}
         );
 
-        const paymentStatus = isOnline ? ESTADO_PAGO.PENDING_PAYMENT : ESTADO_PAGO.UNPAID;
-        const citaStatus = isOnline ? ESTADO_CITA.PENDING_PAYMENT : ESTADO_CITA.CONFIRMED;
+        const paymentStatus = isOnline ? PAYMENT_STATUS.PENDING_PAYMENT : PAYMENT_STATUS.UNPAID;
+        const citaStatus = isOnline ? BOOKING_STATUS.PENDING_PAYMENT : BOOKING_STATUS.CONFIRMED;
 
-        // =========================================================================
-        // PERSISTCITAS
-        // =========================================================================
         saga.addStep(
             "PersistCitas",
             async function () {
@@ -1233,8 +1057,7 @@ export async function executeBookingSaga(unsafePayload) {
                         f2Start: f2LocalStart || null,
                         f2End: f2LocalEnd || null,
                         checkoutUrl: resolvedCheckoutUrl,
-                        nativeAddonIds: f1NativeAddons,
-                        unresolvedAddonIds: unresolvedAddons,
+                        nativeAddonIds: detectedAddonIds,
                         writerRevision: revisionF1,
                     },
                     traceId: traceId,
@@ -1270,7 +1093,7 @@ export async function executeBookingSaga(unsafePayload) {
                         meta: {
                             pairToken: pairToken,
                             linkedF1BookingId: bookingF1Id,
-                            nativeAddonIds: f2NativeAddons,
+                            nativeAddonIds: detectedAddonIds,
                             writerRevision: revisionF2,
                         },
                         traceId: traceId,

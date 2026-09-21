@@ -1,34 +1,26 @@
 /*
 =============================================================================
 MODULE: backend/events.js
-VERSION: v5009-FISCAL
-BASE: v5008.5-FISCAL + consolidacion eventLog
+VERSION: v5009-FISCAL-V20.1
+BASE: v5009-FISCAL + Directriz V20 (IDs nativa en ingles)
 RESPONSIBILITY: Server-to-server native webhooks for Wix Bookings V2 and
                 Wix eCommerce V2 with exact-indexed queries, bounded
                 execution, full idempotency, and JWT signature verification.
 STANDARDS: G10 ASCII Strict.
 
-FIXES APLICADOS v5009-FISCAL:
-  - CONSOL-04: escrituras al ledger migradas a registrarEventoEconomico.
-               Se conserva queueFiscalRecovery para el path de fallo.
-  - CONSOL-05: _extractFiscalDataFromOrder devuelve nomenclatura AEAT +
-               domicilioDestinatario (F1 requiere domicilio).
-  - CONSOL-06: _getEmisorFiscal cachea NIF/razon del emisor desde secrets.
-  - CONSOL-07: cancel booking genera RECTIFICATIVA via eventLog.
-  - CONSOL-08: order refund genera RECTIFICATIVA via eventLog.
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: imports alineados a internalConfig V20.1.
+  - V20-02: _extractFiscalDataFromOrder devuelve nomenclatura V20.1.
+  - V20-03: payload a registrarEventoEconomico en nomenclatura V20.1.
+  - V20-04: queries de MovimientosCaja usan linkedBookingIds en lugar
+            de reservaIdVinculada.
+  - V20-05: BOOKING_STATUS.CANCELLED canonico en cancelacion.
+  - V20-06: mantiene compatibilidad con eventos legacy del webhook Wix.
 
-FIXES APLICADOS v5008.5-FISCAL (heredados):
-  - E-01: _extractFiscalDataFromOrder: NIF, razon social, retenciones,
-          referencias bancarias.
-  - E-02: registerBookingPayment pasa datos fiscales ricos.
-  - E-03: wixBookingsV2_onBookingCanceled genera rectificativa si la
-          cita previa estaba PAID.
-  - FIX-FISCAL-02: rolFiscal (EMISOR) propagado.
-  - FIX-55: idempotencia por eventId en payment webhook.
-  - FIX-56: inventario DESPUES del ledger.
-  - FIX-57: restockInfo con path canonico.
-  - FIX-58: ESTADO_CITA.CANCELLED (dos L).
-  - FIX-59: createClient({}) sin AppStrategy ni process.env.
+FIXES APLICADOS v5009-FISCAL (heredados):
+  - CONSOL-04..08.
+  - E-01..E-03.
+  - FIX-55..59.
 =============================================================================
 */
 
@@ -47,18 +39,18 @@ import {
 import {
     COLLECTIONS,
     APP_IDS,
-    TIPO_MOVIMIENTO,
-    FORMA_PAGO,
-    ESTADO_CITA,
-    ESTADO_PAGO,
-    CITA_FIELDS,
+    MOVEMENT_TYPE,
+    PAYMENT_METHOD,
+    BOOKING_STATUS,
+    PAYMENT_STATUS,
+    BOOKING_FIELDS,
     SDK_CONFIG,
-    CLAVES_AEAT,
-    MOTIVOS_RECTIFICACION,
-    ROL_FISCAL,
-    TIPO_EVENTO,
-    TIPO_TERCERO,
-    ESTADO_DEVENGO_IVA,
+    AEAT_INVOICE_TYPE,
+    CORRECTION_REASON,
+    FISCAL_ROLE,
+    EVENT_TYPE,
+    THIRD_PARTY_TYPE,
+    VAT_ACCRUAL_STATUS,
 } from "backend/internalConfig";
 
 import { SECRETS } from "backend/mmSecrets";
@@ -137,7 +129,7 @@ const PROCESSED_EVENTS_COL = COLLECTIONS.PROCESSED_WEBHOOK_EVENTS;
 const EVENT_TTL_HOURS = 72;
 
 // ============================================================================
-// [CONSOL-06] EMISOR FISCAL CACHE
+// EMISOR FISCAL CACHE
 // ============================================================================
 
 let _emisorCache = null;
@@ -147,13 +139,13 @@ async function _getEmisorFiscal() {
     try {
         const nif = await getSecret(SECRETS.FISCAL_NIF_EMISOR).catch(() => "");
         _emisorCache = {
-            nifEmisor: _safeTrim(nif).toUpperCase(),
-            nombreRazonEmisor: EMISOR_FALLBACK_NAME,
+            issuerTaxId: _safeTrim(nif).toUpperCase(),
+            issuerLegalName: EMISOR_FALLBACK_NAME,
         };
     } catch (_) {
         _emisorCache = {
-            nifEmisor: "",
-            nombreRazonEmisor: EMISOR_FALLBACK_NAME,
+            issuerTaxId: "",
+            issuerLegalName: EMISOR_FALLBACK_NAME,
         };
     }
     return _emisorCache;
@@ -218,21 +210,21 @@ function _handleError(error, context, traceId) {
 }
 
 // ============================================================================
-// [CONSOL-05] EXTRACCION FISCAL DEL PEDIDO — nomenclatura AEAT
+// EXTRACCION FISCAL DEL PEDIDO — nomenclatura V20.1
 // ============================================================================
 
 function _extractFiscalDataFromOrder(order) {
     if (!order || typeof order !== "object") {
         return {
-            nifDestinatario: null,
-            nombreRazonDestinatario: null,
-            domicilioDestinatario: null,
-            esB2B: false,
-            tipoRetencionIRPF: 0,
-            baseImponibleRetencion: 0,
-            importeRetencionIRPF: 0,
-            referenciaBancariaConciliacion: null,
-            rolFiscal: ROL_FISCAL.EMISOR,
+            recipientTaxId: null,
+            recipientLegalName: null,
+            recipientAddress: null,
+            isB2B: false,
+            irpfWithholdingRate: 0,
+            withholdingBase: 0,
+            irpfWithholdingAmount: 0,
+            bankReconciliationReference: null,
+            fiscalRole: FISCAL_ROLE.EMISOR,
         };
     }
 
@@ -253,9 +245,9 @@ function _extractFiscalDataFromOrder(order) {
         ""
     ).toUpperCase();
 
-    const esB2B = Boolean(vatId || companyName);
+    const isB2B = Boolean(vatId || companyName);
 
-    const domicilioDestinatario = (billingAddress && Object.keys(billingAddress).length > 0)
+    const recipientAddress = (billingAddress && Object.keys(billingAddress).length > 0)
         ? {
             pais: _safeTrim(billingAddress.country) || "ES",
             calle: _safeTrim(
@@ -283,19 +275,19 @@ function _extractFiscalDataFromOrder(order) {
         }
         : null;
 
-    const retenciones = Number(
+    const withholdingAmount = Number(
         order.taxSummary?.retention?.amount ||
         order.additionalFees?.retention ||
         0
     ) || 0;
 
-    const baseRetencion = Number(
+    const withholdingBase = Number(
         order.taxSummary?.retention?.base ||
         order.priceSummary?.subtotal?.amount ||
         0
     ) || 0;
 
-    const referenciaBancaria = _safeTrim(
+    const bankReconciliationReference = _safeTrim(
         order.paymentDetails?.transactionId ||
         order.paymentDetails?.gatewayTransactionId ||
         order.transactionId ||
@@ -303,15 +295,15 @@ function _extractFiscalDataFromOrder(order) {
     ) || null;
 
     return {
-        nifDestinatario: vatId || null,
-        nombreRazonDestinatario: companyName || null,
-        domicilioDestinatario,
-        esB2B,
-        tipoRetencionIRPF: 0,
-        baseImponibleRetencion: baseRetencion,
-        importeRetencionIRPF: retenciones,
-        referenciaBancariaConciliacion: referenciaBancaria,
-        rolFiscal: ROL_FISCAL.EMISOR,
+        recipientTaxId: vatId || null,
+        recipientLegalName: companyName || null,
+        recipientAddress,
+        isB2B,
+        irpfWithholdingRate: 0,
+        withholdingBase,
+        irpfWithholdingAmount: withholdingAmount,
+        bankReconciliationReference,
+        fiscalRole: FISCAL_ROLE.EMISOR,
     };
 }
 
@@ -319,14 +311,14 @@ function _extractFiscalDataFromOrder(order) {
 // CITA STATUS UPDATES
 // ============================================================================
 
-async function _updateCitaStatus(bookingId, nuevoEstado, traceId) {
+async function _updateCitaStatus(bookingId, newStatus, traceId) {
     await _updateCitaSafe(bookingId, (cita) => {
-        if (String(cita[CITA_FIELDS.STATUS] || "").toUpperCase() === String(nuevoEstado || "").toUpperCase()) {
+        if (String(cita[BOOKING_FIELDS.STATUS] || "").toUpperCase() === String(newStatus || "").toUpperCase()) {
             return null;
         }
         return {
             ...cita,
-            [CITA_FIELDS.STATUS]: String(nuevoEstado || ESTADO_CITA.CONFIRMED).toUpperCase(),
+            [BOOKING_FIELDS.STATUS]: String(newStatus || BOOKING_STATUS.CONFIRMED).toUpperCase(),
         };
     }, traceId, "events_updateCitaEstado");
 }
@@ -337,14 +329,14 @@ async function _markCitasRefundedByBookingIds(bookingIds, orderId, refundId, ful
         ids.map((bookingId) =>
             _updateCitaSafe(bookingId, (cita) => {
                 const meta = cita.meta || {};
-                const paymentState = fullyRefunded ? ESTADO_PAGO.REFUNDED : ESTADO_PAGO.PARTIALLY_REFUNDED;
+                const paymentState = fullyRefunded ? PAYMENT_STATUS.REFUNDED : PAYMENT_STATUS.PARTIALLY_REFUNDED;
                 return {
                     ...cita,
-                    ...(fullyRefunded ? { [CITA_FIELDS.STATUS]: ESTADO_CITA.REFUNDED } : {}),
-                    [CITA_FIELDS.STATUS_PAGO]: paymentState,
+                    ...(fullyRefunded ? { [BOOKING_FIELDS.STATUS]: BOOKING_STATUS.REFUNDED } : {}),
+                    [BOOKING_FIELDS.PAYMENT_STATUS]: paymentState,
                     meta: {
                         ...meta,
-                        [CITA_FIELDS.STATUS_PAGO]: paymentState,
+                        paymentStatus: paymentState,
                         orderId: orderId || null,
                         refundId: refundId || null,
                         fechaReembolso: new Date(),
@@ -368,15 +360,15 @@ async function _markCitasPaidByBookingIds(bookingIds, orderId, traceId) {
         ids.map((bookingId) =>
             _updateCitaSafe(bookingId, (cita) => {
                 const meta = cita.meta || {};
-                const alreadyPaid = String(meta.paymentStatus || cita.paymentStatus || "").toUpperCase() === ESTADO_PAGO.PAID;
+                const alreadyPaid = String(meta.paymentStatus || cita.paymentStatus || "").toUpperCase() === PAYMENT_STATUS.PAID;
                 if (alreadyPaid) return null;
                 return {
                     ...cita,
-                    [CITA_FIELDS.STATUS]: ESTADO_CITA.CONFIRMED,
-                    [CITA_FIELDS.STATUS_PAGO]: ESTADO_PAGO.PAID,
+                    [BOOKING_FIELDS.STATUS]: BOOKING_STATUS.CONFIRMED,
+                    [BOOKING_FIELDS.PAYMENT_STATUS]: PAYMENT_STATUS.PAID,
                     meta: {
                         ...meta,
-                        [CITA_FIELDS.STATUS_PAGO]: ESTADO_PAGO.PAID,
+                        paymentStatus: PAYMENT_STATUS.PAID,
                         orderId: orderId || null,
                         fechaConfirmacionPago: new Date(),
                     },
@@ -400,13 +392,13 @@ async function _markCitasPendingLedgerByBookingIds(bookingIds, orderId, traceId)
             _updateCitaSafe(bookingId, (cita) => {
                 const meta = cita.meta || {};
                 const currentPaymentState = String(meta.paymentStatus || cita.paymentStatus || "").toUpperCase();
-                if (currentPaymentState === ESTADO_PAGO.PAID) return null;
+                if (currentPaymentState === PAYMENT_STATUS.PAID) return null;
                 return {
                     ...cita,
-                    [CITA_FIELDS.STATUS_PAGO]: ESTADO_PAGO.PENDING_LEDGER,
+                    [BOOKING_FIELDS.PAYMENT_STATUS]: PAYMENT_STATUS.PENDING_LEDGER,
                     meta: {
                         ...meta,
-                        [CITA_FIELDS.STATUS_PAGO]: ESTADO_PAGO.PENDING_LEDGER,
+                        paymentStatus: PAYMENT_STATUS.PENDING_LEDGER,
                         orderId: orderId || null,
                         fechaPagoRecibido: new Date(),
                     },
@@ -449,7 +441,7 @@ export async function wixBookingsV2_onBookingConfirmed(rawBody) {
 
         const booking = event?.booking || event?.entity || {};
         const bookingId = booking?.id || booking?._id || "unknown";
-        await _updateCitaStatus(bookingId, ESTADO_CITA.CONFIRMED, traceId);
+        await _updateCitaStatus(bookingId, BOOKING_STATUS.CONFIRMED, traceId);
         await markEventAsProcessed(eventId, "BOOKING_CONFIRMED", traceId, { bookingId });
         return { status: "OK", eventId };
     } catch (error) {
@@ -459,7 +451,7 @@ export async function wixBookingsV2_onBookingConfirmed(rawBody) {
 }
 
 // ============================================================================
-// WEBHOOK: BOOKING CANCELED — [CONSOL-07] RECTIFICATIVA via eventLog
+// WEBHOOK: BOOKING CANCELED — RECTIFICATIVA via eventLog
 // ============================================================================
 
 export async function wixBookingsV2_onBookingCanceled(rawBody) {
@@ -485,8 +477,8 @@ export async function wixBookingsV2_onBookingCanceled(rawBody) {
         const booking = event?.booking || event?.entity || {};
         const bookingId = booking?.id || booking?._id || "unknown";
 
-        // [E-03 + CONSOL-07] Si la cita previa estaba PAID, generar rectificativa
-        const citaPrevia = await wixData
+        // Si la cita previa estaba PAID, generar rectificativa
+        const previousCita = await wixData
             .query(COLLECTIONS.CITAS_F2)
             .eq("bookingId", bookingId)
             .limit(1)
@@ -494,68 +486,58 @@ export async function wixBookingsV2_onBookingCanceled(rawBody) {
             .then((r) => r?.items?.[0] || null)
             .catch(() => null);
 
-        if (citaPrevia && String(citaPrevia.paymentStatus || "").toUpperCase() === ESTADO_PAGO.PAID) {
-            const movimientoOriginalRes = await wixData
+        if (previousCita && String(previousCita.paymentStatus || "").toUpperCase() === PAYMENT_STATUS.PAID) {
+            const originalMovementRes = await wixData
                 .query(COLLECTIONS.MOVIMIENTOS_CAJA)
-                .eq('linkedBookingIds', bookingId)
-                .eq("movementType", TIPO_MOVIMIENTO.VENTA_ONLINE)
+                .eq("linkedBookingIds", bookingId)
+                .eq("movementType", MOVEMENT_TYPE.VENTA_ONLINE)
                 .limit(1)
                 .find({ suppressAuth: true, consistentRead: true })
                 .catch(() => ({ items: [] }));
 
-            const movimientoOriginal = movimientoOriginalRes?.items?.[0];
+            const originalMovement = originalMovementRes?.items?.[0];
 
-            if (movimientoOriginal) {
+            if (originalMovement) {
                 try {
                     const emisor = await _getEmisorFiscal();
                     const amountOriginal = Math.abs(Number(
-                        movimientoOriginal.totalAmount ??
-                        movimientoOriginal.totalAmount ??
-                        0
+                        originalMovement.totalAmount ?? 0
                     ));
 
                     const eventResult = await registrarEventoEconomico({
-                        tipoEvento: TIPO_EVENTO.RECTIFICATIVA,
-                        tipoMovimiento: TIPO_MOVIMIENTO.REEMBOLSO,
-                        paymentMethod: movimientoOriginal.paymentMethod || FORMA_PAGO.ONLINE,
-                        importeTotal: -amountOriginal,
-                        baseImponibleOImporteNoSujeto: -Math.abs(Number(
-                            movimientoOriginal.taxableBaseOrNonSubjectAmount ??
-                            movimientoOriginal.taxableAmount ?? 0
+                        eventType: EVENT_TYPE.RECTIFICATIVA,
+                        movementType: MOVEMENT_TYPE.REEMBOLSO,
+                        paymentMethod: originalMovement.paymentMethod || PAYMENT_METHOD.ONLINE,
+                        totalAmount: -amountOriginal,
+                        taxableBaseOrNonSubjectAmount: -Math.abs(Number(
+                            originalMovement.taxableBaseOrNonSubjectAmount ?? 0
                         )),
-                        cuotaTotal: -Math.abs(Number(
-                            movimientoOriginal.taxAmount ??
-                            movimientoOriginal.taxAmount ?? 0
+                        taxAmount: -Math.abs(Number(
+                            originalMovement.taxAmount ?? 0
                         )),
-                        tipoImpositivo: Number(
-                            movimientoOriginal.taxRate ??
-                            movimientoOriginal.taxRate ?? 21
+                        taxRate: Number(
+                            originalMovement.taxRate ?? 21
                         ),
-                        descripcionOperacion: `Rectificacion cancelacion booking ${bookingId}`,
-                        numSerieFactura: movimientoOriginal.invoiceNumber || movimientoOriginal.invoiceNumber,
-                        fechaExpedicionFactura: new Date().toLocaleDateString("sv-SE", {
+                        operationDescription: `Rectificacion cancelacion booking ${bookingId}`,
+                        invoiceNumber: originalMovement.invoiceNumber,
+                        invoiceIssueDate: new Date().toLocaleDateString("sv-SE", {
                             timeZone: SDK_CONFIG?.TZ || "Europe/Madrid",
                         }),
-                        tipoFactura: CLAVES_AEAT.R1,
-                        tipoRectificativa: "I",
-                        idFacturaAnterior: movimientoOriginal.invoiceNumber ||
-                            movimientoOriginal.invoiceNumber || null,
-                        numSerieFacturaAnterior: movimientoOriginal.invoiceNumber ||
-                            movimientoOriginal.invoiceNumber || null,
-                        fechaExpedicionFacturaAnterior: movimientoOriginal.invoiceIssueDate ||
-                            movimientoOriginal.operationDate || null,
-                        motivoRectificacion: MOTIVOS_RECTIFICACION.NUMERO_SERIE,
-                        nifEmisor: emisor.issuerTaxId,
-                        nombreRazonEmisor: emisor.issuerLegalName,
-                        nifDestinatario: movimientoOriginal.recipientTaxId ||
-                            movimientoOriginal.nifTercero || null,
-                        nombreRazonDestinatario: movimientoOriginal.recipientLegalName ||
-                            movimientoOriginal.razonSocialTercero || null,
-                        rolFiscal: ROL_FISCAL.EMISOR,
+                        invoiceType: AEAT_INVOICE_TYPE.R1,
+                        correctionType: "I",
+                        previousInvoiceId: originalMovement.invoiceNumber || null,
+                        previousInvoiceNumber: originalMovement.invoiceNumber || null,
+                        previousInvoiceIssueDate: originalMovement.invoiceIssueDate || null,
+                        correctionReason: CORRECTION_REASON.NUMERO_SERIE,
+                        issuerTaxId: emisor.issuerTaxId,
+                        issuerLegalName: emisor.issuerLegalName,
+                        recipientTaxId: originalMovement.recipientTaxId || null,
+                        recipientLegalName: originalMovement.recipientLegalName || null,
+                        fiscalRole: FISCAL_ROLE.EMISOR,
                         channelType: "ONLINE",
-                        reservaIdVinculada: bookingId,
+                        linkedBookingIds: bookingId,
                         transactionId: `RECT-${bookingId}`,
-                        orderId: movimientoOriginal.orderId || null,
+                        orderId: originalMovement.orderId || null,
                         traceId,
                     });
 
@@ -568,14 +550,14 @@ export async function wixBookingsV2_onBookingCanceled(rawBody) {
                     });
                     await queueFiscalRecovery({
                         bookingIds: bookingId,
-                        amount: -Math.abs(Number(movimientoOriginal.totalAmount || 0)),
-                        paymentMethod: movimientoOriginal.paymentMethod || FORMA_PAGO.ONLINE,
+                        amount: -Math.abs(Number(originalMovement.totalAmount || 0)),
+                        paymentMethod: originalMovement.paymentMethod || PAYMENT_METHOD.ONLINE,
                         transactionId: `RECT-${bookingId}`,
-                        orderId: movimientoOriginal.orderId || null,
+                        orderId: originalMovement.orderId || null,
                         origin: "WIX_BOOKINGS_CANCEL_WEBHOOK",
                         concept: `Rectificacion cancelacion booking ${bookingId}`,
                         resourceId: "online",
-                        tipoMovimiento: TIPO_MOVIMIENTO.REEMBOLSO,
+                        movementType: MOVEMENT_TYPE.REEMBOLSO,
                         traceId,
                         lastError: rectErr?.message || "RECT_FAIL",
                     });
@@ -583,7 +565,7 @@ export async function wixBookingsV2_onBookingCanceled(rawBody) {
             }
         }
 
-        await _updateCitaStatus(bookingId, ESTADO_CITA.CANCELLED, traceId);
+        await _updateCitaStatus(bookingId, BOOKING_STATUS.CANCELLED, traceId);
         await markEventAsProcessed(eventId, "BOOKING_CANCELED", traceId, { bookingId });
         return { status: "OK", eventId };
     } catch (error) {
@@ -593,7 +575,7 @@ export async function wixBookingsV2_onBookingCanceled(rawBody) {
 }
 
 // ============================================================================
-// WEBHOOK: ORDER PAYMENT STATUS UPDATED — [CONSOL-04] via eventLog
+// WEBHOOK: ORDER PAYMENT STATUS UPDATED — via eventLog
 // ============================================================================
 
 export async function wixEcom_onOrderPaymentStatusUpdated(rawBody) {
@@ -683,55 +665,55 @@ export async function wixEcom_onOrderPaymentStatusUpdated(rawBody) {
                 : `Reserva Online ${orderId}`)
             : `Venta Online Tienda ${orderId}`;
 
-        // [E-01 + CONSOL-05] Extraer datos fiscales AEAT
+        // Extraer datos fiscales AEAT
         const fiscalData = _extractFiscalDataFromOrder(order);
         const emisor = await _getEmisorFiscal();
 
-        // [CONSOL-04] Registrar evento canonico
+        // Registrar evento canonico
         let eventResult;
         try {
             eventResult = await registrarEventoEconomico({
-                tipoEvento: TIPO_EVENTO.VENTA_LINEA,
-                tipoMovimiento: TIPO_MOVIMIENTO.VENTA_ONLINE,
-                paymentMethod: FORMA_PAGO.ONLINE,
+                eventType: EVENT_TYPE.VENTA_LINEA,
+                movementType: MOVEMENT_TYPE.VENTA_ONLINE,
+                paymentMethod: PAYMENT_METHOD.ONLINE,
                 channelType: "ONLINE",
                 resourceId: "online",
-                importeTotal: finalLedgerAmount,
-                baseImponibleOImporteNoSujeto: fiscalData.withholdingBase > 0
+                totalAmount: finalLedgerAmount,
+                taxableBaseOrNonSubjectAmount: fiscalData.withholdingBase > 0
                     ? fiscalData.withholdingBase
                     : 0,
-                cuotaTotal: 0,
-                tipoImpositivo: 21,
-                importeRetencionIRPF: fiscalData.irpfWithholdingAmount,
-                tipoRetencionIRPF: fiscalData.irpfWithholdingRate,
-                baseImponibleRetencion: fiscalData.withholdingBase,
-                descripcionOperacion: orderConcept,
-                numSerieFactura: null,
-                fechaExpedicionFactura: new Date().toLocaleDateString("sv-SE", {
+                taxAmount: 0,
+                taxRate: 21,
+                irpfWithholdingAmount: fiscalData.irpfWithholdingAmount,
+                irpfWithholdingRate: fiscalData.irpfWithholdingRate,
+                withholdingBase: fiscalData.withholdingBase,
+                operationDescription: orderConcept,
+                invoiceNumber: null,
+                invoiceIssueDate: new Date().toLocaleDateString("sv-SE", {
                     timeZone: SDK_CONFIG?.TZ || "Europe/Madrid",
                 }),
-                tipoFactura: fiscalData.esB2B ? CLAVES_AEAT.F1 : CLAVES_AEAT.F2,
-                nifEmisor: emisor.issuerTaxId,
-                nombreRazonEmisor: emisor.issuerLegalName,
-                nifDestinatario: fiscalData.recipientTaxId,
-                nombreRazonDestinatario: fiscalData.recipientLegalName,
-                domicilioDestinatario: fiscalData.recipientAddress,
-                esB2B: fiscalData.esB2B,
-                referenciaBancariaConciliacion: fiscalData.referenciaBancariaConciliacion,
-                rolFiscal: fiscalData.rolFiscal || ROL_FISCAL.EMISOR,
-                estadoDevengoIVA: ESTADO_DEVENGO_IVA.DEVENGADO,
-                reservaIdVinculada: linkedBookingIds || null,
+                invoiceType: fiscalData.isB2B ? AEAT_INVOICE_TYPE.F1 : AEAT_INVOICE_TYPE.F2,
+                issuerTaxId: emisor.issuerTaxId,
+                issuerLegalName: emisor.issuerLegalName,
+                recipientTaxId: fiscalData.recipientTaxId,
+                recipientLegalName: fiscalData.recipientLegalName,
+                recipientAddress: fiscalData.recipientAddress,
+                isB2B: fiscalData.isB2B,
+                bankReconciliationReference: fiscalData.bankReconciliationReference,
+                fiscalRole: fiscalData.fiscalRole || FISCAL_ROLE.EMISOR,
+                vatAccrualStatus: VAT_ACCRUAL_STATUS.DEVENGADO,
+                linkedBookingIds: linkedBookingIds || null,
                 transactionId,
                 orderId,
-                desglose: [{
+                breakdown: [{
                     base: fiscalData.withholdingBase > 0
                         ? fiscalData.withholdingBase
                         : finalLedgerAmount,
                     tipo: 21,
                     cuota: 0,
-                    descripcion: orderConcept,
-                    unidades: 1,
-                    magnitud: 1,
+                    operationDescription: orderConcept,
+                    units: 1,
+                    magnitude: 1,
                 }],
                 traceId,
             });
@@ -774,13 +756,13 @@ export async function wixEcom_onOrderPaymentStatusUpdated(rawBody) {
         await queueFiscalRecovery({
             bookingIds: linkedBookingIds,
             amount: finalLedgerAmount,
-            paymentMethod: FORMA_PAGO.ONLINE,
+            paymentMethod: PAYMENT_METHOD.ONLINE,
             transactionId,
             orderId,
             origin: "WIX_ECOM_PAYMENT_WEBHOOK",
             concept: orderConcept,
             resourceId: "online",
-            tipoMovimiento: TIPO_MOVIMIENTO.VENTA_ONLINE,
+            movementType: MOVEMENT_TYPE.VENTA_ONLINE,
             traceId,
             lastError: eventResult?.error?.message || "LEDGER_REGISTRATION_FAILED",
         });
@@ -808,7 +790,7 @@ export async function wixEcom_onOrderPaymentStatusUpdated(rawBody) {
 }
 
 // ============================================================================
-// WEBHOOK: ORDER REFUNDED — [CONSOL-08] via eventLog
+// WEBHOOK: ORDER REFUNDED — via eventLog
 // ============================================================================
 
 export async function wixEcom_onOrderRefunded(rawBody) {
@@ -856,13 +838,13 @@ export async function wixEcom_onOrderRefunded(rawBody) {
             await queueFiscalRecovery({
                 bookingIds: "",
                 amount: -refundAmount,
-                paymentMethod: FORMA_PAGO.ONLINE,
+                paymentMethod: PAYMENT_METHOD.ONLINE,
                 transactionId,
                 orderId, refundId,
                 origin: "WIX_ECOM_REFUND_WEBHOOK",
                 concept: `Refund - Order ${orderId}`,
                 resourceId: "online",
-                tipoMovimiento: TIPO_MOVIMIENTO.REEMBOLSO,
+                movementType: MOVEMENT_TYPE.REEMBOLSO,
                 phase: "WAIT_FOR_ORIGINAL_ORDER_LEDGER",
                 traceId,
                 lastError: "ORIGINAL_ORDER_LEDGER_MISSING",
@@ -877,14 +859,12 @@ export async function wixEcom_onOrderRefunded(rawBody) {
             return { status: "OK" };
         }
 
-        const originalAmount = Number(
-            originalMovement.totalAmount ?? originalMovement.totalAmount ?? 0
-        );
+        const originalAmount = Number(originalMovement.totalAmount ?? 0);
         const linkedBookingIds = _normalizeBookingIds(
-            originalMovement.linkedBookingIds || originalMovement.reservationIdLinked
+            originalMovement.linkedBookingIds
         );
 
-        // [FIX-57] path canonico restockInfo
+        // Path canonico restockInfo
         let refundRestockInfo = event?.sideEffects?.restockInfo || null;
         if (!refundRestockInfo) {
             const fallbackPath =
@@ -929,69 +909,59 @@ export async function wixEcom_onOrderRefunded(rawBody) {
             );
         }
 
-        // [CONSOL-08] Registrar RECTIFICATIVA via eventLog
+        // Registrar RECTIFICATIVA via eventLog
         const emisor = await _getEmisorFiscal();
-        const fechaHoy = new Date().toLocaleDateString("sv-SE", {
+        const todayDate = new Date().toLocaleDateString("sv-SE", {
             timeZone: SDK_CONFIG?.TZ || "Europe/Madrid",
         });
 
         let eventResult;
         try {
             eventResult = await registrarEventoEconomico({
-                tipoEvento: TIPO_EVENTO.RECTIFICATIVA,
-                tipoMovimiento: TIPO_MOVIMIENTO.REEMBOLSO,
-                paymentMethod: FORMA_PAGO.ONLINE,
+                eventType: EVENT_TYPE.RECTIFICATIVA,
+                movementType: MOVEMENT_TYPE.REEMBOLSO,
+                paymentMethod: PAYMENT_METHOD.ONLINE,
                 channelType: "ONLINE",
                 resourceId: "online",
-                importeTotal: -refundAmount,
-                baseImponibleOImporteNoSujeto: -Math.abs(Number(
-                    originalMovement.taxableBaseOrNonSubjectAmount ??
-                    originalMovement.taxableAmount ?? 0
+                totalAmount: -refundAmount,
+                taxableBaseOrNonSubjectAmount: -Math.abs(Number(
+                    originalMovement.taxableBaseOrNonSubjectAmount ?? 0
                 )),
-                cuotaTotal: -Math.abs(Number(
-                    originalMovement.taxAmount ??
+                taxAmount: -Math.abs(Number(
                     originalMovement.taxAmount ?? 0
                 )),
-                tipoImpositivo: Number(
-                    originalMovement.taxRate ??
+                taxRate: Number(
                     originalMovement.taxRate ?? 21
                 ),
-                descripcionOperacion: `Refund - Order ${orderId}`,
-                numSerieFactura: originalMovement.invoiceNumber || originalMovement.invoiceNumber,
-                fechaExpedicionFactura: fechaHoy,
-                tipoFactura: CLAVES_AEAT.R1,
-                tipoRectificativa: "I",
-                idFacturaAnterior: originalMovement.invoiceNumber ||
-                    originalMovement.invoiceNumber || null,
-                numSerieFacturaAnterior: originalMovement.invoiceNumber ||
-                    originalMovement.invoiceNumber || null,
-                fechaExpedicionFacturaAnterior: originalMovement.invoiceIssueDate ||
-                    originalMovement.operationDate || null,
-                motivoRectificacion: MOTIVOS_RECTIFICACION.OTRAS,
-                nifEmisor: emisor.issuerTaxId,
-                nombreRazonEmisor: emisor.issuerLegalName,
-                nifDestinatario: originalMovement.recipientTaxId ||
-                    originalMovement.nifTercero || null,
-                nombreRazonDestinatario: originalMovement.recipientLegalName ||
-                    originalMovement.razonSocialTercero || null,
-                rolFiscal: ROL_FISCAL.EMISOR,
-                reservaIdVinculada: linkedBookingIds.join(",") || null,
+                operationDescription: `Refund - Order ${orderId}`,
+                invoiceNumber: originalMovement.invoiceNumber,
+                invoiceIssueDate: todayDate,
+                invoiceType: AEAT_INVOICE_TYPE.R1,
+                correctionType: "I",
+                previousInvoiceId: originalMovement.invoiceNumber || null,
+                previousInvoiceNumber: originalMovement.invoiceNumber || null,
+                previousInvoiceIssueDate: originalMovement.invoiceIssueDate || null,
+                correctionReason: CORRECTION_REASON.OTRAS,
+                issuerTaxId: emisor.issuerTaxId,
+                issuerLegalName: emisor.issuerLegalName,
+                recipientTaxId: originalMovement.recipientTaxId || null,
+                recipientLegalName: originalMovement.recipientLegalName || null,
+                fiscalRole: FISCAL_ROLE.EMISOR,
+                linkedBookingIds: linkedBookingIds.join(",") || null,
                 transactionId,
                 orderId,
                 refundId,
-                desglose: [{
+                breakdown: [{
                     base: -Math.abs(Number(
-                        originalMovement.taxableBaseOrNonSubjectAmount ??
-                        originalMovement.taxableAmount ?? 0
+                        originalMovement.taxableBaseOrNonSubjectAmount ?? 0
                     )),
-                    tipo: Number(originalMovement.taxRate ?? originalMovement.taxRate ?? 21),
+                    tipo: Number(originalMovement.taxRate ?? 21),
                     cuota: -Math.abs(Number(
-                        originalMovement.taxAmount ??
                         originalMovement.taxAmount ?? 0
                     )),
-                    descripcion: `Refund - Order ${orderId}`,
-                    unidades: 1,
-                    magnitud: -1,
+                    operationDescription: `Refund - Order ${orderId}`,
+                    units: 1,
+                    magnitude: -1,
                 }],
                 traceId,
             });
@@ -1008,13 +978,13 @@ export async function wixEcom_onOrderRefunded(rawBody) {
             await queueFiscalRecovery({
                 bookingIds: linkedBookingIds.join(","),
                 amount: -refundAmount,
-                paymentMethod: FORMA_PAGO.ONLINE,
+                paymentMethod: PAYMENT_METHOD.ONLINE,
                 transactionId,
                 orderId, refundId,
                 origin: "WIX_ECOM_REFUND_WEBHOOK",
                 concept: `Refund - Order ${orderId}`,
                 resourceId: "online",
-                tipoMovimiento: TIPO_MOVIMIENTO.REEMBOLSO,
+                movementType: MOVEMENT_TYPE.REEMBOLSO,
                 traceId,
                 lastError: eventResult?.error?.message || "REFUND_LEDGER_REGISTRATION_FAILED",
             });
@@ -1031,7 +1001,7 @@ export async function wixEcom_onOrderRefunded(rawBody) {
         const refundsRes = await withTimeout(
             wixData.query(COLLECTIONS.MOVIMIENTOS_CAJA)
                 .eq("orderId", orderId)
-                .eq("movementType", TIPO_MOVIMIENTO.REEMBOLSO)
+                .eq("movementType", MOVEMENT_TYPE.REEMBOLSO)
                 .limit(100)
                 .find({ suppressAuth: true, consistentRead: true }),
             API_TIMEOUT_MS,
@@ -1041,7 +1011,6 @@ export async function wixEcom_onOrderRefunded(rawBody) {
         const refundedTotal = (refundsRes?.items || []).reduce(
             (sum, movement) => sum + Math.abs(Number(
                 movement?.accountingAmount ??
-                movement?.totalAmount ??
                 movement?.totalAmount ?? 0
             )),
             0
@@ -1087,7 +1056,7 @@ export async function wixEcom_onOrderCanceled(rawBody) {
         );
 
         for (const bId of bookingIds) {
-            await _updateCitaStatus(bId, ESTADO_CITA.CANCELLED, traceId);
+            await _updateCitaStatus(bId, BOOKING_STATUS.CANCELLED, traceId);
         }
 
         await markEventAsProcessed(eventId, "ORDER_CANCELED", traceId, { orderId, bookingIds });

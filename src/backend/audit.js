@@ -1,11 +1,17 @@
 /*
 =============================================================================
 MODULE: backend/audit.js
-VERSION: v5007.4-FIX-D3
-BASE: BIBLIA v5002.5 Bloque 12 + ESQUEMA CMS 4.28
+VERSION: v5009-FISCAL-V20.1
+BASE: v5007.4-FIX-D3 + Directriz V20 (IDs nativa en ingles)
 RESPONSIBILITY: Registro centralizado de auditoria operativa.
 STANDARDS: G10 ASCII Strict.
-COLECCION DESTINO: ALERTAS_OPERATIVAS (reemplaza MmAuditLog eliminada).
+COLECCION DESTINO: ALERTAS_OPERATIVAS.
+
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: sin renombrados funcionales. Los campos que escribe
+            (eventType, level, message, data, resourceId, source, traceId,
+            loggedAt) son propios de auditoria y no forman parte de la
+            matriz V20.1. ALERTAS_OPERATIVAS mantiene su schema.
 =============================================================================
 */
 

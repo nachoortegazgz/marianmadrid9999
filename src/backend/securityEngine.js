@@ -1,13 +1,18 @@
 /*
 =============================================================================
 MODULE: backend/securityEngine.js
-VERSION: v5007.4-FINAL
-CORRECTIONS:
-[SEC-01] SHA-256 asincrono.
-[SEC-02] HMAC-SHA256 asincrono.
-[SEC-03] Comparacion timing-safe en JavaScript.
-[SEC-04] Validacion estricta de JWT.
-[SEC-05] Eliminadas dependencias no utilizadas.
+VERSION: v5009-FISCAL-V20.1
+BASE: v5007.4-FINAL + Directriz V20 (IDs nativa en ingles)
+RESPONSIBILITY: Hashes criptograficos (SHA-256, HMAC-SHA256), JWT y
+                comparacion timing-safe.
+STANDARDS: G10 ASCII Strict.
+
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: sin renombrados funcionales. El modulo solo importa JWT de
+            internalConfig (no renombrado) y opera sobre strings.
+
+CORRECTIONS (heredadas):
+  [SEC-01..SEC-05].
 =============================================================================
 */
 

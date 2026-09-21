@@ -1,29 +1,39 @@
 /*
 =============================================================================
 MODULE: backend/inventario.web.js
-VERSION: v5007.4-FINAL
-BASE: BIBLIA v5002.5 Bloque 12.14 + DOSSIER CAJA Flujos 4,5,13,14,15
+VERSION: v5009-FISCAL-V20.1
+BASE: v5007.4-FINAL + Directriz V20 (IDs nativa en ingles)
 RESPONSIBILITY: Dashboard de inventario, cola de conciliacion Wix,
                 movimiento seguro de inventario, y cierre de inventario
                 valorado con hash y firma.
 STANDARDS: G10 ASCII Strict (0 non-ASCII characters).
            Idempotencia por movementToken.
            Conciliacion con Wix Stores V1.
-CORRECTIONS APPLIED:
+
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: sin renombrados de constantes JS. El modulo no importa
+            constantes renombradas de internalConfig.js.
+  - V20-02: recordInventoryMovementSafe escribe los campos V20.1
+            (sourceEventId, catalogId, magnitude, thirdPartyId) con
+            fallback legacy (eventoOrigenId, catalogoId, terceroId). El
+            magnitude se deriva del signo de la cantidad (+1/-1/0).
+  - V20-03: NOTA DE AUDITORIA: el original usa COLLECTIONS.HISTORICO_CIERRES_Z
+            para escribir cierres de inventario (mezcla con cierres Z). Se
+            preserva tal cual (bug del original, no de V20.1). El schema
+            V20.1-EXPANDED-v2 amplia HistoricoCierresZ para acomodar los
+            campos de inventario (inventoryClosingId, fiscalYear,
+            closingDate, closingType, sku, productId, productDescription,
+            stockQuantity, unitCost, stockValue, accountCode, debitBalance,
+            creditBalance).
+
+CORRECTIONS (heredadas v5007.4):
   [INV-01..05] movementToken, stockBefore/After, needsWixReconciliation,
                recordOnlineInventoryOrder/Refund.
   [FIX-C3] generateInventoryClosing + listInventoryClosings.
   [FIX-D1..D3] Imports correctos.
-
-FIXES APLICADOS v5007.4:
-  - FIX-52: generateInventoryClosing usa try/catch por insert. Registros
-            ya existentes se cuentan como idempotentes. Si algun insert
-            falla por causa no-idempotente, se aborta y se registra audit
-            INVENTORY_CLOSING_PARTIAL.
+  - FIX-52: generateInventoryClosing usa try/catch por insert.
   - FIX-53: fallo explicito si SECRETS.FISCAL_KEY no esta disponible.
-            Antes se persistia el cierre sin firma silenciosamente.
   - FIX-54: getInventoryDashboard usa contains en lugar de hasSome.
-            hasSome no matchea sobre campos escalares (productName string).
 =============================================================================
 */
 
@@ -136,6 +146,8 @@ export const getInventoryReconciliationQueue = webMethod(Permissions.SiteMember,
 
 // =============================================================================
 // BLOQUE 3 - RECORD INVENTORY MOVEMENT SAFE
+// [V20.1] Escribe sourceEventId, catalogId, magnitude, thirdPartyId con
+//         fallback a nombres legacy (eventoOrigenId, catalogoId, terceroId).
 // =============================================================================
 
 export async function recordInventoryMovementSafe(sku, movementType, quantity, meta = {}) {
@@ -200,6 +212,11 @@ export async function recordInventoryMovementSafe(sku, movementType, quantity, m
     nativeCommercialMovement: meta.nativeCommercialMovement === true,
     wixProductId: stockItem.wixProductId || null,
     wixVariantId: stockItem.wixVariantId || null,
+    // [V20.1] FK y magnitud con fallback legacy
+    sourceEventId: _safeTrim(meta.sourceEventId || meta.eventoOrigenId) || null,
+    catalogId: _safeTrim(meta.catalogId || meta.catalogoId) || null,
+    magnitude: Number(qty) > 0 ? 1 : (Number(qty) < 0 ? -1 : 0),
+    thirdPartyId: _safeTrim(meta.thirdPartyId || meta.terceroId) || null,
     traceId,
   };
 

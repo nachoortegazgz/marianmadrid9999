@@ -1,11 +1,17 @@
 /*
 =============================================================================
 MODULE: backend/staff.js
-VERSION: v5007.4-FINAL
-BASE: BIBLIA v5002.5 Bloque 12.11 + ESQUEMA CMS v5002.5 Seccion 4.03
+VERSION: v5009-FISCAL-V20.1
+BASE: v5007.4-FINAL + Directriz V20 (IDs nativa en ingles)
 RESPONSIBILITY: Catalogo de personal activo con indices de busqueda y cache
                 en memoria con TTL configurable.
 STANDARDS: G10 ASCII Strict.
+
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: sin renombrados funcionales. Los campos de MapaStaff usados
+            por este modulo (displayName, resourceId, email, staffMemberId,
+            scheduleId, locationId, rol, phone, active, notes) estan todos
+            contemplados en el schema V20.1-EXPANDED.
 =============================================================================
 */
 

@@ -1,17 +1,18 @@
 /*
 =============================================================================
 MODULE: backend/http-functions.js
-VERSION: v5007.4-FINAL
-BASE: BIBLIA v5002.5 Bloque 12.13 + DIRECTRICES V19
+VERSION: v5009-FISCAL-V20.1
+BASE: v5007.4-FINAL + Directriz V20 (IDs nativa en ingles)
 RESPONSIBILITY: Endpoints HTTP expuestos. Webhook M365 con validacion HMAC.
-STANDARDS: G10 ASCII Strict (0 non-ASCII characters).
-CORRECTIONS APPLIED:
-  [HTTP-01] Validacion HMAC con timingSafeEqual.
-  [HTTP-02] Respuesta JSON uniforme.
-  [HTTP-03] Rate limiting en el borde.
-  [FIX-47] Eliminado import inexistente "wix-crypto". Se usa hmacSha256Hex
-           de backend/securityEngine (Web Crypto API). El modulo "wix-crypto"
-           no existe en Velo y rompia el webhook M365 en el primer request.
+STANDARDS: G10 ASCII Strict.
+
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: sin renombrados funcionales. El modulo no importa constantes
+            renombradas ni toca campos CMS.
+
+CORRECTIONS (heredadas):
+  [HTTP-01..HTTP-03].
+  [FIX-47].
 =============================================================================
 */
 
@@ -44,7 +45,6 @@ async function _validateHMACSignature(request, bodyString, traceId) {
 
     if (!providedSignature) return false;
 
-    // FIX-47: usa hmacSha256Hex de securityEngine (Web Crypto API).
     const expectedSignature = await hmacSha256Hex(secret, bodyString);
 
     return timingSafeEqual(

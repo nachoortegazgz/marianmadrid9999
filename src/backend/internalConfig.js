@@ -1,6 +1,7 @@
 /*
 =============================================================================
 MODULE: backend/internalConfig.js
+<<<<<<< HEAD
 VERSION: v5009.2-FISCAL-V20.1-AUDIT
 BASE: v5009-FISCAL-V20.1 + Correcciones auditoria CFG-01..CFG-20
 RESPONSIBILITY: Single Source of Truth (SSOT) for backend configuration.
@@ -49,6 +50,22 @@ HERENCIA v5009-FISCAL-V20.1:
   V20-04 COMPUTER_SYSTEM consolidado.
   V20-05 ACCOUNTING_ACCOUNT keys en ingles.
   v5008.6: FIX-24, FIX-40, FIX-41, I-01..I-03, FIX-FISCAL-02/04.
+=======
+VERSION: v5009-FISCAL-V20.1
+BASE: v5008.6-FISCAL + Directriz V20 (IDs nativa en ingles) + SSOT V20.1
+RESPONSIBILITY: Single Source of Truth (SSOT) for backend configuration.
+STANDARDS: G10 ASCII Strict.
+
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: constantes JS renombradas a ingles para alinear con CMS field IDs.
+  - V20-02: CITA_FIELDS.STATUS_PAGO -> BOOKING_FIELDS.PAYMENT_STATUS.
+  - V20-03: aliases deprecated al final para compatibilidad de imports.
+  - V20-04: COMPUTER_SYSTEM consolida configuracion del sistema informatico
+            con keys en ingles.
+  - V20-05: ACCOUNTING_ACCOUNT keys renombradas a ingles.
+  - Herencia v5008.6: FIX-24, FIX-40, FIX-41, I-01..I-03, FIX-FISCAL-02,
+    FIX-FISCAL-04, TIPO_MOVIMIENTO.SERVICIO_PROFESIONAL.
+>>>>>>> 127afc4 (refactor: reorganizar módulos a estructura estándar Wix src/(backend|public|pages) según SSOT v5009)
 =============================================================================
 */
 
@@ -283,7 +300,11 @@ export const CONCURRENCY = _deepFreeze({
 // [CFG-02] CERO espacios en blanco en TODOS los valores.
 // =============================================================================
 
+<<<<<<< HEAD
 export const TIMECLOCK_TYPE = _deepFreeze({
+=======
+export const TIMECLOCK_TYPE = Object.freeze({
+>>>>>>> 127afc4 (refactor: reorganizar módulos a estructura estándar Wix src/(backend|public|pages) según SSOT v5009)
     ENTRADA: "ENTRADA",
     SALIDA: "SALIDA",
     PAUSA_INICIO: "PAUSA_INICIO",
@@ -291,7 +312,11 @@ export const TIMECLOCK_TYPE = _deepFreeze({
     AJUSTE: "AJUSTE",
 });
 
+<<<<<<< HEAD
 export const MOVEMENT_TYPE = _deepFreeze({
+=======
+export const MOVEMENT_TYPE = Object.freeze({
+>>>>>>> 127afc4 (refactor: reorganizar módulos a estructura estándar Wix src/(backend|public|pages) según SSOT v5009)
     VENTA_EFECTIVO: "VENTA_EFECTIVO",
     VENTA_TARJETA: "VENTA_TARJETA",
     VENTA_BIZUM: "VENTA_BIZUM",
@@ -314,6 +339,7 @@ export const MOVEMENT_TYPE = _deepFreeze({
     SERVICIO_PROFESIONAL: "SERVICIO_PROFESIONAL",
 });
 
+<<<<<<< HEAD
 export const NON_TAXABLE_MOVEMENT_TYPES = Object.freeze([
     MOVEMENT_TYPE.PROPINA,
     MOVEMENT_TYPE.AJUSTE,
@@ -329,6 +355,9 @@ export const NEGATIVE_SIGN_MOVEMENT_TYPES = Object.freeze([
 ]);
 
 export const PAYMENT_METHOD = _deepFreeze({
+=======
+export const PAYMENT_METHOD = Object.freeze({
+>>>>>>> 127afc4 (refactor: reorganizar módulos a estructura estándar Wix src/(backend|public|pages) según SSOT v5009)
     EFECTIVO: "EFECTIVO",
     TARJETA: "TARJETA",
     BIZUM: "BIZUM",
@@ -351,20 +380,33 @@ export const IVA_RATES = _deepFreeze({
     EXENTO: 0,
 });
 
+<<<<<<< HEAD
 export const CASH_REGISTER_STATUS = _deepFreeze({
+=======
+export const CASH_REGISTER_STATUS = Object.freeze({
+>>>>>>> 127afc4 (refactor: reorganizar módulos a estructura estándar Wix src/(backend|public|pages) según SSOT v5009)
     OPEN: "ABIERTA",
     CLOSED: "CERRADA",
 });
 
+<<<<<<< HEAD
 export const BOOKING_STATUS = _deepFreeze({
     CONFIRMED: "CONFIRMED",
     PENDING_PAYMENT: "PENDING_PAYMENT",
     CANCELLED: "CANCELLED",
     CANCELED: "CANCELLED",
+=======
+export const BOOKING_STATUS = Object.freeze({
+    CONFIRMED: "CONFIRMED",
+    PENDING_PAYMENT: "PENDING_PAYMENT",
+    CANCELLED: "CANCELLED",
+    CANCELED: "CANCELLED", // Alias deprecated para compatibilidad SSOT v5008.6
+>>>>>>> 127afc4 (refactor: reorganizar módulos a estructura estándar Wix src/(backend|public|pages) según SSOT v5009)
     REFUNDED: "REFUNDED",
     DECLINED: "DECLINED",
 });
 
+<<<<<<< HEAD
 export const INACTIVE_BOOKING_STATUSES = Object.freeze([
     BOOKING_STATUS.CANCELLED,
     BOOKING_STATUS.DECLINED,
@@ -372,6 +414,9 @@ export const INACTIVE_BOOKING_STATUSES = Object.freeze([
 ]);
 
 export const PAYMENT_STATUS = _deepFreeze({
+=======
+export const PAYMENT_STATUS = Object.freeze({
+>>>>>>> 127afc4 (refactor: reorganizar módulos a estructura estándar Wix src/(backend|public|pages) según SSOT v5009)
     UNPAID: "UNPAID",
     NOT_PAID: "NOT_PAID",
     PENDING_PAYMENT: "PENDING_PAYMENT",
@@ -381,7 +426,11 @@ export const PAYMENT_STATUS = _deepFreeze({
     PARTIALLY_REFUNDED: "PARTIALLY_REFUNDED",
 });
 
+<<<<<<< HEAD
 export const COLLABORATOR_ROLES = _deepFreeze({
+=======
+export const COLLABORATOR_ROLES = Object.freeze({
+>>>>>>> 127afc4 (refactor: reorganizar módulos a estructura estándar Wix src/(backend|public|pages) según SSOT v5009)
     ADMIN: "ADMIN",
     GESTION: "GESTION",
     ESTILISTA: "ESTILISTA",
@@ -418,7 +467,11 @@ export const RECORD_SOURCE = _deepFreeze({
 // BLOQUE 9 - CATALOGO Y BUSQUEDA DE SLOTS
 // =============================================================================
 
+<<<<<<< HEAD
 export const CATALOG_CONFIG = _deepFreeze({
+=======
+export const CATALOG_CONFIG = Object.freeze({
+>>>>>>> 127afc4 (refactor: reorganizar módulos a estructura estándar Wix src/(backend|public|pages) según SSOT v5009)
     STATES: Object.freeze({
         ACTIVO: "ACTIVO",
         INACTIVO: "INACTIVO",
@@ -457,8 +510,17 @@ export const JWT = _deepFreeze({
 // [CFG-05] CERO espacios. [CFG-17] Ampliado a los 21 campos de SSOT CMS 8.
 // =============================================================================
 
+<<<<<<< HEAD
 export const BOOKING_FIELDS = _deepFreeze({
     ID: "_id",
+=======
+export const BOOKING_FIELDS = Object.freeze({
+    STATUS: "status",
+    PAYMENT_STATUS: "paymentStatus",
+    PAIR_TOKEN: "pairToken",
+    SERVICE_ID: "serviceId",
+    RESOURCE_ID: "resourceId",
+>>>>>>> 127afc4 (refactor: reorganizar módulos a estructura estándar Wix src/(backend|public|pages) según SSOT v5009)
     BOOKING_ID: "bookingId",
     PAIR_TOKEN: "pairToken",
     REVISION: "revision",
@@ -506,7 +568,11 @@ export const STAFF_ACCESS = _deepFreeze({
 // BLOQUE 13 - DINERO Y TEXTO POR DEFECTO
 // =============================================================================
 
+<<<<<<< HEAD
 export const CURRENCY_CONFIG = _deepFreeze({
+=======
+export const CURRENCY_CONFIG = Object.freeze({
+>>>>>>> 127afc4 (refactor: reorganizar módulos a estructura estándar Wix src/(backend|public|pages) según SSOT v5009)
     DISPLAY_CURRENCY: "EUR",
     DECIMALS: 2,
     LOCALE: "es-ES",
@@ -553,7 +619,11 @@ export function validateActiveNativeAddonIds() {
 // [CFG-03] CERO espacios. data.js valida /^\d{6}$/.
 // =============================================================================
 
+<<<<<<< HEAD
 export const ACCOUNTING_ACCOUNT = _deepFreeze({
+=======
+export const ACCOUNTING_ACCOUNT = Object.freeze({
+>>>>>>> 127afc4 (refactor: reorganizar módulos a estructura estándar Wix src/(backend|public|pages) según SSOT v5009)
     CASH: "570000",
     BANKS: "572000",
     SERVICE_REVENUE: "705000",
@@ -563,6 +633,7 @@ export const ACCOUNTING_ACCOUNT = _deepFreeze({
     SUPPLIERS: "400000",
     PURCHASES_EXPENSES: "600000",
     SUSPENSE: "555000",
+<<<<<<< HEAD
     TAX_IRPF_WITHHOLDING_PAYABLE: "475100",
     TAX_IRPF_WITHHOLDING_RECEIVABLE: "473000",
     TAX_EQUIVALENCE_SURCHARGE: "475800",
@@ -620,6 +691,21 @@ export const BALANCE_NATURE = _deepFreeze({
 // =============================================================================
 
 export const AEAT_INVOICE_TYPE = _deepFreeze({
+=======
+
+    TAX_IRPF_WITHHOLDING_PAYABLE: "475100",
+    TAX_IRPF_WITHHOLDING_RECEIVABLE: "473000",
+
+    TAX_EQUIVALENCE_SURCHARGE: "475800",
+    CUSTOMER_ADVANCES: "438000",
+});
+
+// =============================================================================
+// BLOQUE 16 - TIPOS DE FACTURA AEAT (Registro Facturas)
+// =============================================================================
+
+export const AEAT_INVOICE_TYPE = Object.freeze({
+>>>>>>> 127afc4 (refactor: reorganizar módulos a estructura estándar Wix src/(backend|public|pages) según SSOT v5009)
     F1: "F1",
     F2: "F2",
     F3: "F3",
@@ -640,7 +726,11 @@ export const CORRECTION_TYPE = _deepFreeze({
 // [CFG-06] CERO espacios.
 // =============================================================================
 
+<<<<<<< HEAD
 export const CORRECTION_REASON = _deepFreeze({
+=======
+export const CORRECTION_REASON = Object.freeze({
+>>>>>>> 127afc4 (refactor: reorganizar módulos a estructura estándar Wix src/(backend|public|pages) según SSOT v5009)
     NUMERO_SERIE: "01",
     SERIE: "02",
     BASE_IMPONIBLE: "03",
@@ -656,7 +746,11 @@ export const CORRECTION_REASON = _deepFreeze({
 // BLOQUE 18 - TIPOS DE RETENCION IRPF
 // =============================================================================
 
+<<<<<<< HEAD
 export const IRPF_WITHHOLDING_RATE = _deepFreeze({
+=======
+export const IRPF_WITHHOLDING_RATE = Object.freeze({
+>>>>>>> 127afc4 (refactor: reorganizar módulos a estructura estándar Wix src/(backend|public|pages) según SSOT v5009)
     PROFESIONALES_GENERAL: 0.15,
     PROFESIONALES_PRIMEROS_3_ANOS: 0.07,
     MODULOS: 0.01,
@@ -667,7 +761,11 @@ export const IRPF_WITHHOLDING_RATE = _deepFreeze({
 // BLOQUE 19 - ESTADOS DE DEVENGO IVA
 // =============================================================================
 
+<<<<<<< HEAD
 export const VAT_ACCRUAL_STATUS = _deepFreeze({
+=======
+export const VAT_ACCRUAL_STATUS = Object.freeze({
+>>>>>>> 127afc4 (refactor: reorganizar módulos a estructura estándar Wix src/(backend|public|pages) según SSOT v5009)
     DEVENGADO: "DEVENGADO",
     ANTICIPADO: "ANTICIPADO",
     APLICACION_ANTICIPO: "APLICACION_ANTICIPO",
@@ -677,7 +775,11 @@ export const VAT_ACCRUAL_STATUS = _deepFreeze({
 // BLOQUE 20 - ROL FISCAL
 // =============================================================================
 
+<<<<<<< HEAD
 export const FISCAL_ROLE = _deepFreeze({
+=======
+export const FISCAL_ROLE = Object.freeze({
+>>>>>>> 127afc4 (refactor: reorganizar módulos a estructura estándar Wix src/(backend|public|pages) según SSOT v5009)
     EMISOR: "EMISOR",
     RECEPTOR: "RECEPTOR",
 });
@@ -712,11 +814,19 @@ export const EU_VAT_PREFIXES = Object.freeze([
 // BLOQUE 22 - TIPOS DE EVENTO
 // =============================================================================
 
+<<<<<<< HEAD
 export const EVENT_TYPE = _deepFreeze({
     VENTA_LINEA: "VENTA_LINEA",
     COMPRA_LINEA: "COMPRA_LINEA",
     CIERRE_Z: "CIERRE_Z",
     AJUSTE: "AJUSTE",
+=======
+export const EVENT_TYPE = Object.freeze({
+    VENTA_LINEA:   "VENTA_LINEA",
+    COMPRA_LINEA:  "COMPRA_LINEA",
+    CIERRE_Z:      "CIERRE_Z",
+    AJUSTE:        "AJUSTE",
+>>>>>>> 127afc4 (refactor: reorganizar módulos a estructura estándar Wix src/(backend|public|pages) según SSOT v5009)
     RECTIFICATIVA: "RECTIFICATIVA",
     MOV_STOCK: "MOV_STOCK",
 });
@@ -739,7 +849,11 @@ export const SIF_EVENT_TYPE = _deepFreeze({
 // BLOQUE 23 - NATURALEZA DE ITEM
 // =============================================================================
 
+<<<<<<< HEAD
 export const ITEM_NATURE = _deepFreeze({
+=======
+export const ITEM_NATURE = Object.freeze({
+>>>>>>> 127afc4 (refactor: reorganizar módulos a estructura estándar Wix src/(backend|public|pages) según SSOT v5009)
     SERVICIO_PROPIO: "SERVICIO_PROPIO",
     PRODUCTO_VENTA: "PRODUCTO_VENTA",
     PRODUCTO_USO: "PRODUCTO_USO",
@@ -750,8 +864,13 @@ export const ITEM_NATURE = _deepFreeze({
 // BLOQUE 24 - TIPO DE TERCERO
 // =============================================================================
 
+<<<<<<< HEAD
 export const THIRD_PARTY_TYPE = _deepFreeze({
     CLIENTE: "CLIENTE",
+=======
+export const THIRD_PARTY_TYPE = Object.freeze({
+    CLIENTE:   "CLIENTE",
+>>>>>>> 127afc4 (refactor: reorganizar módulos a estructura estándar Wix src/(backend|public|pages) según SSOT v5009)
     PROVEEDOR: "PROVEEDOR",
     STAFF: "STAFF",
     AAPP: "AAPP",
@@ -762,7 +881,11 @@ export const THIRD_PARTY_TYPE = _deepFreeze({
 // BLOQUE 25 - ESTADO DE PROYECCION
 // =============================================================================
 
+<<<<<<< HEAD
 export const PROJECTION_STATUS = _deepFreeze({
+=======
+export const PROJECTION_STATUS = Object.freeze({
+>>>>>>> 127afc4 (refactor: reorganizar módulos a estructura estándar Wix src/(backend|public|pages) según SSOT v5009)
     PENDIENTE: "PENDIENTE",
     OK: "OK",
     ERROR: "ERROR",
@@ -774,6 +897,7 @@ export const PROJECTION_STATUS = _deepFreeze({
 // [CFG-09] producerTaxId y producerLegalName a null.
 // =============================================================================
 
+<<<<<<< HEAD
 export const COMPUTER_SYSTEM = _deepFreeze({
     computerSystemName: "Marian Madrid Velo",
     computerSystemId: "MM-VELO-001",
@@ -1432,3 +1556,67 @@ export default {
     ALERT_STATUS,
     VALIDATION_SETS,
 };
+=======
+export const COMPUTER_SYSTEM = Object.freeze({
+    computerSystemName:       "Marian Madrid Velo",
+    computerSystemId:         "MM-VELO-001",
+    version:                  "v5009",
+    installationNumber:       "1",
+    possibleUseOnlyVerifactu: "S",
+    possibleUseMultiOT:       "N",
+    multipleOTIndicator:      "N",
+    producerTaxId:            "B12345678",
+    producerLegalName:        "Marian Madrid SL",
+});
+
+// =============================================================================
+// BLOQUE 27 - ALIASES DEPRECATED
+//
+// Mantienen compatibilidad con consumidores que aun importan los nombres
+// antiguos. Se eliminaran en v5010 tras migracion completa de todos los
+// modulos backend.
+// =============================================================================
+
+/** @deprecated Usar TIMECLOCK_TYPE */
+export const TIPO_FICHAJE = TIMECLOCK_TYPE;
+/** @deprecated Usar MOVEMENT_TYPE */
+export const TIPO_MOVIMIENTO = MOVEMENT_TYPE;
+/** @deprecated Usar PAYMENT_METHOD */
+export const FORMA_PAGO = PAYMENT_METHOD;
+/** @deprecated Usar CASH_REGISTER_STATUS */
+export const CAJA_STATUS = CASH_REGISTER_STATUS;
+/** @deprecated Usar BOOKING_STATUS */
+export const ESTADO_CITA = BOOKING_STATUS;
+/** @deprecated Usar PAYMENT_STATUS */
+export const ESTADO_PAGO = PAYMENT_STATUS;
+/** @deprecated Usar COLLABORATOR_ROLES */
+export const COLLAB_ROLES = COLLABORATOR_ROLES;
+/** @deprecated Usar CATALOG_CONFIG */
+export const SERVICE_CATALOG = CATALOG_CONFIG;
+/** @deprecated Usar BOOKING_FIELDS */
+export const CITA_FIELDS = BOOKING_FIELDS;
+/** @deprecated Usar CURRENCY_CONFIG */
+export const MONEY = CURRENCY_CONFIG;
+/** @deprecated Usar ACCOUNTING_ACCOUNT */
+export const CUENTAS_PGC = ACCOUNTING_ACCOUNT;
+/** @deprecated Usar AEAT_INVOICE_TYPE */
+export const CLAVES_AEAT = AEAT_INVOICE_TYPE;
+/** @deprecated Usar CORRECTION_REASON */
+export const MOTIVOS_RECTIFICACION = CORRECTION_REASON;
+/** @deprecated Usar IRPF_WITHHOLDING_RATE */
+export const TIPOS_RETENCION_IRPF = IRPF_WITHHOLDING_RATE;
+/** @deprecated Usar VAT_ACCRUAL_STATUS */
+export const ESTADO_DEVENGO_IVA = VAT_ACCRUAL_STATUS;
+/** @deprecated Usar FISCAL_ROLE */
+export const ROL_FISCAL = FISCAL_ROLE;
+/** @deprecated Usar EVENT_TYPE */
+export const TIPO_EVENTO = EVENT_TYPE;
+/** @deprecated Usar ITEM_NATURE */
+export const NATURALEZA_ITEM = ITEM_NATURE;
+/** @deprecated Usar THIRD_PARTY_TYPE */
+export const TIPO_TERCERO = THIRD_PARTY_TYPE;
+/** @deprecated Usar PROJECTION_STATUS */
+export const PROYECCION_ESTADO = PROJECTION_STATUS;
+/** @deprecated Usar COMPUTER_SYSTEM */
+export const SISTEMA_INFORMATICO = COMPUTER_SYSTEM;
+>>>>>>> 127afc4 (refactor: reorganizar módulos a estructura estándar Wix src/(backend|public|pages) según SSOT v5009)

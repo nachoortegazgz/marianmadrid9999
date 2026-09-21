@@ -1,10 +1,27 @@
 /*
 =============================================================================
 MODULE: backend/contabilidad.js
-VERSION: v5007.8-FISCAL
+VERSION: v5009-FISCAL-V20.1
+BASE: v5007.8-FISCAL + Directriz V20 (IDs nativa en ingles)
 RESPONSIBILITY: Proyeccion contable de movimientos de caja.
-FIXES v5007.8:
-  - FIX-FISCAL-02: Cuenta de retencion segun rolFiscal:
+STANDARDS: G10 ASCII Strict.
+
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: imports alineados (MOVEMENT_TYPE, ACCOUNTING_ACCOUNT,
+            AEAT_INVOICE_TYPE, FISCAL_ROLE).
+  - V20-02: lectura de movimiento con nomenclatura V20.1 + fallback legacy.
+  - V20-03: escritura de AsientosContables con nombres V20.1
+            (sourceEventId, thirdPartyId, recordHash, fiscalRole,
+            withholdingBase, irpfWithholdingAmount, surchargeAmount,
+            correctionReason, previousInvoiceId, sourceData,
+            totalDebit, totalCredit, entryHash, entrySignature).
+  - V20-04: escritura de LibroAsientosContablesDetalle con nombres V20.1
+            (taxableBaseOrNonSubjectAmount, chargedTaxAmount,
+            recipientTaxId, recipientLegalName, issuerInvoiceNumber).
+  - V20-05: eliminados sourceHash y hashOrigen (duplicaban recordHash).
+
+FIXES APLICADOS v5007.8 (heredados):
+  - FIX-FISCAL-02: cuenta de retencion segun fiscalRole (antes rolFiscal):
                    EMISOR -> 475100 al HABER
                    RECEPTOR -> 473000 al DEBE
 =============================================================================
@@ -15,10 +32,10 @@ import { getSecret } from "wix-secrets-backend";
 import {
     COLLECTIONS,
     SDK_CONFIG,
-    TIPO_MOVIMIENTO,
-    CUENTAS_PGC,
-    CLAVES_AEAT,
-    ROL_FISCAL,
+    MOVEMENT_TYPE,
+    ACCOUNTING_ACCOUNT,
+    AEAT_INVOICE_TYPE,
+    FISCAL_ROLE,
 } from "backend/internalConfig";
 import { SECRETS } from "backend/mmSecrets";
 import { hmacSha256Hex, hashChain } from "backend/securityEngine";
@@ -30,6 +47,136 @@ const MONEY_EPSILON = 0.005;
 const TIME_ZONE = SDK_CONFIG?.TZ || "Europe/Madrid";
 const SCHEMA_VERSION = "ASIENTO_V3_FISCAL";
 const INTEGRITY_ALGORITHM_VERSION = "HMAC_SHA256_V1";
+
+// =============================================================================
+// HELPERS DE LECTURA — V20.1 + fallback legacy
+// =============================================================================
+
+function _readMovementType(movement) {
+    return String(movement?.movementType || movement?.tipoMovimiento || "AJUSTE").toUpperCase();
+}
+
+function _readRecordSource(movement) {
+    return _cleanText(movement?.recordSource || movement?.origen || "MOVIMIENTO_CAJA", 80);
+}
+
+function _readOperationDescription(movement, fallback) {
+    return _cleanText(movement?.operationDescription || movement?.description || movement?.concepto || fallback, 500);
+}
+
+function _readInvoiceNumber(movement) {
+    return _cleanText(movement?.invoiceNumber || movement?.numTicketFactura, 120) || null;
+}
+
+function _readTotalAmount(movement) {
+    return _safeAmount(movement?.totalAmount ?? movement?.accountingAmount);
+}
+
+function _readTaxAmount(movement) {
+    return Math.abs(_safeAmount(movement?.taxAmount ?? movement?.cuotaIva));
+}
+
+function _readTaxableBase(movement) {
+    return Math.abs(_safeAmount(movement?.taxableBaseOrNonSubjectAmount ?? movement?.taxableAmount ?? movement?.baseImponible));
+}
+
+function _readTaxRate(movement) {
+    const value = Number(movement?.taxRate ?? movement?.tasaIva);
+    return Number.isFinite(value) ? value : null;
+}
+
+function _readRecordHash(movement) {
+    return _safeTrim(
+        movement?.recordHash ||
+        movement?.hashCadena ||
+        movement?.currentRecordHash ||
+        movement?.huella
+    ) || "";
+}
+
+function _readPreviousRecordHash(movement) {
+    return _safeTrim(
+        movement?.previousRecordHash ||
+        movement?.huellaAnterior ||
+        movement?.prevHash
+    ) || null;
+}
+
+function _readRecipientTaxId(movement) {
+    return _cleanText(movement?.recipientTaxId || movement?.nifDestinatario || movement?.nifTercero, 20) || null;
+}
+
+function _readRecipientLegalName(movement) {
+    return _cleanText(movement?.recipientLegalName || movement?.nombreRazonDestinatario || movement?.razonSocialTercero, 200) || null;
+}
+
+function _readIssuerInvoiceNumber(movement) {
+    return _cleanText(movement?.issuerInvoiceNumber || movement?.numeroSerieFacturaEmisor, 60) || null;
+}
+
+function _readInvoiceType(movement) {
+    return _cleanText(movement?.invoiceType || movement?.claveRegistroFactura || AEAT_INVOICE_TYPE.F1, 4);
+}
+
+function _readWithholdingBase(movement) {
+    return Number(movement?.withholdingBase ?? movement?.baseImponibleRetencion) || 0;
+}
+
+function _readIrpfAmount(movement) {
+    return Number(movement?.irpfWithholdingAmount ?? movement?.importeRetencionIRPF) || 0;
+}
+
+function _readIrpfRate(movement) {
+    return Number(movement?.irpfWithholdingRate ?? movement?.tipoRetencionIRPF) || 0;
+}
+
+function _readSurchargeAmount(movement) {
+    return Number(movement?.surchargeAmount ?? movement?.importeRecargoEquivalencia) || 0;
+}
+
+function _readFiscalRole(movement) {
+    return _cleanText(movement?.fiscalRole || movement?.rolFiscal || FISCAL_ROLE.EMISOR, 10);
+}
+
+function _readCorrectionReason(movement) {
+    return _cleanText(movement?.correctionReason || movement?.motivoRectificacion, 4) || null;
+}
+
+function _readPreviousInvoiceId(movement) {
+    return _cleanText(movement?.previousInvoiceId || movement?.idFacturaRectificada, 120) || null;
+}
+
+function _readLinkedBookingIds(movement) {
+    return _cleanText(movement?.linkedBookingIds || movement?.reservaIdVinculada, 500) || null;
+}
+
+function _readOrderId(movement) {
+    return _cleanText(movement?.orderId, 120) || null;
+}
+
+function _readRefundId(movement) {
+    return _cleanText(movement?.refundId, 120) || null;
+}
+
+function _readTraceId(movement) {
+    return _cleanText(movement?.traceId || makeTraceId("contabilidad"), 120);
+}
+
+function _readTransactionId(movement) {
+    return _cleanText(movement?.transactionId, 120);
+}
+
+function _readSequenceNumber(movement) {
+    return Number(movement?.sequenceNumber) || 0;
+}
+
+function _readPaymentMethod(movement) {
+    return _cleanText(movement?.paymentMethod, 40) || null;
+}
+
+// =============================================================================
+// HELPERS DE FECHA
+// =============================================================================
 
 function _normalizeDate(value) {
     const date = value instanceof Date ? value : new Date(value || Date.now());
@@ -49,22 +196,19 @@ function _safeAmount(value) {
     return Number.isFinite(amount) ? amount : 0;
 }
 
-function _getSourceHash(movimiento) {
-    return _safeTrim(
-        movimiento?.hashCadena ||
-        movimiento?.currentRecordHash ||
-        movimiento?.sourceHash
-    ) || "";
-}
+// =============================================================================
+// CONSTRUCCION DE LINEAS
+// =============================================================================
 
 function _linePayload(line) {
     return [
         line.journalEntryId, line.lineNumber, line.accountCode,
         line.debitAmount, line.creditAmount,
-        line.taxableAmount, line.taxRate, line.taxAmount, line.traceId,
-        line.nifTercero || "",
+        line.taxableBaseOrNonSubjectAmount, line.taxRate, line.chargedTaxAmount,
+        line.traceId,
+        line.recipientTaxId || "",
         line.irpfWithholdingAmount || 0,
-        line.importeRecargoEquivalencia || 0,
+        line.surchargeAmount || 0,
         line.correctionReason || "",
     ].join("|");
 }
@@ -84,31 +228,31 @@ async function _asAccountingLine(base, number, accountCode, accountName, debit, 
         netAmount: _roundMoney(_safeAmount(debit) - _safeAmount(credit)),
         operationCategory: base.operationCategory,
         lineDescription: base.description,
-        taxableAmount: tax?.taxableAmount ?? null,
+        taxableBaseOrNonSubjectAmount: tax?.taxableBaseOrNonSubjectAmount ?? null,
         taxRate: tax?.taxRate ?? null,
-        taxAmount: tax?.taxAmount ?? null,
+        chargedTaxAmount: tax?.chargedTaxAmount ?? null,
         externalReference: base.externalReference || null,
         traceId: base.traceId,
         registeredAt: base.registeredAt,
         _createdDate: new Date(),
 
-        nifTercero: base.nifTercero || null,
-        razonSocialTercero: base.razonSocialTercero || null,
-        numeroSerieFacturaEmisor: base.numeroSerieFacturaEmisor || null,
-        claveRegistroFactura: base.claveRegistroFactura || null,
-        importeRetencionIRPF: Number(base.irpfWithholdingAmount) || 0,
-        baseImponibleRetencion: Number(base.withholdingBase) || 0,
-        importeRecargoEquivalencia: Number(base.importeRecargoEquivalencia) || 0,
-        motivoRectificacion: base.correctionReason || null,
-        idFacturaRectificada: base.idFacturaRectificada || null,
-        rolFiscal: base.rolFiscal || ROL_FISCAL.EMISOR,
+        recipientTaxId: base.recipientTaxId || null,
+        recipientLegalName: base.recipientLegalName || null,
+        issuerInvoiceNumber: base.issuerInvoiceNumber || null,
+        invoiceType: base.invoiceType || null,
+        irpfWithholdingAmount: Number(base.irpfWithholdingAmount) || 0,
+        withholdingBase: Number(base.withholdingBase) || 0,
+        surchargeAmount: Number(base.surchargeAmount) || 0,
+        correctionReason: base.correctionReason || null,
+        previousInvoiceId: base.previousInvoiceId || null,
+        fiscalRole: base.fiscalRole || FISCAL_ROLE.EMISOR,
     };
 
     if (!line.accountCode || !line.accountName) {
         throw new Error("ACCOUNTING_PROJECTION_INVALID_ACCOUNT");
     }
 
-    line.lineHash = await hashChain(base.sourceHash || "", _linePayload(line));
+    line.lineHash = await hashChain(base.recordHash || "", _linePayload(line));
     return line;
 }
 
@@ -116,17 +260,17 @@ function _getDefaultAccountMap(movementType) {
     const type = String(movementType || "").toUpperCase();
 
     const maps = {
-        VENTA_EFECTIVO: [CUENTAS_PGC.CAJA, "Caja", CUENTAS_PGC.PRESTACIONES_SERVICIOS, "Prestaciones de servicios", CUENTAS_PGC.IVA_REPERCUTIDO, "Hacienda Publica IVA repercutido"],
-        VENTA_TARJETA: [CUENTAS_PGC.BANCOS, "Bancos", CUENTAS_PGC.PRESTACIONES_SERVICIOS, "Prestaciones de servicios", CUENTAS_PGC.IVA_REPERCUTIDO, "Hacienda Publica IVA repercutido"],
-        VENTA_BIZUM: [CUENTAS_PGC.BANCOS, "Bancos", CUENTAS_PGC.PRESTACIONES_SERVICIOS, "Prestaciones de servicios", CUENTAS_PGC.IVA_REPERCUTIDO, "Hacienda Publica IVA repercutido"],
-        VENTA_ONLINE: [CUENTAS_PGC.BANCOS, "Bancos", CUENTAS_PGC.PRESTACIONES_SERVICIOS, "Prestaciones de servicios", CUENTAS_PGC.IVA_REPERCUTIDO, "Hacienda Publica IVA repercutido"],
-        VENTA_TARJETA_REGALO: [CUENTAS_PGC.CAJA, "Caja", CUENTAS_PGC.ANTICIPOS_CLIENTES, "Anticipos de clientes", "", ""],
-        CANJE_TARJETA_REGALO: [CUENTAS_PGC.ANTICIPOS_CLIENTES, "Anticipos de clientes", CUENTAS_PGC.PRESTACIONES_SERVICIOS, "Prestaciones de servicios", CUENTAS_PGC.IVA_REPERCUTIDO, "Hacienda Publica IVA repercutido"],
-        REEMBOLSO: [CUENTAS_PGC.DEVOLUCIONES_VENTAS, "Devoluciones de ventas", CUENTAS_PGC.CAJA, "Caja", CUENTAS_PGC.IVA_REPERCUTIDO, "Hacienda Publica IVA repercutido"],
-        PAGO_PROVEEDOR: [CUENTAS_PGC.PROVEEDORES, "Proveedores", CUENTAS_PGC.CAJA, "Caja", "", ""],
-        GASTO: [CUENTAS_PGC.COMPRAS_GASTOS, "Compras y gastos", CUENTAS_PGC.PROVEEDORES, "Proveedores", CUENTAS_PGC.IVA_SOPORTADO, "Hacienda Publica IVA soportado"],
-        AJUSTE: [CUENTAS_PGC.CAJA, "Caja", CUENTAS_PGC.PARTIDAS_PENDIENTES, "Partidas pendientes de aplicacion", "", ""],
-        SERVICIO_PROFESIONAL: [CUENTAS_PGC.PRESTACIONES_SERVICIOS, "Prestaciones de servicios", CUENTAS_PGC.CAJA, "Caja", CUENTAS_PGC.IVA_REPERCUTIDO, "Hacienda Publica IVA repercutido"],
+        VENTA_EFECTIVO: [ACCOUNTING_ACCOUNT.CASH, "Caja", ACCOUNTING_ACCOUNT.SERVICE_REVENUE, "Prestaciones de servicios", ACCOUNTING_ACCOUNT.VAT_OUTPUT, "Hacienda Publica IVA repercutido"],
+        VENTA_TARJETA: [ACCOUNTING_ACCOUNT.BANKS, "Bancos", ACCOUNTING_ACCOUNT.SERVICE_REVENUE, "Prestaciones de servicios", ACCOUNTING_ACCOUNT.VAT_OUTPUT, "Hacienda Publica IVA repercutido"],
+        VENTA_BIZUM: [ACCOUNTING_ACCOUNT.BANKS, "Bancos", ACCOUNTING_ACCOUNT.SERVICE_REVENUE, "Prestaciones de servicios", ACCOUNTING_ACCOUNT.VAT_OUTPUT, "Hacienda Publica IVA repercutido"],
+        VENTA_ONLINE: [ACCOUNTING_ACCOUNT.BANKS, "Bancos", ACCOUNTING_ACCOUNT.SERVICE_REVENUE, "Prestaciones de servicios", ACCOUNTING_ACCOUNT.VAT_OUTPUT, "Hacienda Publica IVA repercutido"],
+        VENTA_TARJETA_REGALO: [ACCOUNTING_ACCOUNT.CASH, "Caja", ACCOUNTING_ACCOUNT.CUSTOMER_ADVANCES, "Anticipos de clientes", "", ""],
+        CANJE_TARJETA_REGALO: [ACCOUNTING_ACCOUNT.CUSTOMER_ADVANCES, "Anticipos de clientes", ACCOUNTING_ACCOUNT.SERVICE_REVENUE, "Prestaciones de servicios", ACCOUNTING_ACCOUNT.VAT_OUTPUT, "Hacienda Publica IVA repercutido"],
+        REEMBOLSO: [ACCOUNTING_ACCOUNT.SALES_RETURNS, "Devoluciones de ventas", ACCOUNTING_ACCOUNT.CASH, "Caja", ACCOUNTING_ACCOUNT.VAT_OUTPUT, "Hacienda Publica IVA repercutido"],
+        PAGO_PROVEEDOR: [ACCOUNTING_ACCOUNT.SUPPLIERS, "Proveedores", ACCOUNTING_ACCOUNT.CASH, "Caja", "", ""],
+        GASTO: [ACCOUNTING_ACCOUNT.PURCHASES_EXPENSES, "Compras y gastos", ACCOUNTING_ACCOUNT.SUPPLIERS, "Proveedores", ACCOUNTING_ACCOUNT.VAT_INPUT, "Hacienda Publica IVA soportado"],
+        AJUSTE: [ACCOUNTING_ACCOUNT.CASH, "Caja", ACCOUNTING_ACCOUNT.SUSPENSE, "Partidas pendientes de aplicacion", "", ""],
+        SERVICIO_PROFESIONAL: [ACCOUNTING_ACCOUNT.SERVICE_REVENUE, "Prestaciones de servicios", ACCOUNTING_ACCOUNT.CASH, "Caja", ACCOUNTING_ACCOUNT.VAT_OUTPUT, "Hacienda Publica IVA repercutido"],
     };
 
     const values = maps[type];
@@ -174,18 +318,18 @@ async function _insertLineIfMissing(line) {
     return { idempotent: false, item: inserted };
 }
 
-function _buildBase(movimiento) {
-    const operationDate = _normalizeDate(movimiento?.registeredAt || movimiento?.operationDate);
+function _buildBase(movement) {
+    const operationDate = _normalizeDate(movement?.registeredAt || movement?.operationDate);
     const fiscalKeys = _toFiscalKeys(operationDate);
-    const sourceId = _cleanText(movimiento?._id, 120);
-    const movementType = String(movimiento?.movementType || movimiento?.movementType || "AJUSTE").toUpperCase();
-    const hashOrigen = _getSourceHash(movimiento);
-
-    const recordSource = _cleanText(movimiento?.recordSource || movimiento?.origen || "MOVIMIENTO_CAJA", 80);
+    const sourceId = _cleanText(movement?._id, 120);
+    const movementType = _readMovementType(movement);
+    const recordHash = _readRecordHash(movement);
+    const recordSource = _readRecordSource(movement);
+    const previousRecordHash = _readPreviousRecordHash(movement);
 
     return {
         journalEntryId: `ASIENTO_${sourceId}`,
-        sequenceNumber: Number(movimiento?.sequenceNumber) || 0,
+        sequenceNumber: _readSequenceNumber(movement),
         fiscalYear: fiscalKeys.fiscalYear,
         fiscalPeriod: fiscalKeys.fiscalPeriod,
         operationDate,
@@ -193,64 +337,62 @@ function _buildBase(movimiento) {
         operationTimeZone: TIME_ZONE,
         entryType: movementType,
         operationCategory: movementType,
-        description: _cleanText(movimiento?.description || movimiento?.concepto || movementType, 500),
+        description: _readOperationDescription(movement, movementType),
         recordSource,
         sourceId,
-        transactionId: _cleanText(movimiento?.transactionId, 120),
-        externalReference: _cleanText(movimiento?.invoiceNumber || movimiento?.numTicketFactura, 120) || null,
-        invoiceNumber: _cleanText(movimiento?.invoiceNumber || movimiento?.numTicketFactura, 120) || null,
+        transactionId: _readTransactionId(movement),
+        externalReference: _readInvoiceNumber(movement),
+        invoiceNumber: _readInvoiceNumber(movement),
         invoiceIssueDate: operationDate,
         fiscalOperationDate: operationDate,
         currency: "EUR",
-        totalDocumentAmount: _roundMoney(Math.abs(_safeAmount(movimiento?.accountingAmount ?? movimiento?.totalAmount))),
-        paymentMethod: _cleanText(movimiento?.paymentMethod, 40) || null,
+        totalDocumentAmount: _roundMoney(Math.abs(_readTotalAmount(movement))),
+        paymentMethod: _readPaymentMethod(movement),
         entryStatus: "CONFIRMADO",
-        previousHash: _safeTrim(movimiento?.previousRecordHash || movimiento?.hashCadena) || null,
-        sourceHash: hashOrigen,
-        hashOrigen,
+        previousHash: previousRecordHash,
+        recordHash,
         schemaVersion: SCHEMA_VERSION,
         integrityAlgorithmVersion: INTEGRITY_ALGORITHM_VERSION,
-        traceId: _cleanText(movimiento?.traceId || makeTraceId("contabilidad"), 120),
+        traceId: _readTraceId(movement),
 
-        nifTercero: _cleanText(movimiento?.nifTercero, 20) || null,
-        razonSocialTercero: _cleanText(movimiento?.razonSocialTercero, 200) || null,
-        numeroSerieFacturaEmisor: _cleanText(movimiento?.numeroSerieFacturaEmisor, 60) || null,
-        claveRegistroFactura: _cleanText(movimiento?.claveRegistroFactura || CLAVES_AEAT.F1, 4),
-        baseImponibleRetencion: Number(movimiento?.withholdingBase) || 0,
-        importeRetencionIRPF: Number(movimiento?.irpfWithholdingAmount) || 0,
-        importeRecargoEquivalencia: Number(movimiento?.importeRecargoEquivalencia) || 0,
-        rolFiscal: _cleanText(movimiento?.rolFiscal || ROL_FISCAL.EMISOR, 10),
-        motivoRectificacion: _cleanText(movimiento?.correctionReason, 4) || null,
-        idFacturaRectificada: _cleanText(movimiento?.idFacturaRectificada, 120) || null,
+        recipientTaxId: _readRecipientTaxId(movement),
+        recipientLegalName: _readRecipientLegalName(movement),
+        issuerInvoiceNumber: _readIssuerInvoiceNumber(movement),
+        invoiceType: _readInvoiceType(movement),
+        withholdingBase: _readWithholdingBase(movement),
+        irpfWithholdingAmount: _readIrpfAmount(movement),
+        surchargeAmount: _readSurchargeAmount(movement),
+        fiscalRole: _readFiscalRole(movement),
+        correctionReason: _readCorrectionReason(movement),
+        previousInvoiceId: _readPreviousInvoiceId(movement),
 
-        datosOrigenAsiento: {
+        sourceData: {
             fuente: recordSource,
-            idExterno: _cleanText(movimiento?.orderId || movimiento?.transactionId || movimiento?.refundId || sourceId, 120),
-            orderId: _cleanText(movimiento?.orderId, 120) || null,
-            refundId: _cleanText(movimiento?.refundId, 120) || null,
-            bookingIds: _cleanText(movimiento?.linkedBookingIds, 500) || null,
+            idExterno: _cleanText(movement?.orderId || movement?.transactionId || movement?.refundId || sourceId, 120),
+            orderId: _readOrderId(movement),
+            refundId: _readRefundId(movement),
+            bookingIds: _readLinkedBookingIds(movement),
         },
     };
 }
 
-async function _buildLines(base, movimiento, map) {
-    const signedTotal = _safeAmount(movimiento?.accountingAmount ?? movimiento?.totalAmount);
+async function _buildLines(base, movement, map) {
+    const signedTotal = _readTotalAmount(movement);
     const total = Math.abs(signedTotal);
-    const vat = Math.abs(_safeAmount(movimiento?.taxAmount ?? movimiento?.cuotaIva));
-    const sourceTaxable = Math.abs(_safeAmount(movimiento?.taxableAmount ?? movimiento?.baseImponible));
+    const vat = _readTaxAmount(movement);
+    const sourceTaxable = _readTaxableBase(movement);
     const net = _roundMoney(sourceTaxable > MONEY_EPSILON ? sourceTaxable : total - vat);
-    const taxRateValue = Number(movimiento?.taxRate ?? movimiento?.tasaIva);
-    const taxRate = Number.isFinite(taxRateValue) ? taxRateValue : null;
+    const taxRate = _readTaxRate(movement);
 
-    const retencionIRPF = Math.abs(Number(movimiento?.irpfWithholdingAmount) || 0);
-    const recargoEquivalencia = Math.abs(Number(movimiento?.importeRecargoEquivalencia) || 0);
+    const irpfAmount = Math.abs(_readIrpfAmount(movement));
+    const surchargeAmount = Math.abs(_readSurchargeAmount(movement));
 
-    // [FIX-FISCAL-02] Cuenta de retencion segun rol
-    const rolFiscal = base.rolFiscal || ROL_FISCAL.EMISOR;
-    const retencionCuentaCode = rolFiscal === ROL_FISCAL.RECEPTOR
-        ? CUENTAS_PGC.HP_RETENCIONES_IRPF_A_FAVOR
-        : CUENTAS_PGC.HP_RETENCIONES_IRPF_A_INGRESAR;
-    const retencionCuentaName = rolFiscal === ROL_FISCAL.RECEPTOR
+    // [FIX-FISCAL-02] Cuenta de retencion segun fiscalRole
+    const fiscalRole = base.fiscalRole || FISCAL_ROLE.EMISOR;
+    const withholdingAccountCode = fiscalRole === FISCAL_ROLE.RECEPTOR
+        ? ACCOUNTING_ACCOUNT.TAX_IRPF_WITHHOLDING_RECEIVABLE
+        : ACCOUNTING_ACCOUNT.TAX_IRPF_WITHHOLDING_PAYABLE;
+    const withholdingAccountName = fiscalRole === FISCAL_ROLE.RECEPTOR
         ? "H.P. Retenciones IRPF a favor"
         : "H.P. Retenciones IRPF a ingresar";
 
@@ -258,7 +400,7 @@ async function _buildLines(base, movimiento, map) {
         throw new Error("ACCOUNTING_PROJECTION_INVALID_AMOUNT");
     }
 
-    const tax = { taxableAmount: net, taxRate, taxAmount: vat || null };
+    const tax = { taxableBaseOrNonSubjectAmount: net, taxRate, chargedTaxAmount: vat || null };
     const vatCode = _cleanText(map.codigoCuentaIvaRepercutido, 40);
     const vatName = _cleanText(map.nombreCuentaIvaRepercutido, 120);
     const lines = [];
@@ -273,18 +415,15 @@ async function _buildLines(base, movimiento, map) {
             lines.push(await _asAccountingLine(base, 3, vatCode, vatName, 0, vat, tax));
         }
 
-        if (recargoEquivalencia > MONEY_EPSILON) {
-            lines.push(await _asAccountingLine(base, lines.length + 1, CUENTAS_PGC.HP_RECARGO_EQUIVALENCIA, "H.P. Recargo de equivalencia", 0, recargoEquivalencia, tax));
+        if (surchargeAmount > MONEY_EPSILON) {
+            lines.push(await _asAccountingLine(base, lines.length + 1, ACCOUNTING_ACCOUNT.TAX_EQUIVALENCE_SURCHARGE, "H.P. Recargo de equivalencia", 0, surchargeAmount, tax));
         }
 
-        // [FIX-FISCAL-02] Retencion al debe o al haber segun rol
-        if (retencionIRPF > MONEY_EPSILON) {
-            if (rolFiscal === ROL_FISCAL.RECEPTOR) {
-                // Nos retienen: DEBE HP retenciones a favor
-                lines.push(await _asAccountingLine(base, lines.length + 1, retencionCuentaCode, retencionCuentaName, retencionIRPF, 0, tax));
+        if (irpfAmount > MONEY_EPSILON) {
+            if (fiscalRole === FISCAL_ROLE.RECEPTOR) {
+                lines.push(await _asAccountingLine(base, lines.length + 1, withholdingAccountCode, withholdingAccountName, irpfAmount, 0, tax));
             } else {
-                // Retenemos: HABER HP retenciones a ingresar
-                lines.push(await _asAccountingLine(base, lines.length + 1, retencionCuentaCode, retencionCuentaName, 0, retencionIRPF, tax));
+                lines.push(await _asAccountingLine(base, lines.length + 1, withholdingAccountCode, withholdingAccountName, 0, irpfAmount, tax));
             }
         }
     } else {
@@ -295,44 +434,53 @@ async function _buildLines(base, movimiento, map) {
             lines.push(await _asAccountingLine(base, 2, vatCode, vatName, vat, 0, tax));
         }
 
-        if (recargoEquivalencia > MONEY_EPSILON) {
-            lines.push(await _asAccountingLine(base, lines.length + 1, CUENTAS_PGC.HP_RECARGO_EQUIVALENCIA, "H.P. Recargo de equivalencia", recargoEquivalencia, 0, tax));
+        if (surchargeAmount > MONEY_EPSILON) {
+            lines.push(await _asAccountingLine(base, lines.length + 1, ACCOUNTING_ACCOUNT.TAX_EQUIVALENCE_SURCHARGE, "H.P. Recargo de equivalencia", surchargeAmount, 0, tax));
         }
 
-        if (retencionIRPF > MONEY_EPSILON) {
-            if (rolFiscal === ROL_FISCAL.RECEPTOR) {
-                lines.push(await _asAccountingLine(base, lines.length + 1, retencionCuentaCode, retencionCuentaName, 0, retencionIRPF, tax));
+        if (irpfAmount > MONEY_EPSILON) {
+            if (fiscalRole === FISCAL_ROLE.RECEPTOR) {
+                lines.push(await _asAccountingLine(base, lines.length + 1, withholdingAccountCode, withholdingAccountName, 0, irpfAmount, tax));
             } else {
-                lines.push(await _asAccountingLine(base, lines.length + 1, retencionCuentaCode, retencionCuentaName, retencionIRPF, 0, tax));
+                lines.push(await _asAccountingLine(base, lines.length + 1, withholdingAccountCode, withholdingAccountName, irpfAmount, 0, tax));
             }
         }
 
         lines.push(await _asAccountingLine(base, lines.length + 1, map.codigoCuentaDebePredeterminada, map.nombreCuentaDebePredeterminada, 0, total, null));
     }
 
-    const totalDebe = _roundMoney(lines.reduce((sum, line) => sum + Number(line.debitAmount || 0), 0));
-    const totalHaber = _roundMoney(lines.reduce((sum, line) => sum + Number(line.creditAmount || 0), 0));
+    const totalDebit = _roundMoney(lines.reduce((sum, line) => sum + Number(line.debitAmount || 0), 0));
+    const totalCredit = _roundMoney(lines.reduce((sum, line) => sum + Number(line.creditAmount || 0), 0));
 
-    if (Math.abs(totalDebe - totalHaber) > MONEY_EPSILON) {
+    if (Math.abs(totalDebit - totalCredit) > MONEY_EPSILON) {
         throw new Error("ACCOUNTING_PROJECTION_UNBALANCED");
     }
 
-    return { lines, totalDebe, totalHaber };
+    return { lines, totalDebit, totalCredit };
 }
+
+// =============================================================================
+// PROYECCION PRINCIPAL
+// =============================================================================
 
 export async function projectLedgerMovementToAccounting(movimiento) {
     const traceId = makeTraceId("contabilidad");
 
     try {
         const sourceId = _cleanText(movimiento?._id, 120);
-        const sourceHash = _getSourceHash(movimiento);
-        const transactionId = _cleanText(movimiento?.transactionId, 120);
+        const recordHash = _readRecordHash(movimiento);
+        const transactionId = _readTransactionId(movimiento);
 
-        if (!sourceId || !sourceHash || !transactionId) {
+        if (!sourceId || !recordHash || !transactionId) {
             return { status: "SKIPPED", reason: "INVALID_SOURCE_LEDGER" };
         }
 
-        if (movimiento?.movementType === TIPO_MOVIMIENTO.PROPINA || movimiento?.taxTreatment === "PROPINA_PENDIENTE_GESTORIA") {
+        const movementType = _readMovementType(movimiento);
+
+        if (
+            movementType === MOVEMENT_TYPE.PROPINA ||
+            movimiento?.taxTreatment === "PROPINA_PENDIENTE_GESTORIA"
+        ) {
             return { status: "SKIPPED", reason: "TIP_TREATMENT_PENDING_PROFESSIONAL_REVIEW" };
         }
 
@@ -360,22 +508,22 @@ export async function projectLedgerMovementToAccounting(movimiento) {
 
         const headerPayload = [
             base.journalEntryId, base.sequenceNumber, base.sourceId, base.transactionId,
-            projected.totalDebe, projected.totalHaber,
+            projected.totalDebit, projected.totalCredit,
             ...projected.lines.map((line) => line.lineHash),
         ].join("|");
 
-        const hashAsiento = await hashChain(base.sourceHash, headerPayload);
-        const firmaAsiento = [
+        const entryHash = await hashChain(base.recordHash, headerPayload);
+        const entrySignature = [
             await hmacSha256Hex(fiscalKey, headerPayload),
-            hashAsiento,
+            entryHash,
         ].join("|");
 
         const header = {
             ...base,
-            totalDebe: projected.totalDebe,
-            totalHaber: projected.totalHaber,
-            hashAsiento,
-            firmaAsiento,
+            totalDebit: projected.totalDebit,
+            totalCredit: projected.totalCredit,
+            entryHash,
+            entrySignature,
         };
 
         for (const line of projected.lines) {

@@ -1,20 +1,17 @@
 /*
 =============================================================================
 MODULE: backend/crons.js
-VERSION: v5008.2-FISCAL-RECOVERY
-BASE: BIBLIA v5002.5 Bloque 4.5 + DIRECTRICES V19
+VERSION: v5009-FISCAL-V20.1
+BASE: v5008.2-FISCAL-RECOVERY + Directriz V20 (IDs nativa en ingles)
 RESPONSIBILITY: Jobs programados (cron). 6 crons activos.
-STANDARDS: G10 ASCII Strict (0 non-ASCII characters).
-CORRECTIONS APPLIED:
-  [CRON-01] Los 6 crons de la BIBLIA implementados.
-  [CRON-02] Cada cron genera traceId propio.
-  [CRON-03] Errores no propagan (catch + log).
-  [CRON-04] runPendingCompensationsJob ejecuta cancel nativo (CANCEL_BOOKING)
-            en lugar de marcar COMPLETED sin accion (alineado Writer V2).
-  [CRON-05] cleanupExpiredDualCache purga COLLECTIONS.DUAL_SLOT_CACHE en sitio
-            (ya no depende de export ausente en reservas.web).
-  [CRON-06] runPendingCompensationsJob procesa tambien PENDING_RECOVERY
-            (FISCAL_LEDGER / RESYNC_LEDGER_ACCOUNTING) con alertas.
+STANDARDS: G10 ASCII Strict.
+
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: sin renombrados funcionales. Los campos de
+            CompensacionesPendientes usados por este modulo ya estan
+            contemplados en V20.1-EXPANDED.
+
+CORRECTIONS (heredadas): CRON-01..CRON-06.
 =============================================================================
 */
 
@@ -35,7 +32,7 @@ const MAX_COMPENSATION_ATTEMPTS =
   Math.max(1, Number(CONCURRENCY?.MAX_COMPENSATION_RETRIES) || 3);
 
 // =============================================================================
-// CRON 1: cleanExpiredLocks - 15 * * * * (cada hora :15)
+// CRON 1: cleanExpiredLocks - 15 * * * *
 // =============================================================================
 
 export async function cleanExpiredLocks() {
@@ -63,9 +60,7 @@ export async function cleanExpiredLocks() {
 }
 
 // =============================================================================
-// CRON 2: cleanupExpiredDualCache - 20 * * * * (cada hora :20)
-// Purga filas expiradas de DualSlotCache (CMS). La certificacion dual actual
-// calcula pares en caliente; esta coleccion puede quedar residual/legacy.
+// CRON 2: cleanupExpiredDualCache - 20 * * * *
 // =============================================================================
 
 export async function cleanupExpiredDualCache() {
@@ -101,8 +96,7 @@ export async function cleanupExpiredDualCache() {
 }
 
 // =============================================================================
-// CRON 3: runPendingCompensationsJob - 30 * * * * (cada hora :30)
-// Ejecuta compensaciones pendientes (CANCEL_BOOKING via Writer V2 elevated).
+// CRON 3: runPendingCompensationsJob - 30 * * * *
 // =============================================================================
 
 async function _runOneCompensation(comp, traceId) {
@@ -126,10 +120,7 @@ async function _runOneCompensation(comp, traceId) {
     return { ok: true, action: "CANCEL_BOOKING", bookingId };
   }
 
-  // FIX CRON-06: fiscal recovery queue (PENDING_RECOVERY)
   if (kind === "FISCAL_LEDGER" || kind === "RESYNC_LEDGER_ACCOUNTING") {
-    // Best-effort: re-attempt booking payment ledger when enough data exists.
-    // Full re-sign / PGC resync may still need operator; we surface FAILED + alert.
     try {
       const { registerBookingPayment } = await import("backend/cajas.web");
       const amount = Number(comp?.amount);
@@ -164,7 +155,6 @@ async function _runOneCompensation(comp, traceId) {
         );
       }
 
-      // RESYNC or incomplete payload: mark for operator via alert path
       throw new Error(
         kind +
           " requires manual or extended processor (payload incomplete or RESYNC)"
@@ -180,7 +170,6 @@ async function _runOneCompensation(comp, traceId) {
 export async function runPendingCompensationsJob() {
   const traceId = makeTraceId("cron-comp");
   try {
-    // FIX CRON-06: include fiscal recovery statuses
     const res = await wixData
       .query(COLLECTIONS.COMPENSACIONES_PENDIENTES)
       .in("status", ["PENDING", "RETRYING", "PENDING_RECOVERY"])
@@ -265,7 +254,7 @@ export async function runPendingCompensationsJob() {
 }
 
 // =============================================================================
-// CRON 4: cleanExpiredDaysCache - 0 1 * * * (diario 01:00)
+// CRON 4: cleanExpiredDaysCache - 0 1 * * *
 // =============================================================================
 
 export async function cleanExpiredDaysCache() {
@@ -298,7 +287,7 @@ export async function cleanExpiredDaysCache() {
 }
 
 // =============================================================================
-// CRON 5: cleanExpiredSlotsCache - 10 1 * * * (diario 01:10)
+// CRON 5: cleanExpiredSlotsCache - 10 1 * * *
 // =============================================================================
 
 export async function cleanExpiredSlotsCache() {
@@ -317,7 +306,7 @@ export async function cleanExpiredSlotsCache() {
 }
 
 // =============================================================================
-// CRON 6: systemHealthCheck - 0 7 * * * (diario 07:00)
+// CRON 6: systemHealthCheck - 0 7 * * *
 // =============================================================================
 
 export async function systemHealthCheck() {

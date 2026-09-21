@@ -1,344 +1,226 @@
 /*
 =============================================================================
 MODULE: public/widgetBridge.js
-VERSION: v5007.5-FUNCTIONAL
+VERSION: v5009-FISCAL-V20.1
+BASE: v5007.5-FUNCTIONAL + revision revisada
 RESPONSIBILITY: Comunicacion segura entre paginas Velo y widgets HTML.
 STANDARDS: G10 ASCII Strict.
+
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: cabecera actualizada.
+  - V20-02: revision revisada. Anade validacion de origen, limite de
+            tamano de mensaje, whitelist de tipos, y desuscripcion segura.
+  - V20-03: onWidgetMessage recibe (message, bridge). Los consumidores
+            antiguos que esperaban (message, reply) deben actualizarse a
+            bridge.reply(...) o bridge.send(...).
+
+NOTA DE INTEGRACION: calendario-2.js y servicio-2.js deben actualizarse
+para usar bridge.reply(...) en lugar del parametro reply. Ver checklist.
 =============================================================================
 */
 
-import { MESSAGE_TYPES } from "public/mmUtils";
+const DEFAULT_ALLOWED_TYPES = new Set([
+  "MM_READY",
+  "MM_CONTEXT",
+  "MM_AVAIL",
+  "MM_SELECT",
+  "MM_BOOK",
+  "MM_NAV",
+]);
 
-const WILDCARD_ORIGIN = "*";
+const MAX_MESSAGE_BYTES = 100000;
 
-function _safeObject(value) {
+function safeObject(value) {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value
     : {};
 }
 
-function _getMessageData(event) {
-  if (event && typeof event === "object" && "data" in event) {
-    return event.data;
-  }
-
-  return event;
-}
-
-function _getMessageType(message) {
-  const data = _getMessageData(message);
-
-  return String(
-    data?.type ||
-    data?.action ||
-    ""
-  )
+function safeType(value) {
+  const type = String(value || "")
     .trim()
     .toUpperCase();
+  return type.slice(0, 40);
 }
 
-function _getPayload(message) {
-  const data = _getMessageData(message);
-
-  if (
-    data &&
-    typeof data === "object" &&
-    data.payload &&
-    typeof data.payload === "object"
-  ) {
-    return data.payload;
-  }
-
-  return _safeObject(data);
+function safeMessageId(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9._:-]/g, "_")
+    .slice(0, 120);
 }
 
-function _getReplyMessageId(message) {
-  const data = _getMessageData(message);
-
-  return data?.messageId ||
-    data?.requestId ||
-    data?.payload?.messageId ||
-    null;
-}
-
-function _safeCallback(callback, args, onError) {
-  if (typeof callback !== "function") {
-    return undefined;
-  }
-
+function estimateSize(value) {
   try {
-    return callback(...args);
-  } catch (error) {
-    if (typeof onError === "function") {
-      try {
-        onError(error);
-      } catch (_) {
-        // Consumer errors must not break the bridge.
-      }
-    }
-
-    return undefined;
+    return JSON.stringify(value).length;
+  } catch {
+    return MAX_MESSAGE_BYTES + 1;
   }
 }
 
-function _sendToWidget(widgetElement, message) {
+export function createWidgetBridge(widgetElement, options = {}) {
   if (
     !widgetElement ||
+    typeof widgetElement.onMessage !== "function" ||
     typeof widgetElement.postMessage !== "function"
   ) {
-    throw new Error(
-      "widgetBridge: widget.postMessage is unavailable"
-    );
+    throw new TypeError("A valid HTML Component is required");
   }
 
-  widgetElement.postMessage(message);
-}
-
-export function createWidgetBridge(
-  widgetElement,
-  options = {}
-) {
-  if (!widgetElement) {
-    throw new Error(
-      "widgetBridge: widgetElement is required"
-    );
-  }
-
-  if (
-    typeof widgetElement.postMessage !== "function"
-  ) {
-    throw new Error(
-      "widgetBridge: widget.postMessage is unavailable"
-    );
-  }
-
+  const allowedOrigin = String(options.allowedOrigin || "").trim();
+  const allowedTypes = new Set(options.allowedTypes || DEFAULT_ALLOWED_TYPES);
   const onError =
-    typeof options.onError === "function"
-      ? options.onError
-      : null;
-
+    typeof options.onError === "function" ? options.onError : () => {};
   const onMessage =
-    typeof options.onMessage === "function"
-      ? options.onMessage
-      : null;
-
+    typeof options.onMessage === "function" ? options.onMessage : () => {};
   const onContextReady =
-    typeof options.onContextReady === "function"
-      ? options.onContextReady
-      : null;
-
+    typeof options.onContextReady === "function" ? options.onContextReady : null;
   const onWidgetMessage =
     typeof options.onWidgetMessage === "function"
       ? options.onWidgetMessage
       : null;
 
-  const messageTypes = {
-    READY: MESSAGE_TYPES?.READY || "MM_READY",
-    CONTEXT: MESSAGE_TYPES?.CONTEXT || "MM_CONTEXT",
-    AVAIL: MESSAGE_TYPES?.AVAIL || "MM_AVAIL",
-    SELECT: MESSAGE_TYPES?.SELECT || "MM_SELECT",
-    BOOK: MESSAGE_TYPES?.BOOK || "MM_BOOK",
-    NAV: MESSAGE_TYPES?.NAV || "MM_NAV"
-  };
-
   let destroyed = false;
-  let contextSent = false;
-  let widgetListener = null;
+  let sequence = 0;
 
-  const reportError = (error, context = null) => {
-    if (typeof onError !== "function") {
-      return;
-    }
-
+  function fail(code, detail = null) {
+    const error = new Error(code);
+    error.code = code;
     try {
-      onError(error, context);
-    } catch (_) {
-      // Consumer errors must not break the bridge.
-    }
-  };
+      onError(error, detail);
+    } catch (_) {}
+  }
 
-  const post = (
-    type,
-    payload = {},
-    messageId = null
-  ) => {
-    if (destroyed) {
-      return false;
+  function extractEvent(event) {
+    const origin = String(event?.origin || "");
+    if (allowedOrigin && origin && origin !== allowedOrigin) {
+      fail("WIDGET_ORIGIN_REJECTED", { origin });
+      return null;
+    }
+
+    const message = safeObject(event?.data);
+    if (estimateSize(message) > MAX_MESSAGE_BYTES) {
+      fail("WIDGET_MESSAGE_TOO_LARGE");
+      return null;
+    }
+
+    return message;
+  }
+
+  function normalizeMessage(message) {
+    const source = safeObject(message);
+    const type = safeType(source.type || source.messageType || source.eventType);
+
+    if (!allowedTypes.has(type)) return null;
+
+    const payload = safeObject(source.payload || source.data);
+    const messageId = safeMessageId(source.messageId || source.id);
+
+    return {
+      type,
+      payload,
+      messageId,
+      requestId: messageId,
+      version: source.version || 1,
+    };
+  }
+
+  function send(type, payload = {}, messageId = null) {
+    if (destroyed) throw new Error("WIDGET_BRIDGE_DESTROYED");
+
+    const normalizedType = safeType(type);
+    if (!allowedTypes.has(normalizedType)) {
+      throw new Error("WIDGET_MESSAGE_TYPE_NOT_ALLOWED");
     }
 
     const message = {
+      type: normalizedType,
+      payload: safeObject(payload),
+      messageId:
+        safeMessageId(messageId) ||
+        `msg-${Date.now().toString(36)}-${(++sequence).toString(36)}`,
+      version: 1,
+    };
+
+    if (estimateSize(message) > MAX_MESSAGE_BYTES) {
+      throw new Error("WIDGET_MESSAGE_TOO_LARGE");
+    }
+
+    widgetElement.postMessage(message);
+    return message.messageId;
+  }
+
+  function reply(type, payload, requestMessage) {
+    return send(
       type,
-      payload
-    };
-
-    if (messageId) {
-      message.messageId = messageId;
-    }
-
-    try {
-      _sendToWidget(widgetElement, message);
-      return true;
-    } catch (error) {
-      reportError(error, message);
-      return false;
-    }
-  };
-
-  const sendContext = async () => {
-    if (destroyed || contextSent) {
-      return;
-    }
-
-    contextSent = true;
-
-    try {
-      const context = onContextReady
-        ? await onContextReady()
-        : {};
-
-      post(messageTypes.CONTEXT, _safeObject(context));
-    } catch (error) {
-      contextSent = false;
-      reportError(error, {
-        type: messageTypes.CONTEXT
-      });
-    }
-  };
-
-  const reply = (
-    type,
-    payload = {},
-    requestMessage = null
-  ) => {
-    const messageId = _getReplyMessageId(requestMessage);
-
-    return post(type, payload, messageId);
-  };
-
-  const handleMessage = async (event) => {
-    if (destroyed) {
-      return;
-    }
-
-    const rawMessage = _getMessageData(event);
-    const type = _getMessageType(rawMessage);
-    const payload = _getPayload(rawMessage);
-
-    if (!type) {
-      return;
-    }
-
-    if (type === messageTypes.READY) {
-      const status = String(
-        payload?.status || ""
-      ).toUpperCase();
-
-      if (status !== "ACK") {
-        post(messageTypes.READY, {
-          status: "ACK"
-        });
-      }
-
-      await sendContext();
-      return;
-    }
-
-    if (type === messageTypes.CONTEXT) {
-      return;
-    }
-
-    const replyCallback = (
-      responseType,
-      responsePayload
-    ) => {
-      return reply(
-        responseType,
-        responsePayload,
-        rawMessage
-      );
-    };
-
-    if (onMessage) {
-      _safeCallback(
-        onMessage,
-        [rawMessage, event, replyCallback],
-        reportError
-      );
-    }
-
-    if (onWidgetMessage) {
-      await _safeCallback(
-        onWidgetMessage,
-        [rawMessage, replyCallback],
-        reportError
-      );
-    }
-  };
-
-  if (typeof widgetElement.onMessage === "function") {
-    widgetListener = (event) => {
-      handleMessage(event);
-    };
-
-    widgetElement.onMessage(widgetListener);
-  } else {
-    throw new Error(
-      "widgetBridge: widget.onMessage is unavailable"
+      payload,
+      requestMessage?.messageId || requestMessage?.requestId || null
     );
   }
 
-  const bridge = {
-    postMessage(payload, type = messageTypes.CONTEXT) {
-      return post(type, payload);
-    },
+  function postMessage(payload, type = "MM_CONTEXT") {
+    return send(type, payload);
+  }
 
-    send(type, payload = {}, messageId = null) {
-      return post(type, payload, messageId);
-    },
+  const unsubscribe = widgetElement.onMessage((event) => {
+    if (destroyed) return;
 
-    reply(type, payload = {}, requestMessage = null) {
-      return reply(type, payload, requestMessage);
-    },
+    try {
+      const message = normalizeMessage(extractEvent(event));
 
-    onMessage(callback) {
-      if (typeof callback !== "function") {
-        return () => {};
+      if (!message) {
+        fail("WIDGET_MESSAGE_REJECTED");
+        return;
       }
 
-      const previousCallback = onMessage;
+      onMessage(message);
 
-      return () => {
-        if (previousCallback === callback) {
-          return;
-        }
-      };
-    },
+      if (onWidgetMessage) onWidgetMessage(message, bridge);
 
-    destroy() {
-      destroyed = true;
-      widgetListener = null;
-    },
+      if (message.type === "MM_READY" && onContextReady) {
+        Promise.resolve(onContextReady(message))
+          .then((context) => {
+            if (context !== undefined && context !== null) {
+              send("MM_CONTEXT", context, message.messageId);
+            }
+          })
+          .catch((error) => fail("WIDGET_CONTEXT_FAILED", error));
+      }
+    } catch (error) {
+      fail(error?.code || "WIDGET_MESSAGE_HANDLER_FAILED", error);
+    }
+  });
 
-    get widget() {
-      return widgetElement;
-    },
+  const bridge = {
+    widget: widgetElement,
 
     get destroyed() {
       return destroyed;
     },
 
-    get origin() {
-      return WILDCARD_ORIGIN;
+    origin: allowedOrigin,
+    type: "WIX_HTML_COMPONENT_BRIDGE",
+
+    postMessage,
+    send,
+    reply,
+
+    onMessage(callback) {
+      return typeof callback === "function" ? callback : () => {};
     },
 
-    get type() {
-      return "MM_*";
-    }
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      if (typeof unsubscribe === "function") {
+        try {
+          unsubscribe();
+        } catch (_) {}
+      }
+    },
   };
-
-  post(messageTypes.READY, {
-    status: "INIT"
-  });
 
   return bridge;
 }
+
+export default createWidgetBridge;

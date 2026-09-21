@@ -1,12 +1,23 @@
 /*
 =============================================================================
 MODULE: backend/citasManager.web.js
-VERSION: v5008.6-FINAL
+VERSION: v5009-FISCAL-V20.1
+BASE: v5008.6-FINAL + Directriz V20 (IDs nativa en ingles)
 RESPONSIBILITY: Booking processing, payment confirmation and rescheduling.
 STANDARDS: G10 ASCII Strict.
 
-CORRECTIONS APPLIED (v5008.6):
-  - FIX-27: Eliminado import no usado rescheduleBookingElevated.
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: imports alineados (BOOKING_STATUS, PAYMENT_STATUS, PAYMENT_METHOD).
+  - V20-02: registerBookingPayment recibe movementType (no tipoMovimiento).
+  - V20-03: helper _setCitasPaymentState escribe BOOKING_STATUS.CONFIRMED.
+
+FIXES APLICADOS v5008.6 (heredados):
+  - FIX-27: eliminado import no usado rescheduleBookingElevated.
+
+NOTA DE AUDITORIA: el modulo original expone 2 webMethods
+(processDualBooking, confirmPayment). Los helpers de reschedule existen
+pero no estan expuestos como webMethods en este archivo. Se preservan tal
+cual. No se anaden webMethods nuevos.
 =============================================================================
 */
 
@@ -18,9 +29,9 @@ import {
   COLLECTIONS,
   SDK_CONFIG,
   APP_IDS,
-  ESTADO_CITA,
-  ESTADO_PAGO,
-  FORMA_PAGO,
+  BOOKING_STATUS,
+  PAYMENT_STATUS,
+  PAYMENT_METHOD,
   SLOT_SEARCH
 } from "backend/internalConfig";
 
@@ -348,7 +359,7 @@ export const confirmPayment = webMethod(
         await registerBookingPayment(
           linkedBookingIds,
           finalAmount,
-          FORMA_PAGO.ONLINE,
+          PAYMENT_METHOD.ONLINE,
           {
             concept:
               "Online booking payment",
@@ -359,7 +370,7 @@ export const confirmPayment = webMethod(
             orderId,
             origen:
               "WIX_ECOM_PAYMENT_CONFIRM",
-            tipoMovimiento:
+            movementType:
               "VENTA_ONLINE"
           }
         );
@@ -398,7 +409,7 @@ export const confirmPayment = webMethod(
 
       await _setCitasPaymentState(
         citas,
-        ESTADO_PAGO.PAID,
+        PAYMENT_STATUS.PAID,
         orderId,
         traceId
       );
@@ -425,7 +436,7 @@ export const confirmPayment = webMethod(
           bookingIds,
           amount: finalAmount,
           paymentStatus:
-            ESTADO_PAGO.PAID
+            PAYMENT_STATUS.PAID
         },
         error: null
       };
@@ -598,7 +609,7 @@ async function _validatePaymentCitaSet(
 
     if (
       currentPaymentStatus ===
-      ESTADO_PAGO.PAID
+      PAYMENT_STATUS.PAID
     ) {
       throw createBookingError(
         ERROR_CODES.INVALID_PAYLOAD,
@@ -613,7 +624,7 @@ async function _validatePaymentCitaSet(
 
     if (
       currentPaymentStatus ===
-      ESTADO_PAGO.REFUNDED
+      PAYMENT_STATUS.REFUNDED
     ) {
       throw createBookingError(
         ERROR_CODES.INVALID_PAYLOAD,
@@ -655,7 +666,7 @@ async function _setCitasPaymentState(
 
         return {
           ...currentCita,
-          status: ESTADO_CITA.CONFIRMED,
+          status: BOOKING_STATUS.CONFIRMED,
           paymentStatus: paymentState,
           meta: {
             ...meta,

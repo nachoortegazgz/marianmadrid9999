@@ -1,12 +1,15 @@
 /*
 =============================================================================
 MODULE: backend/security.web.js
-VERSION: v5007.1-FINAL
-BASE: BIBLIA v5002.5 Bloque 12.9 + DIRECTRICES V19
+VERSION: v5009-FISCAL-V20.1
+BASE: v5007.1-FINAL + Directriz V20 (IDs nativa en ingles)
 RESPONSIBILITY: Web methods de seguridad para frontend.
                 Delegacion exclusiva en backend/security.js.
 STANDARDS: G10 ASCII Strict.
-           Sin duplicacion de logica de seguridad.
+
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: sin renombrados funcionales. El modulo no importa constantes
+            renombradas ni toca campos CMS con nomenclatura cambiada.
 =============================================================================
 */
 

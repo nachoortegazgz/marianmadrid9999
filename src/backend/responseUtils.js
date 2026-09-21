@@ -1,13 +1,21 @@
 /*
 =============================================================================
 MODULE: backend/responseUtils.js
-VERSION: v5007.4-FINAL
-BASE: SSOT internalConfig.js v5007.4
+VERSION: v5009-FISCAL-V20.1
+BASE: v5007.4-FINAL + Directriz V20 (IDs nativa en ingles)
 RESPONSIBILITY: Respuestas publicas, errores controlados y normalizacion
                 de resultados de web methods.
 STANDARDS: G10 ASCII Strict.
            Sin dependencias de Node.js.
            Sin exposicion de stacks ni secretos.
+
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: sin renombrados funcionales. El modulo importa _cloneDeep y
+            _safeTrim de mmUtils (no renombrados) y opera sobre objetos
+            genericos.
+
+CORRECTIONS (heredadas):
+  v5007.4.
 =============================================================================
 */
 

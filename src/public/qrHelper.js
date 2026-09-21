@@ -1,9 +1,20 @@
 /*
 =============================================================================
 MODULE: public/qrHelper.js
-VERSION: v5007.4-FINAL
+VERSION: v5009-FISCAL-V20.1
+BASE: v5007.4-FINAL + Directriz V20 (IDs nativa en ingles)
 RESPONSIBILITY: Generacion de datos, URL y HTML de recibos Verifactu.
 STANDARDS: G10 ASCII Strict.
+
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: lecturas de campos de MovimientosCaja migradas a nomenclatura
+            V20.1 (issuerTaxId, invoiceNumber, invoiceIssueDate, totalAmount,
+            recordHash, digitalSignature, recordTimestamp).
+  - V20-02: fallback legacy preservado para consumidores no migrados.
+  - V20-03: businessTaxId deprecated (apunta a issuerTaxId).
+
+FIXES APLICADOS v5007.4 (heredados):
+  - Generacion de datos, URL y HTML de recibos Verifactu.
 =============================================================================
 */
 
@@ -55,13 +66,62 @@ function _escapeAttribute(value) {
 }
 
 function _resolveInvoiceDate(movimiento) {
-    const explicitDate = _safeString(movimiento?.fechaEmision);
+    const explicitDate = _safeString(
+        movimiento?.invoiceIssueDate ||
+        movimiento?.fechaExpedicionFactura ||
+        movimiento?.fechaEmision
+    );
 
     if (explicitDate) {
         return explicitDate;
     }
 
-    return _formatDateToAeatDdMmYyyy(movimiento?.registeredAt);
+    const timestamp = movimiento?.recordTimestamp || movimiento?.registeredAt;
+    return _formatDateToAeatDdMmYyyy(timestamp);
+}
+
+function _readIssuerTaxId(movimiento, options) {
+    return _safeString(
+        movimiento?.issuerTaxId ||
+        movimiento?.nifEmisor ||
+        movimiento?.businessTaxId ||
+        options?.issuerTaxId ||
+        options?.businessTaxId
+    );
+}
+
+function _readInvoiceNumber(movimiento) {
+    return _safeString(
+        movimiento?.invoiceNumber ||
+        movimiento?.numSerieFactura ||
+        movimiento?.numFactura ||
+        movimiento?.numTicketFactura
+    );
+}
+
+function _readTotalAmount(movimiento) {
+    return _safeString(
+        movimiento?.totalAmount ||
+        movimiento?.qrImporteTotal ||
+        movimiento?.importeTotal ||
+        DEFAULT_AMOUNT
+    ) || DEFAULT_AMOUNT;
+}
+
+function _readRecordHash(movimiento) {
+    return _safeString(
+        movimiento?.recordHash ||
+        movimiento?.hashCadena ||
+        movimiento?.currentRecordHash ||
+        movimiento?.huella
+    );
+}
+
+function _readDigitalSignature(movimiento) {
+    return _safeString(
+        movimiento?.digitalSignature ||
+        movimiento?.firmaDigital
+    );
 }
 
 // =============================================================================
@@ -69,41 +129,49 @@ function _resolveInvoiceDate(movimiento) {
 // =============================================================================
 
 export function generateVerifactuQrUrl(params = {}) {
-    const nifEmisor = _safeString(
-        params.nifEmisor || params.businessTaxId
+    const issuerTaxId = _safeString(
+        params.issuerTaxId ||
+        params.nifEmisor ||
+        params.businessTaxId
     );
 
-    const numFactura = _safeString(
+    const invoiceNumber = _safeString(
+        params.invoiceNumber ||
+        params.numSerieFactura ||
         params.numFactura ||
-        params.numTicketFactura ||
-        params.invoiceNumber
+        params.numTicketFactura
     );
 
-    const fechaEmision = _safeString(
-        params.fechaEmision || params.issueDate
+    const invoiceIssueDate = _safeString(
+        params.invoiceIssueDate ||
+        params.fechaExpedicionFactura ||
+        params.fechaEmision ||
+        params.issueDate
     );
 
-    const qrImporteTotal =
+    const totalAmount =
         _safeString(
-            params.qrImporteTotal ||
             params.totalAmount ||
+            params.qrImporteTotal ||
             DEFAULT_AMOUNT
         ) || DEFAULT_AMOUNT;
 
-    const hashCadena = _safeString(
-        params.hashCadena || params.currentRecordHash
+    const recordHash = _safeString(
+        params.recordHash ||
+        params.hashCadena ||
+        params.currentRecordHash
     );
 
-    if (!nifEmisor || !numFactura || !fechaEmision) {
+    if (!issuerTaxId || !invoiceNumber || !invoiceIssueDate) {
         return null;
     }
 
     const query = new URLSearchParams({
-        nif: nifEmisor,
-        numFactura,
-        fecha: fechaEmision,
-        importe: qrImporteTotal,
-        hash: hashCadena,
+        nif: issuerTaxId,
+        numFactura: invoiceNumber,
+        fecha: invoiceIssueDate,
+        importe: totalAmount,
+        hash: recordHash,
     });
 
     return `${AEAT_VERIFACTU_ENDPOINTS.VERIFICATION_BASE_URL}?${query.toString()}`;
@@ -117,52 +185,28 @@ export function extractVerifactuData(
     movimiento = {},
     options = {}
 ) {
-    const nifEmisor = _safeString(
-        movimiento.nifEmisor ||
-        movimiento.businessTaxId ||
-        options.businessTaxId
-    );
-
-    const numTicketFactura = _safeString(
-        movimiento.numTicketFactura ||
-        movimiento.numFactura ||
-        movimiento.invoiceNumber
-    );
-
-    const fechaEmision = _resolveInvoiceDate(movimiento);
-
-    const qrImporteTotal =
-        _safeString(
-            movimiento.qrImporteTotal ||
-            movimiento.totalAmount ||
-            DEFAULT_AMOUNT
-        ) || DEFAULT_AMOUNT;
-
-    const hashCadena = _safeString(
-        movimiento.hashCadena ||
-        movimiento.currentRecordHash
-    );
-
-    const firmaDigital = _safeString(
-        movimiento.firmaDigital ||
-        movimiento.digitalSignature
-    );
+    const issuerTaxId = _readIssuerTaxId(movimiento, options);
+    const invoiceNumber = _readInvoiceNumber(movimiento);
+    const invoiceIssueDate = _resolveInvoiceDate(movimiento);
+    const totalAmount = _readTotalAmount(movimiento);
+    const recordHash = _readRecordHash(movimiento);
+    const digitalSignature = _readDigitalSignature(movimiento);
 
     const qrUrl = generateVerifactuQrUrl({
-        nifEmisor,
-        numFactura: numTicketFactura,
-        fechaEmision,
-        qrImporteTotal,
-        hashCadena,
+        issuerTaxId,
+        invoiceNumber,
+        invoiceIssueDate,
+        totalAmount,
+        recordHash,
     });
 
     return {
-        nifEmisor,
-        numTicketFactura,
-        fechaEmision,
-        qrImporteTotal,
-        hashCadena,
-        firmaDigital,
+        issuerTaxId,
+        invoiceNumber,
+        invoiceIssueDate,
+        totalAmount,
+        recordHash,
+        digitalSignature,
         qrUrl,
     };
 }
@@ -181,17 +225,17 @@ export function buildVerifactuReceiptHtml(
         return "";
     }
 
-    const shortHash = data.hashCadena ?
-        `${data.hashCadena.slice(0, 16)}...` :
+    const shortHash = data.recordHash ?
+        `${data.recordHash.slice(0, 16)}...` :
         "";
 
     return `
 <div style="font-family:Arial,sans-serif;padding:16px;border:1px solid #ccc;border-radius:8px;">
   <h3 style="margin:0 0 12px;">Factura Simplificada</h3>
-  <p><strong>NIF Emisor:</strong> ${_escapeHtml(data.nifEmisor)}</p>
-  <p><strong>Numero:</strong> ${_escapeHtml(data.numTicketFactura)}</p>
-  <p><strong>Fecha:</strong> ${_escapeHtml(data.fechaEmision)}</p>
-  <p><strong>Importe:</strong> ${_escapeHtml(data.qrImporteTotal)} EUR</p>
+  <p><strong>NIF Emisor:</strong> ${_escapeHtml(data.issuerTaxId)}</p>
+  <p><strong>Numero:</strong> ${_escapeHtml(data.invoiceNumber)}</p>
+  <p><strong>Fecha:</strong> ${_escapeHtml(data.invoiceIssueDate)}</p>
+  <p><strong>Importe:</strong> ${_escapeHtml(data.totalAmount)} EUR</p>
   <p>
     <strong>Verificacion:</strong>
     <a

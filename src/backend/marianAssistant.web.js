@@ -1,10 +1,14 @@
 /*
 =============================================================================
 MODULE: backend/marianAssistant.web.js
-VERSION: marianmadrid4002 (v21.1.0-LTS-remediated)
+VERSION: v5009-FISCAL-V20.1
+BASE: marianmadrid4002 (v21.1.0-LTS-remediated) + Directriz V20
 RESPONSIBILITY: Marian-only AI assistant with token bounding, context length
                 limits, strict prompt validation, and timeout protection.
-STANDARDS: G10 ASCII Strict (0 non-ASCII characters).
+STANDARDS: G10 ASCII Strict.
+
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: sin renombrados funcionales. El modulo no toca campos CMS.
 =============================================================================
 */
 
@@ -15,7 +19,6 @@ import { makeTraceId, _safeTrim, withTimeout } from "public/mmUtils";
 import { requireMarianManager } from "backend/security";
 import { _toPublicError } from "backend/responseUtils";
 import { logger } from "backend/logger";
-
 
 const log = logger;
 const SYSTEM_PROMPT = "Eres el asistente personal de Marian, propietaria de Marian Madrid Peluqueria y Estetica en Zaragoza. Ayudas con: caja, inventario, agenda, fiscalidad de apoyo, y gestion operativa. NUNCA ejecutas operaciones economicas directamente. Solo orientas y preparas informacion. Respondes en espanol, de forma clara y concisa. No das consejo fiscal, laboral ni legal definitivo; recomiendas consultar con la gestoria.";

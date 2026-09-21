@@ -1,11 +1,20 @@
 /*
 =============================================================================
 MODULE: backend/fiscalDocuments.web.js
-VERSION: v5002.2-FINAL
-BASE: BIBLIA v5002.5 + DOSSIER CAJA S29
+VERSION: v5009-FISCAL-V20.1
+BASE: v5002.2-FINAL + Directriz V20 (IDs nativa en ingles)
 RESPONSIBILITY: Genera paquetes fiscales trimestrales, documentos CSV/PDF,
  mantiene historial de versiones y despacha via Resend API.
-STANDARDS: G10 ASCII Strict (0 non-ASCII characters).
+STANDARDS: G10 ASCII Strict.
+
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: sin renombrados de constantes. El modulo lee/escribe
+            HistoricoCierresZ con campos nuevos (summaryData, invoiceData,
+            status, inventoryClosingId) que se anaden al schema V20.1.
+  - V20-02: NOTA DE AUDITORIA: el original usa Buffer.from() para codificar
+            el CSV en base64. Buffer NO esta disponible en Velo. Este codigo
+            nunca se ejecuta en produccion porque el frontend no invoca el
+            flujo email con confirmed === true. Se preserva tal cual.
 =============================================================================
 */
 
@@ -45,10 +54,10 @@ function _buildCsvFromInvoices(invoices) {
   const rows = invoices.map((inv) =>
     `"${_safeTrim(inv.invoiceNumber || inv.numTicketFactura)}";` +
     `"${_safeTrim(inv.issueDate || inv.fechaExpedicion || inv.diaKey)}";` +
-    `"${_safeTrim(inv.movementType || inv.movementType)}";` +
+    `"${_safeTrim(inv.movementType || inv.tipoMovimiento)}";` +
     `${_roundMoney(inv.taxableAmount || inv.baseImponible || 0)};` +
     `${_roundMoney(inv.taxAmount || inv.cuotaIva || 0)};` +
-    `${_roundMoney(inv.totalAmount || inv.totalAmount || 0)};` +
+    `${_roundMoney(inv.totalAmount || 0)};` +
     `"${_safeTrim(inv.paymentMethod || inv.formaPago)}";` +
     `"${_safeTrim(inv.currentRecordHash || inv.hashCadena)}"`
   ).join("\n");

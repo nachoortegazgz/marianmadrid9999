@@ -1,14 +1,19 @@
 /*
 =============================================================================
 MODULE: backend/booking/bookingUtils.js
-VERSION: v5008.3-FINAL
-BASE: v5002.6 + consolidacion de helpers compartidos
+VERSION: v5009-FISCAL-V20.1
+BASE: v5008.3-FINAL + Directriz V20 (IDs nativa en ingles)
 STANDARDS: G10 ASCII Strict
 
 RESPONSIBILITY: Helpers compartidos entre reservas, citas, bookingSaga y
-                bookingCore. Elimina duplicacion y garantiza coherencia.
+                bookingCore. Utilidades puras. Sin acceso a colecciones CMS.
 
-FIXES APLICADOS:
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: sin cambios funcionales. El modulo no importa constantes de
+            internalConfig.js ni accede a campos CMS. Cabecera actualizada
+            para trazabilidad.
+
+FIXES APLICADOS v5008.3 (heredados):
   - FIX-18: cleanGuid, cleanGuidList.
   - FIX-26: numberOrZero, booleanValue.
   - FIX-16: toUtcRange.
