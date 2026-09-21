@@ -19,6 +19,9 @@ FIXES APLICADOS:
   - FIX-FISCAL-02: ROL_FISCAL (EMISOR/RECEPTOR) para cuenta de retencion.
   - FIX-FISCAL-04: EU_VAT_PREFIXES para validacion de NIF internacional.
   - TIPO_MOVIMIENTO.SERVICIO_PROFESIONAL anadido.
+  - BLOQUE 22-26: event sourcing (TIPO_EVENTO), naturaleza item, tipo tercero,
+    estado proyeccion y SISTEMA_INFORMATICO (fallback Verifactu).
+  - FACTURAS_RECIBIDAS: proyeccion materializada de compras (tipoEvento COMPRA_LINEA).
 =============================================================================
 */
 
@@ -58,6 +61,7 @@ export const COLLECTIONS = Object.freeze({
     CONFIGURACION_FISCAL: "ConfiguracionFiscal",
     DATOS_FISCALES: "DatosFiscales",
     DUAL_SLOT_CACHE: "DualSlotCache",
+    FACTURAS_RECIBIDAS: "FacturasRecibidas",
     HISTORICO_CIERRES_Z: "HistoricoCierresZ",
     INVENTARIO_STOCK_VENTA: "InventarioStockVenta",
     LIBRO_ASIENTOS_CONTABLES_DETALLE: "LibroAsientosContablesDetalle",
@@ -495,7 +499,7 @@ export const TIPO_EVENTO = Object.freeze({
     CIERRE_Z:      "CIERRE_Z",
     AJUSTE:        "AJUSTE",
     RECTIFICATIVA: "RECTIFICATIVA",
-    MOV_STOCK:     "MOV_STOCK"
+    MOV_STOCK:     "MOV_STOCK",
 });
 
 // =============================================================================
@@ -503,10 +507,10 @@ export const TIPO_EVENTO = Object.freeze({
 // =============================================================================
 
 export const NATURALEZA_ITEM = Object.freeze({
-    SERVICIO_PROPIO: "SERVICIO_PROPIo",
+    SERVICIO_PROPIO: "SERVICIO_PROPIO",
     PRODUCTO_VENTA:  "PRODUCTO_VENTA",
     PRODUCTO_USO:    "PRODUCTO_USO",
-    GASTO_FIJO:      "GASTO_FIJO"
+    GASTO_FIJO:      "GASTO_FIJO",
 });
 
 // =============================================================================
@@ -518,7 +522,7 @@ export const TIPO_TERCERO = Object.freeze({
     PROVEEDOR: "PROVEEDOR",
     STAFF:     "STAFF",
     AAPP:      "AAPP",
-    MIXTO:     "MIXTO"
+    MIXTO:     "MIXTO",
 });
 
 // =============================================================================
@@ -528,7 +532,7 @@ export const TIPO_TERCERO = Object.freeze({
 export const PROYECCION_ESTADO = Object.freeze({
     PENDIENTE: "PENDIENTE",
     OK:        "OK",
-    ERROR:     "ERROR"
+    ERROR:     "ERROR",
 });
 
 // =============================================================================
@@ -545,6 +549,5 @@ export const SISTEMA_INFORMATICO = Object.freeze({
     tipoUsoPosibleMultiOT:       "N",
     indicadorMultiplesOT:        "N",
     nifProductor:                "B12345678",
-    nombreRazonProductor:        "Marian Madrid SL"
+    nombreRazonProductor:        "Marian Madrid SL",
 });
-
