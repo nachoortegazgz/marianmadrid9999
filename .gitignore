@@ -49,3 +49,8 @@ Thumbs.db
 .nyc_output/
 coverage/
 ```
+# Backup local generado durante resolución de conflictos
+package-lock.json.backup_local
+
+# Metadatos y caché local del entorno Wix
+.wix/
