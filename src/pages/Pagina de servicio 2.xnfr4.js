@@ -1,8 +1,13 @@
 /*
 =============================================================================
 MODULE: pages/servicio-2.js
-VERSION: v5005.4-IMAGE-FALLBACK-FIXED
+VERSION: v5009-FISCAL-V20.1
+BASE: v5005.4-IMAGE-FALLBACK-FIXED + Directriz V20 (IDs nativa en ingles)
 STANDARDS: G10 ASCII Strict, Velo Native Optimized.
+
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: sin renombrados funcionales. Pagina frontend que delega
+            todo a webMethods backend. No accede a CMS directamente.
 =============================================================================
 */
 
