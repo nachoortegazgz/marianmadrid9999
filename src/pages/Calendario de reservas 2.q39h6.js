@@ -1,24 +1,14 @@
 /**
  * MODULE: pages/calendario-2.js
- * VERSION: v5003.8-FINAL
+ * VERSION: v5009-FISCAL-V20.1
+ * BASE: v5003.8-FINAL + Directriz V20 (IDs nativa en ingles)
  * STANDARDS: G10 ASCII Strict, Velo Native Optimized.
  *
- * CORRECCIONES APLICADAS (v5003.8):
- *  - C1: withTimeout recibe fabrica () => promesa.
- *  - C2: loadServiceContext valida serviceId GUID y normaliza imageUrl.
- *  - C3: handleSelection extrae start y end, pasa end a resolveStaffForSlot.
- *  - C4: handleBooking fuerza serviceId/slugUrl desde currentService.
- *  - C5: Mensaje timeout correcto.
- *  - C7: reply() recibe payload como 3er argumento.
- *  - C8: Sin shadowing de message en catch.
- *  - C9: Disponibilidad separada simple vs dual.
- *  - C10: Guard currentService en AVAIL/SELECT/BOOK.
- *  - C11: Sin DEFAULT_SERVICE_IMAGE (imageUrl = "" si no hay real).
- *  - C12: Filtro de addonIds contra currentService.metadata.addons.
- *  - C13: Validacion de slotF2 en duales antes de processDualBooking.
- *  - FIX-25: Uso de currentService.serviceId (GUID validado).
- *  - FIX-26: Eliminada getResponseType (dead code).
- *  - FIX-31: G10 ASCII en strings de usuario.
+ * FIXES APLICADOS v5009-FISCAL-V20.1:
+ *  - V20-01: sin renombrados funcionales. Pagina frontend que delega
+ *            todo a webMethods backend. No accede a CMS directamente.
+ *
+ * CORRECCIONES (heredadas): C1..C13, FIX-25, FIX-26, FIX-31.
  */
 
 import wixLocation from "wix-location-frontend";
