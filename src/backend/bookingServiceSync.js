@@ -1,27 +1,22 @@
 /*
 =============================================================================
 MODULE: backend/bookingServiceSync.js
-VERSION: v5008.1-FINAL
-BASE: BIBLIA v5002.5 Bloque 12.12 + DIRECTRICES V19
+VERSION: v5009-FISCAL-V20.1
+BASE: v5008.1-FINAL + Directriz V20 (IDs nativa en ingles)
 RESPONSIBILITY: Cola de sincronizacion entre ServiciosCatalogo y Wix Bookings.
 STANDARDS: G10 ASCII Strict.
 
-CORRECTIONS APPLIED (v5007.5):
-  [BSS-01] _findPendingEquivalent usa .in() en lugar de hasSome().
-  [BSS-02] Retirada funcion huerfana _isProcessingExpired.
-  [BSS-03] Retirada variable skipped.
-  [BSS-04] _syncServiceWithBookings documentado con contrato esperado.
-  [BSS-05] getSyncQueueStatus exportado para observabilidad.
+FIXES APLICADOS v5009-FISCAL-V20.1:
+  - V20-01: sin renombrados funcionales. Los campos de ServiciosCatalogo
+            (serviceId, title, tagLine, description, price, currency,
+            totalDuration, phase1Duration, exposureDuration, phase2Duration,
+            buffer, hidden, onlinePayment, inPersonPayment, categoryId,
+            availableStaff, linkedPhases, allowCombine, durationRange) ya
+            estan en ingles desde V20.1. BookingsServiceSyncQueue no esta
+            en el alcance de V20.1.
 
-CORRECTIONS APPLIED (v5008.0):
-  [BSS-06] Helpers consolidados en bookingUtils.js.
-  [BSS-07] _buildDesiredProjection incluye durationRange.
-  [BSS-08] Handler nativo documentado: NUNCA Multi-Service Booking.
-
-CORRECTIONS APPLIED (v5008.1):
-  [BSS-09] Imports de withTimeout y _executeWithRetry preparados.
-           El handler nativo usara el patron retry+timeout consistente
-           con el resto de modulos cuando se implemente.
+CORRECTIONS (heredadas):
+  [BSS-01..BSS-09].
 =============================================================================
 */
 
@@ -269,47 +264,12 @@ async function _recoverStaleProcessingItems(traceId) {
 
 // =============================================================================
 // BLOQUE 4 - SINCRONIZACION NATIVA
-//
-// [BSS-04] Contrato esperado del handler nativo (Wix Bookings Services V2):
-//
-//   await bookingsServices.<method>({
-//     serviceId,
-//     ...desiredPayloadProjection,
-//   });
-//
-// [BSS-08] REGLA ESTRICTA: NUNCA usar Multi-Service Booking.
-//   El flujo dual (F1 + F2 con gap) NO es soportado por Multi-Service V2.
-//   F1 y F2 se sincronizan como servicios single-service independientes.
-//
-// [BSS-09] El handler nativo usara withTimeout + _executeWithRetry
-//   cuando se implemente, consistente con reservas.web.js.
 // =============================================================================
 
 async function _syncServiceWithBookings(item, traceId) {
     if (!item?.serviceId || !item?.desiredPayload) {
         throw new Error("INVALID_SYNC_ITEM");
     }
-
-    // TODO: sustituir por la llamada nativa cuando se confirme el contrato.
-    //
-    // Patron esperado:
-    //
-    //   import { services } from "wix-bookings-services.v2";
-    //   import { elevate } from "wix-auth";
-    //
-    //   const elevated = elevate(services.updateService);
-    //
-    //   await _executeWithRetry(
-    //     () => withTimeout(
-    //       elevated(item.serviceId, item.desiredPayload),
-    //       SYNC_HANDLER_TIMEOUT_MS,
-    //       "syncServiceWithBookings"
-    //     ),
-    //     2,
-    //     300
-    //   );
-    //
-    // NUNCA usar bookingsServices.createMultiServiceBooking(...).
 
     log.warn("Service sync handler not configured; item left pending", {
         serviceId: item.serviceId,
