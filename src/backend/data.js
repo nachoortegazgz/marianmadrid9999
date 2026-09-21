@@ -1,12 +1,12 @@
 /*
 =============================================================================
 MODULE: backend/data.js
-VERSION: v5008.7-FISCAL
-BASE: BIBLIA v5002.5 + ESQUEMA CMS v5002.5 + DOSSIER CAJA
+VERSION: v5009-FISCAL
+BASE: v5008.7 + SSOT v5009 + DOSSIER CAJA + DIRECTRICES V19
 RESPONSIBILITY: Hooks de inmutabilidad y validacion para Wix Data.
 STANDARDS: G10 ASCII Strict.
 
-FIXES APLICADOS v5008.7:
+FIXES APLICADOS v5008.7 (heredados):
   - FIX-50: eliminados hooks EventosSistemaFacturacion (coleccion eliminada).
   - FIX-51: HistoricoCierresZ_beforeUpdate permite update quirurgico UNICAMENTE
             de campos de firma (recovery fiscal).
@@ -16,6 +16,23 @@ FIXES APLICADOS v5008.7:
   - D-02: MovimientosCaja_beforeInsert valida cuadre fiscal segun rolFiscal.
   - D-03: LibroAsientosContablesDetalle_beforeInsert valida cuenta PGC 6 digitos.
   - FIX-FISCAL-04: _isValidNifOrEuVat acepta prefijos VAT UE.
+
+FIXES APLICADOS v5009-FISCAL:
+  - D-04: MovimientosCaja_beforeInsert acepta alias AEAT (importeTotal,
+          baseImponibleOImporteNoSujeto, cuotaTotal, cuotaRecargoEquivalencia,
+          nifDestinatario) manteniendo legacy (totalAmount, taxableAmount,
+          taxAmount, importeRecargoEquivalencia, nifTercero).
+  - D-05: MovimientosCaja valida tipoEvento, terceroId, catalogoId y
+          payloadFiscal cuando schemaVersion = LEDGER_V5_FISCAL.
+  - D-06: MovimientosCaja valida F1 exige NIF + nombre + domicilio destinatario.
+  - D-07: MovimientosCaja valida inversionSujetoPasivo implica cuotaTotal = 0.
+  - D-08: MovimientosCaja valida AJUSTE exige idFacturaAnterior.
+  - D-09: Nuevos hooks DatosFiscales_beforeInsert / _beforeUpdate.
+  - D-10: Nuevos hooks FacturasRecibidas_beforeInsert.
+  - D-11: LibroAsientosContablesDetalle amplia validacion con eventoOrigenId,
+          terceroId, catalogoId (solo si schemaVersion = LEDGER_V5_FISCAL).
+  - D-12: ServiciosCatalogo valida naturalezaItem y codigoImpuesto obligatorios.
+  - D-13: ServiciosCatalogo infiere totalDuration si allowCombine y falta.
 =============================================================================
 */
 
@@ -25,6 +42,9 @@ import {
     COLLECTIONS,
     EU_VAT_PREFIXES,
     ROL_FISCAL,
+    TIPO_EVENTO,
+    TIPO_TERCERO,
+    NATURALEZA_ITEM,
 } from "backend/internalConfig";
 
 import { logger } from "backend/logger";
@@ -51,6 +71,26 @@ const ALLOWED_Z_UPDATE_FIELDS = new Set([
 ]);
 
 const NIF_LETRAS_DNI = "TRWAGMYFPDXBNJZSQVHLCKE";
+
+const LEDGER_SCHEMA_VERSION_AEAT = "LEDGER_V5_FISCAL";
+
+const TIPOS_TERCERO_VALIDOS = new Set([
+    "CLIENTE", "PROVEEDOR", "STAFF", "AAPP", "MIXTO",
+]);
+
+const NATURALEZAS_ITEM_VALIDAS = new Set([
+    "SERVICIO_PROPIO", "PRODUCTO_VENTA", "PRODUCTO_USO", "GASTO_FIJO",
+]);
+
+const CODIGOS_IMPUESTO_VALIDOS = new Set([
+    "IVA_21", "IVA_10", "IVA_4", "IVA_0",
+    "IRPF_15", "IRPF_19", "EXENTO",
+]);
+
+const TIPOS_EVENTO_VALIDOS = new Set([
+    "VENTA_LINEA", "COMPRA_LINEA", "CIERRE_Z",
+    "AJUSTE", "RECTIFICATIVA", "MOV_STOCK",
+]);
 
 // =============================================================================
 // HELPERS
@@ -85,6 +125,10 @@ function _fiscalError(message) {
 function _roundItem(value) {
     const n = Number(value);
     return Number.isFinite(n) ? Math.round((n + Number.EPSILON) * 100) / 100 : 0;
+}
+
+function _isV5Fiscal(item) {
+    return _safeTrim(item?.schemaVersion) === LEDGER_SCHEMA_VERSION_AEAT;
 }
 
 // =============================================================================
@@ -137,57 +181,219 @@ function _isValidNifOrEuVat(nif) {
 }
 
 // =============================================================================
+// HELPERS AEAT - EXTRACCION TOLERANTE DE CAMPOS
+// =============================================================================
+
+// [D-04] Resuelve base imponible aceptando alias AEAT y legacy.
+function _readBaseImponible(item) {
+    const v = item.baseImponibleOImporteNoSujeto ?? item.taxableAmount;
+    return Number(v) || 0;
+}
+
+// [D-04] Resuelve cuota IVA aceptando alias AEAT y legacy.
+function _readCuotaTotal(item) {
+    const v = item.cuotaTotal ?? item.taxAmount;
+    return Number(v) || 0;
+}
+
+// [D-04] Resuelve importe total aceptando alias AEAT y legacy.
+function _readImporteTotal(item) {
+    const v = item.importeTotal ?? item.totalAmount ?? item.amount;
+    return Number(v) || 0;
+}
+
+// [D-04] Resuelve cuota RE aceptando alias AEAT y legacy.
+function _readCuotaRecargoEquivalencia(item) {
+    const v = item.cuotaRecargoEquivalencia ?? item.importeRecargoEquivalencia;
+    return Number(v) || 0;
+}
+
+// [D-04] Resuelve NIF destinatario aceptando alias AEAT y legacy.
+function _readNifDestinatario(item) {
+    return _safeTrim(item.nifDestinatario || item.nifTercero);
+}
+
+// [D-04] Resuelve nombre destinatario aceptando alias AEAT y legacy.
+function _readNombreDestinatario(item) {
+    return _safeTrim(item.nombreRazonDestinatario || item.razonSocialTercero);
+}
+
+// [D-04] Resuelve tipo factura aceptando alias AEAT y legacy.
+function _readTipoFactura(item) {
+    return _safeTrim(item.tipoFactura || item.claveRegistroFactura).toUpperCase();
+}
+
+// [D-04] Resuelve base desgloseDetallado o desgloseImpuestos.
+function _readDesgloseBaseYCuota(item) {
+    let base = 0;
+    let cuota = 0;
+
+    const desglose =
+        item.desgloseDetallado ||
+        item.desgloseImpuestos ||
+        item.lineItems;
+
+    if (desglose) {
+        try {
+            const arr = typeof desglose === "string" ? JSON.parse(desglose) : desglose;
+            if (Array.isArray(arr) && arr.length > 0) {
+                base = arr.reduce(
+                    (sum, d) => sum + Number(d.baseImponibleOImporteNoSujeto ?? d.base ?? 0),
+                    0
+                );
+                cuota = arr.reduce(
+                    (sum, d) => sum + Number(d.cuotaRepercutida ?? d.cuota ?? 0),
+                    0
+                );
+            }
+        } catch (e) {
+            _schemaError("desgloseDetallado/desgloseImpuestos no es JSON valido");
+        }
+    }
+
+    return { base, cuota };
+}
+
+// [D-06] Valida requisitos de factura completa F1.
+function _validateF1Requirements(item) {
+    if (_readTipoFactura(item) !== "F1") return;
+
+    const pf = item.payloadFiscal || {};
+    const nif = _readNifDestinatario(item) || _safeTrim(pf.nifDestinatario);
+    const nombre = _readNombreDestinatario(item) || _safeTrim(pf.nombreRazonDestinatario);
+    const domicilio = item.domicilioDestinatario || pf.domicilioDestinatario || {};
+
+    if (!nif) {
+        _schemaError("Factura F1 exige NIF destinatario");
+    }
+    if (!nombre) {
+        _schemaError("Factura F1 exige nombreRazonDestinatario");
+    }
+    if (!domicilio || !_safeTrim(domicilio.cp)) {
+        _schemaError("Factura F1 exige domicilioDestinatario con CP");
+    }
+}
+
+// [D-07] Valida que ISP implica cuotaTotal = 0.
+function _validateISP(item) {
+    if (item.inversionSujetoPasivo !== true) return;
+
+    const cuota = _readCuotaTotal(item);
+    if (cuota > 0) {
+        _schemaError("InversionSujetoPasivo implica cuotaTotal = 0");
+    }
+}
+
+// [D-08] Valida que AJUSTE exige referencia anterior.
+function _validateAjuste(item) {
+    if (_safeTrim(item.tipoEvento).toUpperCase() !== "AJUSTE") return;
+
+    if (!_safeTrim(item.idFacturaAnterior)) {
+        _schemaError("tipoEvento=AJUSTE exige idFacturaAnterior");
+    }
+}
+
+// [D-05] Valida requisitos de la capa AEAT cuando schemaVersion = LEDGER_V5_FISCAL.
+function _validateFiscalPayload(item) {
+    if (!_isV5Fiscal(item)) return;
+
+    const tipoEvento = _safeTrim(item.tipoEvento).toUpperCase();
+    if (!tipoEvento || !TIPOS_EVENTO_VALIDOS.has(tipoEvento)) {
+        _schemaError("tipoEvento obligatorio y valido (VENTA_LINEA, COMPRA_LINEA, CIERRE_Z, AJUSTE, RECTIFICATIVA, MOV_STOCK)");
+    }
+
+    // CIERRE_Z no exige tercero ni catalogo
+    if (tipoEvento !== "CIERRE_Z") {
+        if (!_isGuid(item.terceroId)) {
+            _schemaError("terceroId obligatorio (FK DatosFiscales)");
+        }
+        if (!item.payloadFiscal || typeof item.payloadFiscal !== "object") {
+            _schemaError("payloadFiscal obligatorio (snapshot AEAT)");
+        }
+    }
+
+    // Catalogo obligatorio en eventos de linea
+    if (["VENTA_LINEA", "COMPRA_LINEA", "RECTIFICATIVA", "MOV_STOCK"].includes(tipoEvento)) {
+        if (!_isGuid(item.catalogoId)) {
+            _schemaError("catalogoId obligatorio (FK ServiciosCatalogo)");
+        }
+    }
+
+    // Secuencia monotona
+    if (!Number.isFinite(Number(item.sequenceNumber)) || Number(item.sequenceNumber) <= 0) {
+        _schemaError("sequenceNumber obligatorio (> 0)");
+    }
+
+    // Huella obligatoria
+    if (!_safeTrim(item.huella)) {
+        _schemaError("huella obligatoria (cadena SHA-256)");
+    }
+}
+
+// =============================================================================
 // BLOQUE 1 - MOVIMIENTOS DE CAJA
 // =============================================================================
 
-// [D-01, D-02] Validacion fiscal en insert de MovimientosCaja.
+// [D-01, D-02, D-04, D-05, D-06, D-07, D-08]
+// Validacion fiscal en insert de MovimientosCaja.
 export function MovimientosCaja_beforeInsert(item) {
     if (!item || typeof item !== "object") return item;
 
     // [D-01] Validar NIF/VAT del tercero si viene.
-    const nif = _safeTrim(item.nifTercero);
+    const nif = _readNifDestinatario(item);
     if (nif && !_isValidNifOrEuVat(nif)) {
-        _schemaError("nifTercero no tiene formato valido (espanol o VAT UE)");
+        _schemaError("nifDestinatario/nifTercero no tiene formato valido (espanol o VAT UE)");
     }
 
     // [D-02] Validar cuadre fiscal segun rolFiscal.
-    // SSOT v5008.7: desgloseImpuestos es JSON array [{base, tipo, cuota}]
-    // Se mantiene taxableAmount/taxAmount para compatibilidad con cajas.web.js v5008.5
-    let base = 0;
-    let cuota = 0;
+    const { base, cuota } = _readDesgloseBaseYCuota(item);
 
-    if (item.desgloseImpuestos) {
-        try {
-            const desglose = typeof item.desgloseImpuestos === 'string'
-                ? JSON.parse(item.desgloseImpuestos)
-                : item.desgloseImpuestos;
-            if (Array.isArray(desglose) && desglose.length > 0) {
-                base = desglose.reduce((sum, d) => sum + Number(d.base || 0), 0);
-                cuota = desglose.reduce((sum, d) => sum + Number(d.cuota || 0), 0);
-            }
-        } catch (e) {
-            _schemaError("desgloseImpuestos no es JSON valido");
-        }
-    } else {
-        // Fallback a campos planos (legacy hasta migracion completa)
-        base = Number(item.taxableAmount) || 0;
-        cuota = Number(item.taxAmount) || 0;
-    }
+    // Si no hay desglose, usar campos planos (legacy o AEAT)
+    const baseFinal = base > 0 ? base : _readBaseImponible(item);
+    const cuotaFinal = cuota > 0 ? cuota : _readCuotaTotal(item);
 
     const retencion = Number(item.importeRetencionIRPF) || 0;
-    const recargo = Number(item.importeRecargoEquivalencia) || 0;
-    const total = Number(item.totalAmount) || 0;
+    const recargo = _readCuotaRecargoEquivalencia(item);
+    const total = _readImporteTotal(item);
 
-    if (base > 0 || cuota > 0 || retencion > 0 || recargo > 0) {
+    if (baseFinal > 0 || cuotaFinal > 0 || retencion > 0 || recargo > 0) {
         const rolFiscal = _safeTrim(item.rolFiscal).toUpperCase() || ROL_FISCAL.EMISOR;
         const factorRetencion = rolFiscal === ROL_FISCAL.RECEPTOR ? 1 : -1;
 
-        const esperado = _roundItem(base + cuota + recargo + factorRetencion * retencion);
+        const esperado = _roundItem(baseFinal + cuotaFinal + recargo + factorRetencion * retencion);
         const diff = Math.abs(esperado - total);
         if (diff > 0.02) {
             _schemaError(
-                `Cuadre fiscal invalido (rol ${rolFiscal}): base ${base} + cuota ${cuota} + recargo ${recargo} ${factorRetencion > 0 ? "+" : "-"} retencion ${retencion} = ${esperado.toFixed(2)}, total ${total.toFixed(2)}`
+                `Cuadre fiscal invalido (rol ${rolFiscal}): base ${baseFinal} + cuota ${cuotaFinal} + recargo ${recargo} ${factorRetencion > 0 ? "+" : "-"} retencion ${retencion} = ${esperado.toFixed(2)}, total ${total.toFixed(2)}`
             );
+        }
+    }
+
+    // [D-06] F1 exige NIF + nombre + domicilio.
+    _validateF1Requirements(item);
+
+    // [D-07] ISP implica cuota 0.
+    _validateISP(item);
+
+    // [D-08] AJUSTE exige referencia anterior.
+    _validateAjuste(item);
+
+    // [D-05] Validaciones de la capa AEAT v5.
+    _validateFiscalPayload(item);
+
+    // Cuadre desgloseDetallado vs cabecera (solo si viene poblado)
+    if (Array.isArray(item.desgloseDetallado) && item.desgloseDetallado.length > 0) {
+        let sumBase = 0;
+        let sumCuota = 0;
+        for (const d of item.desgloseDetallado) {
+            sumBase += Number(d.baseImponibleOImporteNoSujeto ?? d.base ?? 0);
+            sumCuota += Number(d.cuotaRepercutida ?? d.cuota ?? 0);
+        }
+        if (Math.abs(_roundItem(sumBase) - baseFinal) > 0.02) {
+            _schemaError(`desgloseDetallado.base (${sumBase}) no cuadra con cabecera (${baseFinal})`);
+        }
+        if (Math.abs(_roundItem(sumCuota) - cuotaFinal) > 0.02) {
+            _schemaError(`desgloseDetallado.cuota (${sumCuota}) no cuadra con cabecera (${cuotaFinal})`);
         }
     }
 
@@ -196,7 +402,7 @@ export function MovimientosCaja_beforeInsert(item) {
 
 export function MovimientosCaja_beforeUpdate() {
     _fiscalError(
-        "Modificacion de MovimientosCaja prohibida por normativa fiscal"
+        "Modificacion de MovimientosCaja prohibida por normativa fiscal (append-only). Use tipoEvento=AJUSTE."
     );
 }
 
@@ -305,46 +511,44 @@ export function ServiciosCatalogo_beforeUpdate(item) {
 }
 
 function _validateServiciosCatalogoSchema(item = {}) {
-    const serviceId = _safeTrim(
-        item.serviceId || item._id
-    );
+    const serviceId = _safeTrim(item.serviceId || item._id);
 
-    const linkedPhases = _safeTrim(
-        item.linkedPhases
-    );
+    const linkedPhases = _safeTrim(item.linkedPhases);
 
-    const allowCombine =
-        item.allowCombine === true;
+    const allowCombine = item.allowCombine === true;
 
     if (item.serviceId && !_isGuid(item.serviceId)) {
-        _schemaError(
-            "serviceId debe ser un GUID valido"
-        );
+        _schemaError("serviceId debe ser un GUID valido");
     }
 
     if (allowCombine && !linkedPhases) {
-        _schemaError(
-            "Servicio dual requiere linkedPhases"
-        );
+        _schemaError("Servicio dual requiere linkedPhases");
     }
 
     if (linkedPhases && !_isGuid(linkedPhases)) {
-        _schemaError(
-            "linkedPhases debe ser un GUID valido"
-        );
+        _schemaError("linkedPhases debe ser un GUID valido");
     }
 
-    const phase1Duration =
-        Number(item.phase1Duration) || 0;
+    if (linkedPhases && linkedPhases === serviceId) {
+        _schemaError("linkedPhases no puede referenciar al propio servicio");
+    }
 
-    const exposureDuration =
-        Number(item.exposureDuration) || 0;
+    // [D-12] Validar naturalezaItem si viene.
+    const naturaleza = _safeTrim(item.naturalezaItem).toUpperCase();
+    if (naturaleza && !NATURALEZAS_ITEM_VALIDAS.has(naturaleza)) {
+        _schemaError("naturalezaItem invalido");
+    }
 
-    const phase2Duration =
-        Number(item.phase2Duration) || 0;
+    // [D-12] Validar codigoImpuesto si viene.
+    const codigoImpuesto = _safeTrim(item.codigoImpuesto).toUpperCase();
+    if (codigoImpuesto && !CODIGOS_IMPUESTO_VALIDOS.has(codigoImpuesto)) {
+        _schemaError("codigoImpuesto invalido");
+    }
 
-    const totalDuration =
-        Number(item.totalDuration) || 0;
+    const phase1Duration = Number(item.phase1Duration) || 0;
+    const exposureDuration = Number(item.exposureDuration) || 0;
+    const phase2Duration = Number(item.phase2Duration) || 0;
+    const totalDuration = Number(item.totalDuration) || 0;
 
     if (
         !_isFiniteNonNegative(phase1Duration) ||
@@ -352,19 +556,20 @@ function _validateServiciosCatalogoSchema(item = {}) {
         !_isFiniteNonNegative(phase2Duration) ||
         !_isFiniteNonNegative(totalDuration)
     ) {
-        _schemaError(
-            "Las duraciones deben ser numeros no negativos"
-        );
+        _schemaError("Las duraciones deben ser numeros no negativos");
     }
 
-    if (
-        allowCombine &&
-        totalDuration > 0
-    ) {
+    // [D-13] Inferir totalDuration si allowCombine y falta.
+    if (allowCombine && totalDuration === 0) {
+        const inferred = phase1Duration + exposureDuration + phase2Duration;
+        if (inferred > 0) {
+            item.totalDuration = inferred;
+        }
+    }
+
+    if (allowCombine && totalDuration > 0) {
         const expectedDuration =
-            phase1Duration +
-            exposureDuration +
-            phase2Duration;
+            phase1Duration + exposureDuration + phase2Duration;
 
         if (
             expectedDuration > 0 &&
@@ -399,9 +604,7 @@ async function _validateMapaStaffUniqueness(item = {}) {
 
     if (resourceId) {
         if (!_isGuid(resourceId)) {
-            _schemaError(
-                "resourceId debe ser un GUID valido"
-            );
+            _schemaError("resourceId debe ser un GUID valido");
         }
 
         const existingByResource = await wixData
@@ -412,9 +615,7 @@ async function _validateMapaStaffUniqueness(item = {}) {
             .find({ suppressAuth: true });
 
         if (existingByResource?.items?.length > 0) {
-            _schemaError(
-                "resourceId duplicado en MapaStaff"
-            );
+            _schemaError("resourceId duplicado en MapaStaff");
         }
     }
 
@@ -427,9 +628,7 @@ async function _validateMapaStaffUniqueness(item = {}) {
             .find({ suppressAuth: true });
 
         if (existingByMember?.items?.length > 0) {
-            _schemaError(
-                "staffMemberId duplicado en MapaStaff"
-            );
+            _schemaError("staffMemberId duplicado en MapaStaff");
         }
     }
 
@@ -442,9 +641,7 @@ async function _validateMapaStaffUniqueness(item = {}) {
             .find({ suppressAuth: true });
 
         if (existingByEmail?.items?.length > 0) {
-            _schemaError(
-                "email duplicado en MapaStaff"
-            );
+            _schemaError("email duplicado en MapaStaff");
         }
     }
 
@@ -457,9 +654,7 @@ async function _validateMapaStaffUniqueness(item = {}) {
 
 export function AsientosContables_beforeUpdate(item) {
     if (_isImmutableStatus(item?.entryStatus)) {
-        _fiscalError(
-            "No se puede modificar un asiento POSTED o LOCKED"
-        );
+        _fiscalError("No se puede modificar un asiento POSTED o LOCKED");
     }
 
     return item;
@@ -467,9 +662,7 @@ export function AsientosContables_beforeUpdate(item) {
 
 export function AsientosContables_beforeRemove(item) {
     if (_isImmutableStatus(item?.entryStatus)) {
-        _fiscalError(
-            "No se puede eliminar un asiento POSTED o LOCKED"
-        );
+        _fiscalError("No se puede eliminar un asiento POSTED o LOCKED");
     }
 
     return item;
@@ -478,18 +671,40 @@ export function AsientosContables_beforeRemove(item) {
 // =============================================================================
 // BLOQUE 9 - LINEAS DE ASIENTO
 // [D-03] Validacion de cuenta PGC en beforeInsert.
+// [D-11] Validacion ampliada con eventoOrigenId/terceroId/catalogoId en v5.
 // =============================================================================
 
 export function LibroAsientosContablesDetalle_beforeInsert(item) {
     if (!item || typeof item !== "object") return item;
 
-    const code = _safeTrim(item.accountCode);
-    if (!code) {
-        _schemaError("accountCode es obligatorio en lineas de asiento");
+    // [D-03] Cuenta PGC obligatoria y de 6 digitos (solo si viene).
+    const code = _safeTrim(item.cuentaContable || item.accountCode);
+    if (code) {
+        if (!/^\d{6}$/.test(code)) {
+            _schemaError(`cuentaContable "${code}" no tiene formato PGC (6 digitos)`);
+        }
     }
 
-    if (!/^\d{6}$/.test(code)) {
-        _schemaError(`accountCode "${code}" no tiene formato PGC (6 digitos)`);
+    // [D-11] Validaciones de la capa AEAT v5.
+    if (_isV5Fiscal(item) || _safeTrim(item.eventoOrigenId)) {
+        if (!_isGuid(item.eventoOrigenId)) {
+            _schemaError("eventoOrigenId obligatorio (FK MovimientosCaja)");
+        }
+        if (!_isGuid(item.terceroId)) {
+            _schemaError("terceroId obligatorio (FK DatosFiscales)");
+        }
+        if (!_isGuid(item.catalogoId)) {
+            _schemaError("catalogoId obligatorio (FK ServiciosCatalogo)");
+        }
+        if (!Number.isFinite(Number(item.numeroLinea)) || Number(item.numeroLinea) < 1) {
+            _schemaError("numeroLinea >= 1");
+        }
+        if (!Number.isFinite(Number(item.unidades)) || Number(item.unidades) <= 0) {
+            _schemaError("unidades > 0");
+        }
+        if (!_safeTrim(item.descripcionOperacion)) {
+            _schemaError("descripcionOperacion obligatoria en lineas v5");
+        }
     }
 
     return item;
@@ -512,9 +727,7 @@ export async function LineasAsientoContable_beforeRemove(item) {
 }
 
 async function _validateAccountingLineParent(item = {}) {
-    const journalEntryId = _safeTrim(
-        item.journalEntryId
-    );
+    const journalEntryId = _safeTrim(item.journalEntryId);
 
     if (!journalEntryId) {
         return item;
@@ -555,9 +768,7 @@ export async function SecuenciaTickets_beforeUpdate(item) {
 
 export function InventarioStockVentaCierre_beforeUpdate(item) {
     if (_safeTrim(item?.closingHash)) {
-        _fiscalError(
-            "No se puede modificar un cierre de inventario firmado"
-        );
+        _fiscalError("No se puede modificar un cierre de inventario firmado");
     }
 
     return item;
@@ -565,10 +776,117 @@ export function InventarioStockVentaCierre_beforeUpdate(item) {
 
 export function InventarioStockVentaCierre_beforeRemove(item) {
     if (_safeTrim(item?.closingHash)) {
-        _fiscalError(
-            "No se puede eliminar un cierre de inventario firmado"
-        );
+        _fiscalError("No se puede eliminar un cierre de inventario firmado");
     }
 
+    return item;
+}
+
+// =============================================================================
+// BLOQUE 12 - DATOS FISCALES [D-09]
+// =============================================================================
+
+export function DatosFiscales_beforeInsert(item) {
+    if (!item || typeof item !== "object") return item;
+
+    const nif = _safeTrim(item.nifCif);
+    if (!nif || !_isValidNifOrEuVat(nif)) {
+        _schemaError("nifCif obligatorio y valido (espanol o VAT UE)");
+    }
+
+    if (!_safeTrim(item.razonSocial)) {
+        _schemaError("razonSocial obligatoria");
+    }
+
+    const tipo = _safeTrim(item.tipoTercero).toUpperCase();
+    if (!tipo || !TIPOS_TERCERO_VALIDOS.has(tipo)) {
+        _schemaError("tipoTercero invalido (CLIENTE, PROVEEDOR, STAFF, AAPP, MIXTO)");
+    }
+
+    // Si es STAFF, exige puentes a Bookings + Members
+    if (tipo === "STAFF") {
+        if (!_isGuid(item.resourceIdBookings)) {
+            _schemaError("tipoTercero=STAFF exige resourceIdBookings GUID");
+        }
+        if (!_safeTrim(item.staffMemberId)) {
+            _schemaError("tipoTercero=STAFF exige staffMemberId");
+        }
+    }
+
+    return item;
+}
+
+export function DatosFiscales_beforeUpdate(item) {
+    if (!item || typeof item !== "object") return item;
+
+    const nif = _safeTrim(item.nifCif);
+    if (nif && !_isValidNifOrEuVat(nif)) {
+        _schemaError("nifCif invalido en update");
+    }
+
+    return item;
+}
+
+// =============================================================================
+// BLOQUE 13 - FACTURAS RECIBIDAS [D-10]
+// =============================================================================
+
+export function FacturasRecibidas_beforeInsert(item) {
+    if (!item || typeof item !== "object") return item;
+
+    const nifEmisor = _safeTrim(item.nifEmisor);
+    if (!nifEmisor || !_isValidNifOrEuVat(nifEmisor)) {
+        _schemaError("FacturasRecibidas requiere nifEmisor valido (espanol o VAT UE)");
+    }
+
+    if (!_safeTrim(item.nombreRazonEmisor)) {
+        _schemaError("FacturasRecibidas requiere nombreRazonEmisor");
+    }
+
+    if (!_isGuid(item.terceroId)) {
+        _schemaError("FacturasRecibidas requiere terceroId (FK DatosFiscales)");
+    }
+
+    if (!_isGuid(item.eventoOrigenId)) {
+        _schemaError("FacturasRecibidas requiere eventoOrigenId (FK MovimientosCaja)");
+    }
+
+    const base = Number(item.baseImponibleTotal) || 0;
+    const cuota = Number(item.cuotaIvaTotal) || 0;
+    const re = Number(item.cuotaRecargoEquivalencia) || 0;
+    const ret = Number(item.importeRetencionIRPF) || 0;
+    const total = Number(item.importeTotal) || 0;
+
+    if (base || cuota || re || ret || total) {
+        const esperado = _roundItem(base + cuota + re - ret);
+        if (Math.abs(esperado - total) > 0.02) {
+            _schemaError(
+                `Factura recibida descuadra: base ${base} + IVA ${cuota} + RE ${re} - ret ${ret} = ${esperado.toFixed(2)}, total ${total.toFixed(2)}`
+            );
+        }
+    }
+
+    // Cuadre desgloseDetallado si viene
+    if (Array.isArray(item.desgloseDetallado) && item.desgloseDetallado.length > 0) {
+        let sumBase = 0;
+        let sumCuota = 0;
+        for (const d of item.desgloseDetallado) {
+            sumBase += Number(d.baseImponibleOImporteNoSujeto ?? d.base ?? 0);
+            sumCuota += Number(d.cuotaRepercutida ?? d.cuota ?? 0);
+        }
+        if (Math.abs(_roundItem(sumBase) - base) > 0.02) {
+            _schemaError("FacturasRecibidas desgloseDetallado.base no cuadra");
+        }
+        if (Math.abs(_roundItem(sumCuota) - cuota) > 0.02) {
+            _schemaError("FacturasRecibidas desgloseDetallado.cuota no cuadra");
+        }
+    }
+
+    return item;
+}
+
+export function FacturasRecibidas_beforeUpdate(item) {
+    // No se bloquea el update (permite cambios de estado de pago, adjuntos, etc.)
+    // Las validaciones fiscales de identidad no se repiten aqui.
     return item;
 }
