@@ -1,3 +1,45 @@
 {
-  "extends": ["plugin:@wix/cli/recommended"]
+  "env": {
+    "browser": true,
+    "es2021": true,
+    "node": true
+  },
+  "extends": "eslint:recommended",
+  "parserOptions": {
+    "ecmaVersion": "latest",
+    "sourceType": "module"
+  },
+  "rules": {
+    "no-unused-vars": ["error", { "argsIgnorePattern": "^_" }],
+    "no-undef": "error",
+    "no-console": "warn",
+    "prefer-const": "error",
+    "no-var": "error",
+    "eqeqeq": ["error", "always"],
+    "curly": ["error", "all"],
+    "no-nested-ternary": "warn",
+    "no-magic-numbers": ["warn", { "ignore": [-1, 0, 1], "ignoreArrayIndexes": true }]
+  },
+  "globals": {
+    "$w": "readonly",
+    "wixData": "readonly",
+    "wixUsers": "readonly",
+    "wixLocation": "readonly",
+    "wixWindow": "readonly",
+    "wixStorage": "readonly",
+    "wixCrm": "readonly",
+    "wixPay": "readonly",
+    "wixErrors": "readonly",
+    "console": "readonly",
+    "Promise": "readonly",
+    "JSON": "readonly",
+    "Math": "readonly",
+    "Date": "readonly",
+    "Number": "readonly",
+    "String": "readonly",
+    "Array": "readonly",
+    "Object": "readonly",
+    "Map": "readonly",
+    "Set": "readonly"
+  }
 }

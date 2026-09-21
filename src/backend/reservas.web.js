@@ -92,7 +92,7 @@ function _normalizeImport2Addon(addon) {
   return {
     ...addon,
     id: _safeTrim(addon.id || addon._id || addon.addonId),
-    nombre: _safeTrim(addon.nombre || addon.name || addon.title),
+    nombre: _safeTrim(addon.name || addon.name || addon.title),
     precio: Number(addon.precio ?? addon.price ?? 0) || 0
   };
 }

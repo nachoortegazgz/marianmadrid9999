@@ -141,7 +141,7 @@ export async function enqueueM365LedgerRecord(movement, traceId) {
     eventType: "LEDGER_MOVEMENT",
     correlationId: traceId || movement?.traceId,
     transactionId: movement?.transactionId,
-    bookingReference: movement?.reservaIdVinculada || movement?.bookingId || movement?._id,
+    bookingReference: movement?.linkedBookingIds || movement?.bookingId || movement?._id,
     amount: movement?.accountingAmount,
     currency: "EUR",
     occurredAt: movement?.registeredAt || new Date(),

@@ -63,9 +63,9 @@ function _linePayload(line) {
         line.debitAmount, line.creditAmount,
         line.taxableAmount, line.taxRate, line.taxAmount, line.traceId,
         line.nifTercero || "",
-        line.importeRetencionIRPF || 0,
+        line.irpfWithholdingAmount || 0,
         line.importeRecargoEquivalencia || 0,
-        line.motivoRectificacion || "",
+        line.correctionReason || "",
     ].join("|");
 }
 
@@ -96,10 +96,10 @@ async function _asAccountingLine(base, number, accountCode, accountName, debit, 
         razonSocialTercero: base.razonSocialTercero || null,
         numeroSerieFacturaEmisor: base.numeroSerieFacturaEmisor || null,
         claveRegistroFactura: base.claveRegistroFactura || null,
-        importeRetencionIRPF: Number(base.importeRetencionIRPF) || 0,
-        baseImponibleRetencion: Number(base.baseImponibleRetencion) || 0,
+        importeRetencionIRPF: Number(base.irpfWithholdingAmount) || 0,
+        baseImponibleRetencion: Number(base.withholdingBase) || 0,
         importeRecargoEquivalencia: Number(base.importeRecargoEquivalencia) || 0,
-        motivoRectificacion: base.motivoRectificacion || null,
+        motivoRectificacion: base.correctionReason || null,
         idFacturaRectificada: base.idFacturaRectificada || null,
         rolFiscal: base.rolFiscal || ROL_FISCAL.EMISOR,
     };
@@ -108,7 +108,7 @@ async function _asAccountingLine(base, number, accountCode, accountName, debit, 
         throw new Error("ACCOUNTING_PROJECTION_INVALID_ACCOUNT");
     }
 
-    line.lineHash = await hashChain(base.hashOrigen || "", _linePayload(line));
+    line.lineHash = await hashChain(base.sourceHash || "", _linePayload(line));
     return line;
 }
 
@@ -178,7 +178,7 @@ function _buildBase(movimiento) {
     const operationDate = _normalizeDate(movimiento?.registeredAt || movimiento?.operationDate);
     const fiscalKeys = _toFiscalKeys(operationDate);
     const sourceId = _cleanText(movimiento?._id, 120);
-    const movementType = String(movimiento?.movementType || movimiento?.tipoMovimiento || "AJUSTE").toUpperCase();
+    const movementType = String(movimiento?.movementType || movimiento?.movementType || "AJUSTE").toUpperCase();
     const hashOrigen = _getSourceHash(movimiento);
 
     const recordSource = _cleanText(movimiento?.recordSource || movimiento?.origen || "MOVIMIENTO_CAJA", 80);
@@ -216,11 +216,11 @@ function _buildBase(movimiento) {
         razonSocialTercero: _cleanText(movimiento?.razonSocialTercero, 200) || null,
         numeroSerieFacturaEmisor: _cleanText(movimiento?.numeroSerieFacturaEmisor, 60) || null,
         claveRegistroFactura: _cleanText(movimiento?.claveRegistroFactura || CLAVES_AEAT.F1, 4),
-        baseImponibleRetencion: Number(movimiento?.baseImponibleRetencion) || 0,
-        importeRetencionIRPF: Number(movimiento?.importeRetencionIRPF) || 0,
+        baseImponibleRetencion: Number(movimiento?.withholdingBase) || 0,
+        importeRetencionIRPF: Number(movimiento?.irpfWithholdingAmount) || 0,
         importeRecargoEquivalencia: Number(movimiento?.importeRecargoEquivalencia) || 0,
         rolFiscal: _cleanText(movimiento?.rolFiscal || ROL_FISCAL.EMISOR, 10),
-        motivoRectificacion: _cleanText(movimiento?.motivoRectificacion, 4) || null,
+        motivoRectificacion: _cleanText(movimiento?.correctionReason, 4) || null,
         idFacturaRectificada: _cleanText(movimiento?.idFacturaRectificada, 120) || null,
 
         datosOrigenAsiento: {
@@ -228,7 +228,7 @@ function _buildBase(movimiento) {
             idExterno: _cleanText(movimiento?.orderId || movimiento?.transactionId || movimiento?.refundId || sourceId, 120),
             orderId: _cleanText(movimiento?.orderId, 120) || null,
             refundId: _cleanText(movimiento?.refundId, 120) || null,
-            bookingIds: _cleanText(movimiento?.reservaIdVinculada, 500) || null,
+            bookingIds: _cleanText(movimiento?.linkedBookingIds, 500) || null,
         },
     };
 }
@@ -242,7 +242,7 @@ async function _buildLines(base, movimiento, map) {
     const taxRateValue = Number(movimiento?.taxRate ?? movimiento?.tasaIva);
     const taxRate = Number.isFinite(taxRateValue) ? taxRateValue : null;
 
-    const retencionIRPF = Math.abs(Number(movimiento?.importeRetencionIRPF) || 0);
+    const retencionIRPF = Math.abs(Number(movimiento?.irpfWithholdingAmount) || 0);
     const recargoEquivalencia = Math.abs(Number(movimiento?.importeRecargoEquivalencia) || 0);
 
     // [FIX-FISCAL-02] Cuenta de retencion segun rol
@@ -364,7 +364,7 @@ export async function projectLedgerMovementToAccounting(movimiento) {
             ...projected.lines.map((line) => line.lineHash),
         ].join("|");
 
-        const hashAsiento = await hashChain(base.hashOrigen, headerPayload);
+        const hashAsiento = await hashChain(base.sourceHash, headerPayload);
         const firmaAsiento = [
             await hmacSha256Hex(fiscalKey, headerPayload),
             hashAsiento,

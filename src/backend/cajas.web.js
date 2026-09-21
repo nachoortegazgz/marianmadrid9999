@@ -243,10 +243,10 @@ function _buildAEATPayload(mov, generatedAt) {
         }
     }
 
-    if (Number(mov.importeRetencionIRPF || 0) > 0) {
-        fields.push(["ImporteRetencionIRPF", String(Number(mov.importeRetencionIRPF).toFixed(2))]);
-        if (mov.baseImponibleRetencion > 0) {
-            fields.push(["BaseImponibleRetencion", String(Number(mov.baseImponibleRetencion).toFixed(2))]);
+    if (Number(mov.irpfWithholdingAmount || 0) > 0) {
+        fields.push(["ImporteRetencionIRPF", String(Number(mov.irpfWithholdingAmount).toFixed(2))]);
+        if (mov.withholdingBase > 0) {
+            fields.push(["BaseImponibleRetencion", String(Number(mov.withholdingBase).toFixed(2))]);
         }
         if (mov.rolFiscal) {
             fields.push(["RolFiscal", String(mov.rolFiscal).slice(0, 10)]);
@@ -257,7 +257,7 @@ function _buildAEATPayload(mov, generatedAt) {
         fields.push(["ImporteRecargoEquivalencia", String(Number(mov.importeRecargoEquivalencia).toFixed(2))]);
     }
 
-    if (mov.motivoRectificacion) fields.push(["MotivoRectificacion", String(mov.motivoRectificacion).slice(0, 4)]);
+    if (mov.correctionReason) fields.push(["MotivoRectificacion", String(mov.correctionReason).slice(0, 4)]);
     if (mov.idFacturaRectificada) fields.push(["IdFacturaRectificada", String(mov.idFacturaRectificada).slice(0, 120)]);
 
     return fields.map(([key, value]) => `${key}=${value}`).join("&");
@@ -484,7 +484,7 @@ export const registerManualTransaction = webMethod(Permissions.SiteMember, async
             return { status: "ERROR", data: null, error: { code: "INVALID_PAYMENT_METHOD", message: "Forma de pago invalida" } };
         }
 
-        const movementType = _safeTrim(payload?.tipoMovimiento || payload?.movementType || "VENTA").toUpperCase();
+        const movementType = _safeTrim(payload?.movementType || payload?.movementType || "VENTA").toUpperCase();
         const concept = _cleanText(payload?.concept || payload?.description || "Venta mostrador", 500);
         const resourceId = _safeTrim(payload?.resourceId || "CAJA_LOCAL");
         const transactionId = payload?.transactionId || null;
@@ -514,15 +514,15 @@ export const registerManualTransaction = webMethod(Permissions.SiteMember, async
             };
         }
 
-        const tipoRetencionIRPF = Number(payload?.tipoRetencionIRPF) || 0;
-        const baseImponibleRetencion = Number(payload?.baseImponibleRetencion) || 0;
-        let importeRetencionIRPF = Number(payload?.importeRetencionIRPF) || 0;
+        const tipoRetencionIRPF = Number(payload?.irpfWithholdingRate) || 0;
+        const baseImponibleRetencion = Number(payload?.withholdingBase) || 0;
+        let importeRetencionIRPF = Number(payload?.irpfWithholdingAmount) || 0;
 
         if (tipoRetencionIRPF > 0 && baseImponibleRetencion > 0 && importeRetencionIRPF === 0) {
             importeRetencionIRPF = _roundMoney(baseImponibleRetencion * tipoRetencionIRPF);
         }
 
-        const tipoRecargoEquivalencia = Number(payload?.tipoRecargoEquivalencia) || 0;
+        const tipoRecargoEquivalencia = Number(payload?.surchargeRate) || 0;
         let importeRecargoEquivalencia = Number(payload?.importeRecargoEquivalencia) || 0;
 
         if (tipoRecargoEquivalencia > 0 && importeRecargoEquivalencia === 0) {
@@ -548,7 +548,7 @@ export const registerManualTransaction = webMethod(Permissions.SiteMember, async
 
         const referenciaBancariaConciliacion = _safeTrim(payload?.referenciaBancariaConciliacion) || null;
         const claveRegistroFactura = _safeTrim(payload?.claveRegistroFactura) || null;
-        const motivoRectificacion = _safeTrim(payload?.motivoRectificacion) || null;
+        const motivoRectificacion = _safeTrim(payload?.correctionReason) || null;
         const idFacturaRectificada = _safeTrim(payload?.idFacturaRectificada) || null;
         const numeroSerieFacturaEmisor = _safeTrim(payload?.numeroSerieFacturaEmisor) || null;
 
@@ -626,7 +626,7 @@ export const registerManualTransaction = webMethod(Permissions.SiteMember, async
                 schemaIntegrityVersion: LEDGER_SCHEMA_VERSION,
                 recordSource: payload?.origen || payload?.recordSource || "INTERNAL",
                 resourceId,
-                reservaIdVinculada: _linkedBookingValue(payload?.reservaIdVinculada ?? payload?.reservationIdLinked),
+                reservaIdVinculada: _linkedBookingValue(payload?.linkedBookingIds ?? payload?.reservationIdLinked),
                 transactionId: transactionId || `TX_${seq.sequenceNumber}`,
                 orderId: payload?.orderId || null,
                 refundId: payload?.refundId || null,
@@ -672,7 +672,7 @@ export const registerManualTransaction = webMethod(Permissions.SiteMember, async
                 });
                 await queueFiscalRecovery({
                     transactionId: movBase.transactionId,
-                    bookingIds: movBase.reservaIdVinculada,
+                    bookingIds: movBase.linkedBookingIds,
                     amount,
                     paymentMethod,
                     concept,
@@ -822,7 +822,7 @@ async function _enqueueM365Sync(movimiento, traceId) {
         eventType: "LEDGER_MOVEMENT",
         correlationId: traceId,
         transactionId: movimiento.transactionId,
-        bookingReference: _linkedBookingValue(movimiento.reservaIdVinculada ?? movimiento.reservationIdLinked) || movimiento._id,
+        bookingReference: _linkedBookingValue(movimiento.linkedBookingIds ?? movimiento.reservationIdLinked) || movimiento._id,
         amount: movimiento.totalAmount,
         currency: "EUR",
         occurredAt: movimiento.registeredAt,
@@ -852,7 +852,7 @@ export async function registerBookingPayment(bookingIds, amount, method, meta = 
     return await registerManualTransaction({
         amount,
         paymentMethod: method,
-        tipoMovimiento: meta.tipoMovimiento || "VENTA_ONLINE",
+        tipoMovimiento: meta.movementType || "VENTA_ONLINE",
         concept: meta.concept || `Cobro reserva ${bookingIds}`,
         resourceId: meta.resourceId || "ONLINE",
         reservaIdVinculada: _linkedBookingValue(bookingIds),
@@ -864,12 +864,12 @@ export async function registerBookingPayment(bookingIds, amount, method, meta = 
         razonSocialTercero: meta.razonSocialTercero || null,
         esB2B: meta.esB2B === true,
 
-        tipoRetencionIRPF: meta.tipoRetencionIRPF || 0,
-        baseImponibleRetencion: meta.baseImponibleRetencion || 0,
-        importeRetencionIRPF: meta.importeRetencionIRPF || 0,
+        tipoRetencionIRPF: meta.irpfWithholdingRate || 0,
+        baseImponibleRetencion: meta.withholdingBase || 0,
+        importeRetencionIRPF: meta.irpfWithholdingAmount || 0,
         rolFiscal: meta.rolFiscal || ROL_FISCAL.EMISOR,
 
-        tipoRecargoEquivalencia: meta.tipoRecargoEquivalencia || 0,
+        tipoRecargoEquivalencia: meta.surchargeRate || 0,
 
         idAnticipoVinculado: meta.idAnticipoVinculado || null,
         estadoDevengoIVA,
@@ -877,7 +877,7 @@ export async function registerBookingPayment(bookingIds, amount, method, meta = 
         referenciaBancariaConciliacion: meta.referenciaBancariaConciliacion || null,
 
         claveRegistroFactura: meta.claveRegistroFactura || null,
-        motivoRectificacion: meta.motivoRectificacion || null,
+        motivoRectificacion: meta.correctionReason || null,
         idFacturaRectificada: meta.idFacturaRectificada || null,
     });
 }
@@ -899,7 +899,7 @@ export async function queueFiscalRecovery(recoveryData) {
             amount: Number(recoveryData.amount) || 0,
             concept: recoveryData.concept || "Fiscal recovery",
             paymentMethod: recoveryData.paymentMethod || null,
-            movementType: recoveryData.tipoMovimiento || recoveryData.movementType || null,
+            movementType: recoveryData.movementType || recoveryData.movementType || null,
             kind: "FISCAL_LEDGER",
             phase: recoveryData.phase || null,
             origin: recoveryData.origin || "FISCAL_RECOVERY",

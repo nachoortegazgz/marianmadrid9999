@@ -33,7 +33,7 @@ const SECRET_FIELD_NAMES = new Set([
 const PII_FIELD_NAMES = new Set([
     "email", "phone", "firstname", "lastname", "name",
     "contactdetails", "contact", "address", "ip", "ipaddress",
-    "telefono", "correo", "nombre", "apellidos",
+    "telefono", "correo", 'name', "apellidos",
 ]);
 
 // [LOG-08] Normaliza cualquier valor no-objeto a un objeto seguro.
@@ -62,7 +62,7 @@ function _maskByKey(lowerKey, val) {
     }
     if (
         lowerKey.includes("name") ||
-        lowerKey.includes("nombre") ||
+        lowerKey.includes('name') ||
         lowerKey.includes("apellidos")
     ) {
         return _maskName(String(val));

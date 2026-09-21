@@ -1,0 +1,102 @@
+[
+  {
+    "file": "/workspace/src/backend/audit.js",
+    "changes": 0
+  },
+  {
+    "file": "/workspace/src/backend/bookingServiceSync.js",
+    "changes": 0
+  },
+  {
+    "file": "/workspace/src/backend/cajas.web.js",
+    "changes": 22
+  },
+  {
+    "file": "/workspace/src/backend/citasManager.web.js",
+    "changes": 0
+  },
+  {
+    "file": "/workspace/src/backend/contabilidad.js",
+    "changes": 13
+  },
+  {
+    "file": "/workspace/src/backend/crons.js",
+    "changes": 0
+  },
+  {
+    "file": "/workspace/src/backend/data.js",
+    "changes": 54
+  },
+  {
+    "file": "/workspace/src/backend/eventLog.js",
+    "changes": 210
+  },
+  {
+    "file": "/workspace/src/backend/events.js",
+    "changes": 42
+  },
+  {
+    "file": "/workspace/src/backend/fiscalAggregator.web.js",
+    "changes": 7
+  },
+  {
+    "file": "/workspace/src/backend/fiscalDocuments.web.js",
+    "changes": 1
+  },
+  {
+    "file": "/workspace/src/backend/horario.web.js",
+    "changes": 0
+  },
+  {
+    "file": "/workspace/src/backend/http-functions.js",
+    "changes": 0
+  },
+  {
+    "file": "/workspace/src/backend/internalConfig.js",
+    "changes": 1
+  },
+  {
+    "file": "/workspace/src/backend/inventario.web.js",
+    "changes": 0
+  },
+  {
+    "file": "/workspace/src/backend/logger.js",
+    "changes": 2
+  },
+  {
+    "file": "/workspace/src/backend/m365GraphSync.js",
+    "changes": 1
+  },
+  {
+    "file": "/workspace/src/backend/marianAssistant.web.js",
+    "changes": 0
+  },
+  {
+    "file": "/workspace/src/backend/mmSecrets.js",
+    "changes": 0
+  },
+  {
+    "file": "/workspace/src/backend/reservas.web.js",
+    "changes": 1
+  },
+  {
+    "file": "/workspace/src/backend/responseUtils.js",
+    "changes": 0
+  },
+  {
+    "file": "/workspace/src/backend/security.js",
+    "changes": 0
+  },
+  {
+    "file": "/workspace/src/backend/security.web.js",
+    "changes": 0
+  },
+  {
+    "file": "/workspace/src/backend/securityEngine.js",
+    "changes": 0
+  },
+  {
+    "file": "/workspace/src/backend/staff.js",
+    "changes": 0
+  }
+]
