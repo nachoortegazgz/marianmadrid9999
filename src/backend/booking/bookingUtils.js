@@ -1,26 +1,19 @@
 /*
 =============================================================================
 MODULE: backend/booking/bookingUtils.js
-VERSION: v5008.3-STAFF-LOAD-BALANCE
+VERSION: v5008.3-FINAL
 BASE: v5002.6 + consolidacion de helpers compartidos
 STANDARDS: G10 ASCII Strict
-
-FIXES:
-  - FIX-R2: pickStaffByLowestLoad for dual staff balance.
 
 RESPONSIBILITY: Helpers compartidos entre reservas, citas, bookingSaga y
                 bookingCore. Elimina duplicacion y garantiza coherencia.
 
 FIXES APLICADOS:
-  - FIX-18: cleanGuid, cleanGuidList (unificado).
+  - FIX-18: cleanGuid, cleanGuidList.
   - FIX-26: numberOrZero, booleanValue.
-  - FIX-16: toUtcRange (conversion Madrid -> UTC).
-  - FIX-17: validateSlotDuration (dual mode: range o fijo).
-
-COMPATIBILIDAD:
-  - Conserva las firmas de v5002.6 para no romper consumidores actuales.
-  - resolveLinkedPhase2Duration mantiene el patron (linkedId, traceId,
-    visited, resolver).
+  - FIX-16: toUtcRange.
+  - FIX-17: validateSlotDuration.
+  - FIX-R2: pickStaffByLowestLoad (balanceo de carga staff).
 =============================================================================
 */
 
@@ -34,6 +27,10 @@ import {
 import { logger } from "backend/logger";
 
 const log = logger;
+
+// =============================================================================
+// BLOQUE 1 - GUID Y COERCION
+// =============================================================================
 
 export function cleanGuid(value, errorCode = "INVALID_GUID") {
     const clean = _safeTrim(value);
@@ -83,6 +80,10 @@ export function booleanValue(...values) {
     return values.some((value) => value === true);
 }
 
+// =============================================================================
+// BLOQUE 2 - GAP Y UTC RANGES
+// =============================================================================
+
 export function computeGapMinutes(f1EndUtc, f2StartUtc) {
     if (
         !(f1EndUtc instanceof Date) ||
@@ -119,6 +120,10 @@ export function toUtcRange(startLocal, endLocal) {
 
     return { startUtc, endUtc };
 }
+
+// =============================================================================
+// BLOQUE 3 - DURATION RANGE
+// =============================================================================
 
 export function readDurationRange(item) {
     const constraints =
@@ -160,6 +165,10 @@ export function readDurationRange(item) {
 
     return { min, max };
 }
+
+// =============================================================================
+// BLOQUE 4 - DURACION EFECTIVA
+// =============================================================================
 
 export function resolveExpectedSlotMinutes(serviceConfig) {
     if (!serviceConfig) {
@@ -228,6 +237,10 @@ export async function resolveLinkedPhase2Duration(
         0
     );
 }
+
+// =============================================================================
+// BLOQUE 5 - VALIDACION DE DURACION DE SLOT
+// =============================================================================
 
 export function validateSlotDuration({
     serviceConfig,
@@ -303,56 +316,50 @@ export function validateSlotDuration({
     return result;
 }
 
-/**
- * Picks shared resourceId with lowest load. Ties break by sorted GUID.
- * loadByResource maps resourceId -> count of non-cancelled day bookings.
- */
-export function pickStaffByLowestLoad(shared, loadByResource) {
-    if (!Array.isArray(shared) || shared.length === 0) {
+// =============================================================================
+// BLOQUE 6 - [FIX-R2] BALANCEO DE CARGA DE STAFF
+//
+// Elige el recurso con menor carga del mapa loadByResource. En empates,
+// orden alfabetico determinista. Si el mapa esta vacio, primer alfabetico.
+//
+// Uso: reservas.web.js (dual), revalidateExactAvailabilitySlot cuando no
+// hay requiredResourceId y hay multiples candidatos.
+// =============================================================================
+
+export function pickStaffByLowestLoad(candidates, loadByResource) {
+    const ids = Array.isArray(candidates)
+        ? Array.from(
+            new Set(
+                candidates
+                    .map((id) => _safeTrim(id))
+                    .filter((id) => _looksLikeGuid(id))
+            )
+        )
+        : [];
+
+    if (ids.length === 0) {
         return null;
     }
 
-    const cleaned = [];
-    const seen = new Set();
+    const loadMap =
+        loadByResource && typeof loadByResource === "object"
+            ? loadByResource
+            : {};
 
-    for (const value of shared) {
-        const id = typeof value === "string" ? value.trim() : "";
-        if (!id || seen.has(id)) continue;
-        seen.add(id);
-        cleaned.push(id);
-    }
+    const sorted = ids.slice().sort((a, b) => a.localeCompare(b));
 
-    if (cleaned.length === 0) return null;
-    if (cleaned.length === 1) return cleaned[0];
+    let best = sorted[0];
+    let bestLoad = Number(loadMap[best] || 0);
 
-    cleaned.sort();
+    for (let i = 1; i < sorted.length; i += 1) {
+        const id = sorted[i];
+        const load = Number(loadMap[id] || 0);
 
-    let bestId = cleaned[0];
-    let bestLoad = Number(
-        loadByResource && loadByResource[bestId] != null
-            ? loadByResource[bestId]
-            : 0
-    );
-
-    if (!Number.isFinite(bestLoad) || bestLoad < 0) {
-        bestLoad = 0;
-    }
-
-    for (let i = 1; i < cleaned.length; i++) {
-        const id = cleaned[i];
-        let load = Number(
-            loadByResource && loadByResource[id] != null
-                ? loadByResource[id]
-                : 0
-        );
-        if (!Number.isFinite(load) || load < 0) {
-            load = 0;
-        }
         if (load < bestLoad) {
-            bestId = id;
+            best = id;
             bestLoad = load;
         }
     }
 
-    return bestId;
+    return best;
 }
