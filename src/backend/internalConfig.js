@@ -484,3 +484,67 @@ export const EU_VAT_PREFIXES = Object.freeze([
     "FI", "FR", "HR", "HU", "IE", "IT", "LT", "LU", "LV", "MT",
     "NL", "PL", "PT", "RO", "SE", "SI", "SK", "XI",
 ]);
+
+// =============================================================================
+// BLOQUE 22 - TIPOS DE EVENTO (event sourcing)
+// =============================================================================
+
+export const TIPO_EVENTO = Object.freeze({
+    VENTA_LINEA:   "VENTA_LINEA",
+    COMPRA_LINEA:  "COMPRA_LINEA",
+    CIERRE_Z:      "CIERRE_Z",
+    AJUSTE:        "AJUSTE",
+    RECTIFICATIVA: "RECTIFICATIVA",
+    MOV_STOCK:     "MOV_STOCK"
+});
+
+// =============================================================================
+// BLOQUE 23 - NATURALEZA DE ITEM (catalogo)
+// =============================================================================
+
+export const NATURALEZA_ITEM = Object.freeze({
+    SERVICIO_PROPIO: "SERVICIO_PROPIo",
+    PRODUCTO_VENTA:  "PRODUCTO_VENTA",
+    PRODUCTO_USO:    "PRODUCTO_USO",
+    GASTO_FIJO:      "GASTO_FIJO"
+});
+
+// =============================================================================
+// BLOQUE 24 - TIPO DE TERCERO
+// =============================================================================
+
+export const TIPO_TERCERO = Object.freeze({
+    CLIENTE:   "CLIENTE",
+    PROVEEDOR: "PROVEEDOR",
+    STAFF:     "STAFF",
+    AAPP:      "AAPP",
+    MIXTO:     "MIXTO"
+});
+
+// =============================================================================
+// BLOQUE 25 - ESTADO DE PROYECCION
+// =============================================================================
+
+export const PROYECCION_ESTADO = Object.freeze({
+    PENDIENTE: "PENDIENTE",
+    OK:        "OK",
+    ERROR:     "ERROR"
+});
+
+// =============================================================================
+// BLOQUE 26 - SISTEMA INFORMATICO (Verifactu)
+// Fallback si ConfiguracionFiscal.sistemaInformatico esta vacio.
+// =============================================================================
+
+export const SISTEMA_INFORMATICO = Object.freeze({
+    nombreSistemaInformatico:    "Marian Madrid Velo",
+    idSistemaInformatico:        "MM-VELO-001",
+    version:                     "v5009",
+    numeroInstalacion:           "1",
+    tipoUsoPosibleSoloVerifactu: "S",
+    tipoUsoPosibleMultiOT:       "N",
+    indicadorMultiplesOT:        "N",
+    nifProductor:                "B12345678",
+    nombreRazonProductor:        "Marian Madrid SL"
+});
+
