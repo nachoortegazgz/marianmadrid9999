@@ -1,7 +1,7 @@
 /*
 =============================================================================
 MODULE: backend/crons.js
-VERSION: v5008.1-COMPENSATION-CACHE
+VERSION: v5008.2-FISCAL-RECOVERY
 BASE: BIBLIA v5002.5 Bloque 4.5 + DIRECTRICES V19
 RESPONSIBILITY: Jobs programados (cron). 6 crons activos.
 STANDARDS: G10 ASCII Strict (0 non-ASCII characters).
@@ -13,6 +13,8 @@ CORRECTIONS APPLIED:
             en lugar de marcar COMPLETED sin accion (alineado Writer V2).
   [CRON-05] cleanupExpiredDualCache purga COLLECTIONS.DUAL_SLOT_CACHE en sitio
             (ya no depende de export ausente en reservas.web).
+  [CRON-06] runPendingCompensationsJob procesa tambien PENDING_RECOVERY
+            (FISCAL_LEDGER / RESYNC_LEDGER_ACCOUNTING) con alertas.
 =============================================================================
 */
 
@@ -124,15 +126,64 @@ async function _runOneCompensation(comp, traceId) {
     return { ok: true, action: "CANCEL_BOOKING", bookingId };
   }
 
+  // FIX CRON-06: fiscal recovery queue (PENDING_RECOVERY)
+  if (kind === "FISCAL_LEDGER" || kind === "RESYNC_LEDGER_ACCOUNTING") {
+    // Best-effort: re-attempt booking payment ledger when enough data exists.
+    // Full re-sign / PGC resync may still need operator; we surface FAILED + alert.
+    try {
+      const { registerBookingPayment } = await import("backend/cajas.web");
+      const amount = Number(comp?.amount);
+      const hasAmount = Number.isFinite(amount) && amount !== 0;
+      const transactionId = _safeTrim(comp?.transactionId);
+      const bookingIds = comp?.bookingIds || comp?.bookingId || null;
+
+      if (kind === "FISCAL_LEDGER" && hasAmount && transactionId) {
+        const result = await withTimeout(
+          () =>
+            registerBookingPayment(bookingIds, amount, comp?.paymentMethod || "ONLINE", {
+              concept: comp?.concept || "Fiscal recovery retry",
+              transactionId: transactionId,
+              orderId: comp?.orderId || null,
+              refundId: comp?.refundId || null,
+              tipoMovimiento: comp?.movementType || null,
+              origen: "CRON_FISCAL_RECOVERY",
+              resourceId: "online",
+              traceId: traceId,
+            }),
+          API_TIMEOUT_MS,
+          "cron:fiscalLedgerRecovery"
+        );
+
+        if (result?.status === "SUCCESS") {
+          return { ok: true, action: kind, transactionId };
+        }
+
+        throw new Error(
+          (result && result.error && result.error.message) ||
+            "FISCAL_LEDGER recovery returned non-SUCCESS"
+        );
+      }
+
+      // RESYNC or incomplete payload: mark for operator via alert path
+      throw new Error(
+        kind +
+          " requires manual or extended processor (payload incomplete or RESYNC)"
+      );
+    } catch (err) {
+      throw err;
+    }
+  }
+
   throw new Error(`Unsupported compensation kind: ${kind || "UNKNOWN"}`);
 }
 
 export async function runPendingCompensationsJob() {
   const traceId = makeTraceId("cron-comp");
   try {
+    // FIX CRON-06: include fiscal recovery statuses
     const res = await wixData
       .query(COLLECTIONS.COMPENSACIONES_PENDIENTES)
-      .in("status", ["PENDING", "RETRYING"])
+      .in("status", ["PENDING", "RETRYING", "PENDING_RECOVERY"])
       .lt("attempts", MAX_COMPENSATION_ATTEMPTS)
       .limit(
         Number(SDK_CONFIG?.JOBS?.FISCAL_RECOVERY_BATCH_SIZE) || 25
@@ -176,9 +227,13 @@ export async function runPendingCompensationsJob() {
             .insert(
               COLLECTIONS.ALERTAS_OPERATIVAS,
               {
-                alertType: "COMPENSATION_FAILED",
+                alertType:
+                  String(comp.kind || "").includes("FISCAL") ||
+                  String(comp.kind || "").includes("RESYNC")
+                    ? "FISCAL_RECOVERY_FAILED"
+                    : "COMPENSATION_FAILED",
                 severity: "ERROR",
-                message: `Compensation ${comp.kind || "UNKNOWN"} failed for booking ${comp.bookingId || "n/a"}`,
+                message: `Compensation ${comp.kind || "UNKNOWN"} failed for booking ${comp.bookingId || comp.transactionId || "n/a"}`,
                 status: "OPEN",
                 traceId,
                 meta: {

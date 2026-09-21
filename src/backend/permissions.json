@@ -1,3 +1,42 @@
 {
-  "web-methods": { }
+  "web-methods": {
+    "reservas.web.js": {
+      "getServiceBySlugOrId": "Anyone",
+      "getAvailableDays": "Anyone",
+      "getAvailableSlots": "Anyone",
+      "getCertifiedDualSlots": "Anyone",
+      "resolveStaffForSlot": "Anyone"
+    },
+    "citasManager.web.js": {
+      "processDualBooking": "Anyone",
+      "confirmPayment": "SiteMember"
+    },
+    "security.web.js": {
+      "checkStaffCollaboratorAccess": "SiteMember"
+    },
+    "cajas.web.js": {
+      "getCashierState": "SiteMember",
+      "registerManualTransaction": "SiteMember",
+      "registerZClosing": "SiteMember"
+    },
+    "inventario.web.js": {
+      "getInventoryDashboard": "SiteMember",
+      "getInventoryReconciliationQueue": "SiteMember"
+    },
+    "fiscalAggregator.web.js": {
+      "getQuarterlyTaxSummary": "SiteMember",
+      "getLibroRegistroFacturasExpedidas": "SiteMember"
+    },
+    "fiscalDocuments.web.js": {
+      "previewManagerPackage": "SiteMember",
+      "createManagerPackageVersion": "SiteMember",
+      "getManagerPackageHistory": "SiteMember",
+      "getPreparedManagerPackages": "SiteMember",
+      "downloadManagerPackageVersion": "SiteMember",
+      "emailManagerPackageVersion": "SiteMember"
+    },
+    "marianAssistant.web.js": {
+      "askMarianAssistant": "SiteMember"
+    }
+  }
 }
