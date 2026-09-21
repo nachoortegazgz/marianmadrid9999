@@ -2,40 +2,35 @@
 =============================================================================
 MODULE: backend/eventLog.js
 VERSION: v5009-FISCAL
-BASE: v5008.5 + SSOT v5009 + DOSSIER CAJA + CONSOLIDACION v1
-RESPONSIBILITY: Motor atomico de registro fiscal (append-only). Cabecera +
-                detalle + encadenamiento Verifactu + proyeccion secundaria.
+BASE: v5008.5 + SSOT v5009 + DOSSIER CAJA + CONSOLIDACION v2
+RESPONSIBILITY: Motor atomico de registro fiscal (append-only) + proyector
+                secundario + API fiscal completa (ventas, compras, consultas).
 STANDARDS: G10 ASCII Strict.
 
 REGLAS DE DISENO (decision tecnica consolidada):
   - eventLog.js es el UNICO escritor de MovimientosCaja (append-only).
   - Reutiliza hashSHA256 / hashChain de backend/securityEngine.
   - Reutiliza _lockSlotKeyOrFail / _unlockSlotKey de bookingCore para la
-    secuencia global (mismo lock que usa cajas.web.js v5008.5).
+    secuencia global (mismo lock que cajas.web.js v5009).
   - Reutiliza _formatAEATDateTimeMadrid (formato identico a v5008.5) para
     preservar la integridad de la cadena ya existente.
-  - Mantiene DUAL WRITE durante transicion: escribe campos AEAT
-    (numSerieFactura, huella, ...) Y campos legacy (invoiceNumber,
-    currentRecordHash, ...) con el MISMO valor. La cadena se lee desde
-    legacy para no romper verifyFiscalHashChainIntegrity existente.
-  - Delega la proyeccion contable en contabilidad.projectLedgerMovementToAccounting
-    y la de stock en inventario.web.recordInventoryMovementSafe.
-  - NO duplica verifyFiscalHashChainIntegrity (vive en cajas.web.js como
-    webMethod Admin).
+  - Dual write: escribe campos AEAT (numSerieFactura, huella, ...) Y campos
+    legacy (invoiceNumber, currentRecordHash, ...) con el MISMO valor. La
+    cadena se lee desde legacy para no romper verifyFiscalHashChainIntegrity.
+  - Delega proyeccion contable en contabilidad.projectLedgerMovementToAccounting.
+  - Delega proyeccion stock en inventario.web.recordInventoryMovementSafe
+    (import dinamico para evitar ciclos).
+  - Absorbe facturasRecibidas.web.js (Seccion 4). Sin modulo separado.
 
 FIXES APLICADOS v5009:
-  - FIX-EV-01: secuencia global reutiliza el lock de bookingCore. Sin race
-    entre cajas.web.js legacy y eventLog.js.
-  - FIX-EV-02: payload AEAT identico al de cajas.web.js (key=value&key=value)
-    para preservar la cadena SHA-256 existente.
-  - FIX-EV-03: escribe AMBOS juegos de campos (AEAT + legacy) con el mismo
-    valor (dual write).
-  - FIX-EV-04: proyeccion contable delega en contabilidad.js. Sin logica
-    duplicada.
-  - FIX-EV-05: proyeccion de stock delega en inventario.web.js via import
-    dinamico (evita ciclo estatico).
-  - FIX-EV-06: reconciliarProyecciones es idempotente y silenciosa.
+  - FIX-EV-01: secuencia global reutiliza lock de bookingCore.
+  - FIX-EV-02: payload AEAT identico al de cajas.web.js v5008.5.
+  - FIX-EV-03: dual write (AEAT + legacy) con mismo valor.
+  - FIX-EV-04: proyeccion contable delega en contabilidad.js.
+  - FIX-EV-05: proyeccion stock delega en inventario.web.js (import dinamico).
+  - FIX-EV-06: reconciliarProyecciones idempotente y silenciosa.
   - FIX-EV-07: errores de proyeccion NUNCA propagan al caller del motor.
+  - FIX-EV-08: absorbe API de compras (registrar/get/listar/actualizar).
 =============================================================================
 */
 
@@ -99,8 +94,10 @@ const PROYECCION_BATCH_LIMIT = 25;
 const PROYECCION_TIMEOUT_MS =
     Number(SDK_CONFIG?.TIMEOUTS?.API_MS) || 15000;
 
+const ESTADOS_PAGO_FACTURA = Object.freeze(["PENDIENTE", "PAGADO", "PARCIAL"]);
+
 // ============================================================================
-// HELPERS DE FECHA / AEAT (identicos a cajas.web.js v5008.5)
+// SECCION 1 - HELPERS DE FECHA / AEAT
 // ============================================================================
 
 function _formatAEATDate(ymd) {
@@ -165,9 +162,8 @@ function _generateVerificationQR(invoiceNumber, businessTaxId, operationDate, to
     return `${baseUrl}?${params.join("&")}`;
 }
 
-// [FIX-EV-02] Payload AEAT identico al de cajas.web.js v5008.5
-// para preservar la cadena SHA-256 existente. Los campos se aceptan en
-// nomenclatura AEAT o legacy indistintamente.
+// [FIX-EV-02] Payload AEAT identico al de cajas.web.js v5008.5.
+// Acepta nomenclatura AEAT o legacy indistintamente.
 function _buildAEATPayload(mov, generatedAt) {
     const nifDest = _safeTrim(mov.nifDestinatario || mov.nifTercero);
     const nombreDest = _safeTrim(mov.nombreRazonDestinatario || mov.razonSocialTercero);
@@ -224,9 +220,10 @@ function _buildAEATPayload(mov, generatedAt) {
 }
 
 // ============================================================================
-// [FIX-EV-01] SECUENCIA GLOBAL — lock compartido con cajas.web.js
+// SECCION 2 - SECUENCIA GLOBAL Y ULTIMO EVENTO
 // ============================================================================
 
+// [FIX-EV-01] Lock compartido con cajas.web.js
 export async function _getNextSequenceInternal(traceId) {
     const lockOwnerId = `seq_${traceId || makeTraceId("seq")}`;
 
@@ -309,7 +306,7 @@ async function _getUltimoEventoCaja() {
 }
 
 // ============================================================================
-// MAESTROS
+// SECCION 3 - MAESTROS
 // ============================================================================
 
 async function _upsertDatosFiscales({ nifCif, razonSocial, tipoTercero, datosContacto }, traceId) {
@@ -348,7 +345,7 @@ async function _getServicioCatalogo(catalogoId, traceId) {
 }
 
 // ============================================================================
-// PAYLOAD FISCAL (snapshot inmutable guardado en el doc)
+// SECCION 4 - PAYLOAD FISCAL (snapshot inmutable guardado en el doc)
 // ============================================================================
 
 function _buildPayloadFiscalSnapshot({
@@ -398,7 +395,7 @@ function _buildPayloadFiscalSnapshot({
 }
 
 // ============================================================================
-// MOTOR — registrarEventoEconomico
+// SECCION 5 - MOTOR — registrarEventoEconomico
 // ============================================================================
 
 export async function registrarEventoEconomico(input) {
@@ -610,7 +607,7 @@ export async function registrarEventoEconomico(input) {
 }
 
 // ============================================================================
-// PROYECCION SECUNDARIA — delega en modulos existentes
+// SECCION 6 - PROYECCION SECUNDARIA
 // ============================================================================
 
 async function _proyectarSegunTipoEvento(cabecera, detalleIds, traceId) {
@@ -750,7 +747,7 @@ async function _proyectarCierreZ(cabecera, traceId) {
 }
 
 // ============================================================================
-// WEB METHODS DE CONSULTA
+// SECCION 7 - CONSULTAS DE EVENTOS
 // ============================================================================
 
 export const getEventoPorId = webMethod(
@@ -788,59 +785,7 @@ export const getEventoPorId = webMethod(
 // webMethod Admin. eventLog.js NO duplica esa funcion.
 
 // ============================================================================
-// RECONCILIACION (cron)
-// ============================================================================
-
-// [FIX-EV-06] Idempotente y silenciosa. Reprocesa eventos con proyeccionEstado
-// PENDIENTE o ERROR. Como MovimientosCaja es append-only, no actualizamos el
-// estado; la proyeccion se reintenta hasta exito y las proyecciones usan
-// _id deterministico o catch de Duplicated para ser idempotentes.
-export async function reconciliarProyecciones() {
-    const traceId = makeTraceId("recon");
-    let procesados = 0;
-    let fallidos = 0;
-    try {
-        const pendientes = await wixData
-            .query(COLLECTIONS.MOVIMIENTOS_CAJA)
-            .ne("proyeccionEstado", PROYECCION_ESTADO.OK)
-            .descending("sequenceNumber")
-            .limit(PROYECCION_BATCH_LIMIT)
-            .find({ suppressAuth: true });
-
-        for (const evento of pendientes.items || []) {
-            try {
-                await withTimeout(
-                    _proyectarSegunTipoEvento(evento, evento.proyeccionDetalleIds || [], traceId),
-                    PROYECCION_TIMEOUT_MS,
-                    "reconciliarProyecciones"
-                );
-                procesados += 1;
-            } catch (err) {
-                fallidos += 1;
-                log.warn("Reconciliacion fallo", {
-                    traceId,
-                    eventoId: evento._id,
-                    message: err?.message,
-                });
-            }
-        }
-
-        return { status: "SUCCESS", data: { procesados, fallidos, total: pendientes.items?.length || 0 } };
-    } catch (err) {
-        log.error("reconciliarProyecciones fallo global", { traceId, message: err?.message });
-        return { status: "ERROR", data: { procesados, fallidos }, error: { code: "RECON_FAIL", message: err?.message } };
-    }
-}
-
-export default {
-    registrarEventoEconomico,
-    getEventoPorId,
-    reconciliarProyecciones,
-    _getNextSequenceInternal,
-};
-
-// ============================================================================
-// SECCION 4 - API DE COMPRAS (absorbe facturasRecibidas.web.js)
+// SECCION 8 - API DE COMPRAS (absorbe facturasRecibidas.web.js)
 // ============================================================================
 
 export const registrarFacturaRecibida = webMethod(
@@ -851,21 +796,27 @@ export const registrarFacturaRecibida = webMethod(
             // 1. Validacion minima
             const nifEmisor = _safeTrim(payload?.nifEmisor).toUpperCase();
             if (!nifEmisor) {
-                return { status: "ERROR", data: null,
-                    error: { code: "NIF_EMISOR_REQUERIDO", message: "nifEmisor obligatorio" } };
+                return {
+                    status: "ERROR", data: null,
+                    error: { code: "NIF_EMISOR_REQUERIDO", message: "nifEmisor obligatorio" },
+                };
             }
             const numSerie = _safeTrim(payload?.numSerieFactura);
             if (!numSerie) {
-                return { status: "ERROR", data: null,
-                    error: { code: "NUM_SERIE_REQUERIDO", message: "numSerieFactura obligatorio" } };
+                return {
+                    status: "ERROR", data: null,
+                    error: { code: "NUM_SERIE_REQUERIDO", message: "numSerieFactura obligatorio" },
+                };
             }
             const importeTotal = Number(payload?.importeTotal) || 0;
             if (importeTotal <= 0) {
-                return { status: "ERROR", data: null,
-                    error: { code: "IMPORTE_INVALIDO", message: "importeTotal > 0" } };
+                return {
+                    status: "ERROR", data: null,
+                    error: { code: "IMPORTE_INVALIDO", message: "importeTotal > 0" },
+                };
             }
 
-            // 2. Idempotencia por numSerie+NIF
+            // 2. Idempotencia por numSerie + NIF emisor
             const existing = await wixData
                 .query(COLLECTIONS.FACTURAS_RECIBIDAS)
                 .eq("numSerieFactura", numSerie)
@@ -873,7 +824,12 @@ export const registrarFacturaRecibida = webMethod(
                 .limit(1)
                 .find({ suppressAuth: true });
             if (existing?.items?.[0]) {
-                return { status: "SUCCESS", data: existing.items[0], error: null, idempotent: true };
+                return {
+                    status: "SUCCESS",
+                    data: existing.items[0],
+                    error: null,
+                    idempotent: true,
+                };
             }
 
             // 3. Delegar en el motor
@@ -909,8 +865,10 @@ export const registrarFacturaRecibida = webMethod(
             return eventResult;
         } catch (err) {
             log.error("registrarFacturaRecibida fallo", { traceId, message: err?.message });
-            return { status: "ERROR", data: null,
-                error: { code: "FACT_REC_FAIL", message: err?.message } };
+            return {
+                status: "ERROR", data: null,
+                error: { code: "FACT_REC_FAIL", message: err?.message },
+            };
         }
     }
 );
@@ -958,7 +916,11 @@ export const listarFacturasRecibidas = webMethod(
             const limit = Math.min(Number(filters?.limit) || 50, 200);
             const res = await q.descending("fechaExpedicionFactura").limit(limit)
                 .find({ suppressAuth: true });
-            return { status: "SUCCESS", data: { items: res.items || [], total: res.totalCount }, error: null };
+            return {
+                status: "SUCCESS",
+                data: { items: res.items || [], total: res.totalCount },
+                error: null,
+            };
         } catch (err) {
             log.error("listarFacturasRecibidas fallo", { traceId, message: err?.message });
             return { status: "ERROR", data: null, error: { code: "QUERY_FAILED" } };
@@ -981,8 +943,11 @@ export const actualizarEstadoPagoFactura = webMethod(
                 return { status: "ERROR", data: null, error: { code: "NOT_FOUND" } };
             }
             const estado = _safeTrim(nuevoEstado).toUpperCase();
-            if (!["PENDIENTE", "PAGADO", "PARCIAL"].includes(estado)) {
-                return { status: "ERROR", data: null, error: { code: "INVALID_ESTADO" } };
+            if (!ESTADOS_PAGO_FACTURA.includes(estado)) {
+                return {
+                    status: "ERROR", data: null,
+                    error: { code: "INVALID_ESTADO", message: `estado debe ser ${ESTADOS_PAGO_FACTURA.join("|")}` },
+                };
             }
             await wixData.update(COLLECTIONS.FACTURAS_RECIBIDAS, {
                 _id: facturaId,
@@ -991,10 +956,86 @@ export const actualizarEstadoPagoFactura = webMethod(
                 medioPago: meta?.medioPago || factura.medioPago,
                 _updatedDate: new Date(),
             }, { suppressAuth: true });
-            return { status: "SUCCESS", data: { facturaId, estadoPago: estado }, error: null };
+            return {
+                status: "SUCCESS",
+                data: { facturaId, estadoPago: estado },
+                error: null,
+            };
         } catch (err) {
             log.error("actualizarEstadoPagoFactura fallo", { traceId, message: err?.message });
             return { status: "ERROR", data: null, error: { code: "UPDATE_FAILED" } };
         }
     }
 );
+
+// ============================================================================
+// SECCION 9 - RECONCILIACION (cron)
+// ============================================================================
+
+// [FIX-EV-06] Idempotente y silenciosa. Reprocesa eventos con proyeccionEstado
+// PENDIENTE o ERROR. Como MovimientosCaja es append-only, no actualizamos el
+// estado; la proyeccion se reintenta hasta exito y las proyecciones usan
+// _id deterministico o catch de Duplicated para ser idempotentes.
+export async function reconciliarProyecciones() {
+    const traceId = makeTraceId("recon");
+    let procesados = 0;
+    let fallidos = 0;
+    try {
+        const pendientes = await wixData
+            .query(COLLECTIONS.MOVIMIENTOS_CAJA)
+            .ne("proyeccionEstado", PROYECCION_ESTADO.OK)
+            .descending("sequenceNumber")
+            .limit(PROYECCION_BATCH_LIMIT)
+            .find({ suppressAuth: true });
+
+        for (const evento of pendientes.items || []) {
+            try {
+                await withTimeout(
+                    _proyectarSegunTipoEvento(evento, evento.proyeccionDetalleIds || [], traceId),
+                    PROYECCION_TIMEOUT_MS,
+                    "reconciliarProyecciones"
+                );
+                procesados += 1;
+            } catch (err) {
+                fallidos += 1;
+                log.warn("Reconciliacion fallo", {
+                    traceId,
+                    eventoId: evento._id,
+                    message: err?.message,
+                });
+            }
+        }
+
+        return {
+            status: "SUCCESS",
+            data: { procesados, fallidos, total: pendientes.items?.length || 0 },
+        };
+    } catch (err) {
+        log.error("reconciliarProyecciones fallo global", { traceId, message: err?.message });
+        return {
+            status: "ERROR",
+            data: { procesados, fallidos },
+            error: { code: "RECON_FAIL", message: err?.message },
+        };
+    }
+}
+
+// ============================================================================
+// EXPORTS
+// ============================================================================
+
+export default {
+    // Motor
+    registrarEventoEconomico,
+    _getNextSequenceInternal,
+
+    // Consultas
+    getEventoPorId,
+    reconciliarProyecciones,
+
+    // API de compras
+    registrarFacturaRecibida,
+    getFacturaRecibida,
+    listarFacturasRecibidas,
+    actualizarEstadoPagoFactura,
+};
