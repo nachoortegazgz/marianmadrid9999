@@ -1,17 +1,22 @@
 /*
 =============================================================================
 MODULE: backend/cajas.web.js
-VERSION: v5008.5-FISCAL
+VERSION: v5009-FISCAL
+BASE: v5008.5-FISCAL + consolidacion secuencia global
 RESPONSIBILITY: TPV cashier ledger, daily closures, Veri*factu SHA-256
                 chain integrity, fiscal persistence, M365 sync enqueue.
 STANDARDS: G10 ASCII Strict.
 
-FIXES APLICADOS v5008.5-FISCAL:
+FIXES APLICADOS v5009-FISCAL (respecto a v5008.5):
+  - CONSOL-01: _getNextSequence delega en eventLog._getNextSequenceInternal.
+               Lock unico FISCAL_SEQUENCE_LOCK. Sin race entre cajas.web.js
+               y eventLog.js.
+  - CONSOL-02: _isDuplicateItemError eliminado (vive en eventLog).
+  - CONSOL-03: cabecera alineada a v5009.
+
+FIXES APLICADOS v5008.5-FISCAL (heredados):
   - FIX-FISCAL-01: Calculo base/IVA correcto cuando hay retencion.
-                   Si payload.baseImponibleRetencion > 0, se usa como base
-                   y se valida cuadre: base + IVA - retencion == amount.
-  - FIX-FISCAL-02: Campo rolFiscal (EMISOR|RECEPTOR) propagado al
-                   movimiento. Determina la cuenta contable de retencion.
+  - FIX-FISCAL-02: Campo rolFiscal propagado al movimiento.
   - FIX-FISCAL-03: Asientos descuadrados se encolan en
                    CompensacionesPendientes con kind RESYNC_LEDGER_ACCOUNTING.
   - Heredados: K-01..K-06 (detalles fiscales), FIX-48, FIX-49.
@@ -65,6 +70,9 @@ import { _lockSlotKeyOrFail, _unlockSlotKey } from "backend/booking/bookingCore"
 import { logAuditEvent } from "backend/audit";
 import { projectLedgerMovementToAccounting } from "backend/contabilidad";
 
+// [CONSOL-01] Secuencia unica compartida con eventLog.js
+import { _getNextSequenceInternal } from "backend/eventLog";
+
 const log = logger;
 
 // ============================================================================
@@ -72,14 +80,10 @@ const log = logger;
 // ============================================================================
 
 const CAJA_ACTUAL_ID = SINGLETONS?.CAJA || "CAJA_PRINCIPAL";
-const CAJA_SEQ_ID = "CAJA_SEQ";
 const LEDGER_SCHEMA_VERSION = "LEDGER_V5_FISCAL";
 const GENESIS_HASH = "0".repeat(64);
 const MAX_LEDGER_BATCH_PAGES = 50;
 const LEDGER_PAGE_SIZE = 200;
-
-const SEQUENCE_MUTEX_KEY = "FISCAL_SEQUENCE_LOCK";
-const SEQUENCE_MUTEX_TTL_MS = Number(CONCURRENCY?.LEDGER_MUTEX_TTL_MS) || 45000;
 
 const FISCAL_SIGNER_TIMEOUT_MS = 10000;
 
@@ -93,6 +97,10 @@ let _signerState = { failures: 0, openUntil: 0 };
 const MONTO_OBLIGA_NIF_TERCERO = 300;
 const MONTO_OBLIGA_APROBADOR_Z = 500;
 const MONEY_EPSILON_FISCAL = 0.02;
+
+// ============================================================================
+// HELPERS
+// ============================================================================
 
 function _normalizeLinkedBookingIds(value) {
     const values = Array.isArray(value) ? value : String(value || "").split(",");
@@ -111,15 +119,6 @@ function _rateLimitOrThrow(surface, key, traceId) {
         e.meta = { retryAfter: rl.retryAfter, surface, traceId };
         throw e;
     }
-}
-
-function _isDuplicateItemError(error) {
-    const message = String(error?.message || "");
-    return (
-        message.includes("WDE0123") ||
-        message.includes("WD_ITEM_ALREADY_EXISTS") ||
-        message.includes("Duplicated")
-    );
 }
 
 async function _getCachedSecret(name) {
@@ -351,74 +350,12 @@ async function _computeCurrentHash(prevHash, payloadStr) {
 }
 
 // ============================================================================
-// SEQUENCE COUNTER
+// [CONSOL-01] SEQUENCE COUNTER — delega en eventLog._getNextSequenceInternal
+// Unico lock FISCAL_SEQUENCE_LOCK en todo el backend.
 // ============================================================================
 
 async function _getNextSequence(traceId) {
-    const lockOwnerId = `seq_${traceId || makeTraceId("seq")}`;
-
-    const lockResult = await _lockSlotKeyOrFail(SEQUENCE_MUTEX_KEY, lockOwnerId, SEQUENCE_MUTEX_TTL_MS);
-    if (!lockResult?.ok) {
-        throw new Error("SEQUENCE_LOCK_BUSY: No se pudo adquirir el lock de secuencia");
-    }
-
-    try {
-        let seqDoc = await wixData
-            .get(COLLECTIONS.CAJA_ACTUAL, CAJA_SEQ_ID, { suppressAuth: true, consistentRead: true })
-            .catch(() => null);
-
-        if (!seqDoc) {
-            const legacyCaja = await wixData
-                .get(COLLECTIONS.CAJA_ACTUAL, CAJA_ACTUAL_ID, { suppressAuth: true, consistentRead: true })
-                .catch(() => null);
-
-            const legacyCounters =
-                legacyCaja && legacyCaja.sequenceCounters
-                    ? legacyCaja.sequenceCounters
-                    : { seqGlobal: 0 };
-
-            seqDoc = {
-                _id: CAJA_SEQ_ID,
-                sequenceCounters: { ...legacyCounters },
-                migratedFrom: CAJA_ACTUAL_ID,
-                migratedAt: new Date(),
-                _createdDate: new Date(),
-                _updatedDate: new Date(),
-            };
-
-            await wixData
-                .insert(COLLECTIONS.CAJA_ACTUAL, seqDoc, { suppressAuth: true })
-                .catch(async (insertErr) => {
-                    if (_isDuplicateItemError(insertErr)) {
-                        seqDoc = await wixData
-                            .get(COLLECTIONS.CAJA_ACTUAL, CAJA_SEQ_ID, { suppressAuth: true, consistentRead: true })
-                            .catch(() => null);
-                        if (!seqDoc) throw insertErr;
-                    } else {
-                        throw insertErr;
-                    }
-                });
-        }
-
-        const counters = seqDoc.sequenceCounters || {};
-        const nextGlobal = Number(counters.seqGlobal || 0) + 1;
-        const yearKey = String(new Date().getFullYear());
-        const nextYear = Number(counters[yearKey] || 0) + 1;
-        counters.seqGlobal = nextGlobal;
-        counters[yearKey] = nextYear;
-        seqDoc.sequenceCounters = counters;
-        seqDoc._updatedDate = new Date();
-
-        await wixData.save(COLLECTIONS.CAJA_ACTUAL, seqDoc, { suppressAuth: true });
-
-        return {
-            sequenceNumber: nextGlobal,
-            yearSequence: nextYear,
-            invoiceNumber: `FAC-${yearKey}-${String(nextYear).padStart(5, "0")}`,
-        };
-    } finally {
-        await _unlockSlotKey(SEQUENCE_MUTEX_KEY, lockOwnerId).catch(() => {});
-    }
+    return await _getNextSequenceInternal(traceId);
 }
 
 // ============================================================================
