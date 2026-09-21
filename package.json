@@ -1,9 +1,17 @@
 {
   "devDependencies": {
-    "@wix/cli": "^1.0.0",
+    "@babel/parser": "^7.29.9",
+    "@wix/cli": "^1.1.247",
     "@wix/eslint-plugin-cli": "^1.0.0",
-    "eslint": "^8.25.0",
-    "react": "16.14.0"
+    "acorn": "^8.18.0",
+    "depcheck": "^1.4.7",
+    "eslint": "^8.57.1",
+    "jscodeshift": "^17.4.0",
+    "knip": "^6.37.0",
+    "madge": "^8.0.0",
+    "prettier": "^3.9.8",
+    "react": "16.14.0",
+    "source-map-explorer": "^2.5.3"
   },
   "dependencies": {
     "@wix/auto_sdk_bookings_extended-bookings": "1.0.133",

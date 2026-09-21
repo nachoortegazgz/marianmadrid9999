@@ -45,7 +45,7 @@ function _buildCsvFromInvoices(invoices) {
   const rows = invoices.map((inv) =>
     `"${_safeTrim(inv.invoiceNumber || inv.numTicketFactura)}";` +
     `"${_safeTrim(inv.issueDate || inv.fechaExpedicion || inv.diaKey)}";` +
-    `"${_safeTrim(inv.movementType || inv.tipoMovimiento)}";` +
+    `"${_safeTrim(inv.movementType || inv.movementType)}";` +
     `${_roundMoney(inv.taxableAmount || inv.baseImponible || 0)};` +
     `${_roundMoney(inv.taxAmount || inv.cuotaIva || 0)};` +
     `${_roundMoney(inv.totalAmount || inv.totalAmount || 0)};` +

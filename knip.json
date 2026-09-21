@@ -1,0 +1,15 @@
+{
+  "entry": [
+    "src/**/*.js",
+    "src/**/*.web.js",
+    "src/**/*.backend.js"
+  ],
+  "project": [
+    "src/**/*.js"
+  ],
+  "ignoreDependencies": [],
+  "ignoreExportsUsedInFile": {
+    "interface": true,
+    "type": true
+  }
+}

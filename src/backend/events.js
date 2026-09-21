@@ -497,7 +497,7 @@ export async function wixBookingsV2_onBookingCanceled(rawBody) {
         if (citaPrevia && String(citaPrevia.paymentStatus || "").toUpperCase() === ESTADO_PAGO.PAID) {
             const movimientoOriginalRes = await wixData
                 .query(COLLECTIONS.MOVIMIENTOS_CAJA)
-                .eq("reservaIdVinculada", bookingId)
+                .eq('linkedBookingIds', bookingId)
                 .eq("movementType", TIPO_MOVIMIENTO.VENTA_ONLINE)
                 .limit(1)
                 .find({ suppressAuth: true, consistentRead: true })
@@ -509,7 +509,7 @@ export async function wixBookingsV2_onBookingCanceled(rawBody) {
                 try {
                     const emisor = await _getEmisorFiscal();
                     const amountOriginal = Math.abs(Number(
-                        movimientoOriginal.importeTotal ??
+                        movimientoOriginal.totalAmount ??
                         movimientoOriginal.totalAmount ??
                         0
                     ));
@@ -520,36 +520,36 @@ export async function wixBookingsV2_onBookingCanceled(rawBody) {
                         paymentMethod: movimientoOriginal.paymentMethod || FORMA_PAGO.ONLINE,
                         importeTotal: -amountOriginal,
                         baseImponibleOImporteNoSujeto: -Math.abs(Number(
-                            movimientoOriginal.baseImponibleOImporteNoSujeto ??
+                            movimientoOriginal.taxableBaseOrNonSubjectAmount ??
                             movimientoOriginal.taxableAmount ?? 0
                         )),
                         cuotaTotal: -Math.abs(Number(
-                            movimientoOriginal.cuotaTotal ??
+                            movimientoOriginal.taxAmount ??
                             movimientoOriginal.taxAmount ?? 0
                         )),
                         tipoImpositivo: Number(
-                            movimientoOriginal.tipoImpositivo ??
+                            movimientoOriginal.taxRate ??
                             movimientoOriginal.taxRate ?? 21
                         ),
                         descripcionOperacion: `Rectificacion cancelacion booking ${bookingId}`,
-                        numSerieFactura: movimientoOriginal.numSerieFactura || movimientoOriginal.invoiceNumber,
+                        numSerieFactura: movimientoOriginal.invoiceNumber || movimientoOriginal.invoiceNumber,
                         fechaExpedicionFactura: new Date().toLocaleDateString("sv-SE", {
                             timeZone: SDK_CONFIG?.TZ || "Europe/Madrid",
                         }),
                         tipoFactura: CLAVES_AEAT.R1,
                         tipoRectificativa: "I",
-                        idFacturaAnterior: movimientoOriginal.numSerieFactura ||
+                        idFacturaAnterior: movimientoOriginal.invoiceNumber ||
                             movimientoOriginal.invoiceNumber || null,
-                        numSerieFacturaAnterior: movimientoOriginal.numSerieFactura ||
+                        numSerieFacturaAnterior: movimientoOriginal.invoiceNumber ||
                             movimientoOriginal.invoiceNumber || null,
-                        fechaExpedicionFacturaAnterior: movimientoOriginal.fechaExpedicionFactura ||
+                        fechaExpedicionFacturaAnterior: movimientoOriginal.invoiceIssueDate ||
                             movimientoOriginal.operationDate || null,
                         motivoRectificacion: MOTIVOS_RECTIFICACION.NUMERO_SERIE,
-                        nifEmisor: emisor.nifEmisor,
-                        nombreRazonEmisor: emisor.nombreRazonEmisor,
-                        nifDestinatario: movimientoOriginal.nifDestinatario ||
+                        nifEmisor: emisor.issuerTaxId,
+                        nombreRazonEmisor: emisor.issuerLegalName,
+                        nifDestinatario: movimientoOriginal.recipientTaxId ||
                             movimientoOriginal.nifTercero || null,
-                        nombreRazonDestinatario: movimientoOriginal.nombreRazonDestinatario ||
+                        nombreRazonDestinatario: movimientoOriginal.recipientLegalName ||
                             movimientoOriginal.razonSocialTercero || null,
                         rolFiscal: ROL_FISCAL.EMISOR,
                         channelType: "ONLINE",
@@ -697,25 +697,25 @@ export async function wixEcom_onOrderPaymentStatusUpdated(rawBody) {
                 channelType: "ONLINE",
                 resourceId: "online",
                 importeTotal: finalLedgerAmount,
-                baseImponibleOImporteNoSujeto: fiscalData.baseImponibleRetencion > 0
-                    ? fiscalData.baseImponibleRetencion
+                baseImponibleOImporteNoSujeto: fiscalData.withholdingBase > 0
+                    ? fiscalData.withholdingBase
                     : 0,
                 cuotaTotal: 0,
                 tipoImpositivo: 21,
-                importeRetencionIRPF: fiscalData.importeRetencionIRPF,
-                tipoRetencionIRPF: fiscalData.tipoRetencionIRPF,
-                baseImponibleRetencion: fiscalData.baseImponibleRetencion,
+                importeRetencionIRPF: fiscalData.irpfWithholdingAmount,
+                tipoRetencionIRPF: fiscalData.irpfWithholdingRate,
+                baseImponibleRetencion: fiscalData.withholdingBase,
                 descripcionOperacion: orderConcept,
                 numSerieFactura: null,
                 fechaExpedicionFactura: new Date().toLocaleDateString("sv-SE", {
                     timeZone: SDK_CONFIG?.TZ || "Europe/Madrid",
                 }),
                 tipoFactura: fiscalData.esB2B ? CLAVES_AEAT.F1 : CLAVES_AEAT.F2,
-                nifEmisor: emisor.nifEmisor,
-                nombreRazonEmisor: emisor.nombreRazonEmisor,
-                nifDestinatario: fiscalData.nifDestinatario,
-                nombreRazonDestinatario: fiscalData.nombreRazonDestinatario,
-                domicilioDestinatario: fiscalData.domicilioDestinatario,
+                nifEmisor: emisor.issuerTaxId,
+                nombreRazonEmisor: emisor.issuerLegalName,
+                nifDestinatario: fiscalData.recipientTaxId,
+                nombreRazonDestinatario: fiscalData.recipientLegalName,
+                domicilioDestinatario: fiscalData.recipientAddress,
                 esB2B: fiscalData.esB2B,
                 referenciaBancariaConciliacion: fiscalData.referenciaBancariaConciliacion,
                 rolFiscal: fiscalData.rolFiscal || ROL_FISCAL.EMISOR,
@@ -724,8 +724,8 @@ export async function wixEcom_onOrderPaymentStatusUpdated(rawBody) {
                 transactionId,
                 orderId,
                 desglose: [{
-                    base: fiscalData.baseImponibleRetencion > 0
-                        ? fiscalData.baseImponibleRetencion
+                    base: fiscalData.withholdingBase > 0
+                        ? fiscalData.withholdingBase
                         : finalLedgerAmount,
                     tipo: 21,
                     cuota: 0,
@@ -878,10 +878,10 @@ export async function wixEcom_onOrderRefunded(rawBody) {
         }
 
         const originalAmount = Number(
-            originalMovement.importeTotal ?? originalMovement.totalAmount ?? 0
+            originalMovement.totalAmount ?? originalMovement.totalAmount ?? 0
         );
         const linkedBookingIds = _normalizeBookingIds(
-            originalMovement.reservaIdVinculada || originalMovement.reservationIdLinked
+            originalMovement.linkedBookingIds || originalMovement.reservationIdLinked
         );
 
         // [FIX-57] path canonico restockInfo
@@ -945,34 +945,34 @@ export async function wixEcom_onOrderRefunded(rawBody) {
                 resourceId: "online",
                 importeTotal: -refundAmount,
                 baseImponibleOImporteNoSujeto: -Math.abs(Number(
-                    originalMovement.baseImponibleOImporteNoSujeto ??
+                    originalMovement.taxableBaseOrNonSubjectAmount ??
                     originalMovement.taxableAmount ?? 0
                 )),
                 cuotaTotal: -Math.abs(Number(
-                    originalMovement.cuotaTotal ??
+                    originalMovement.taxAmount ??
                     originalMovement.taxAmount ?? 0
                 )),
                 tipoImpositivo: Number(
-                    originalMovement.tipoImpositivo ??
+                    originalMovement.taxRate ??
                     originalMovement.taxRate ?? 21
                 ),
                 descripcionOperacion: `Refund - Order ${orderId}`,
-                numSerieFactura: originalMovement.numSerieFactura || originalMovement.invoiceNumber,
+                numSerieFactura: originalMovement.invoiceNumber || originalMovement.invoiceNumber,
                 fechaExpedicionFactura: fechaHoy,
                 tipoFactura: CLAVES_AEAT.R1,
                 tipoRectificativa: "I",
-                idFacturaAnterior: originalMovement.numSerieFactura ||
+                idFacturaAnterior: originalMovement.invoiceNumber ||
                     originalMovement.invoiceNumber || null,
-                numSerieFacturaAnterior: originalMovement.numSerieFactura ||
+                numSerieFacturaAnterior: originalMovement.invoiceNumber ||
                     originalMovement.invoiceNumber || null,
-                fechaExpedicionFacturaAnterior: originalMovement.fechaExpedicionFactura ||
+                fechaExpedicionFacturaAnterior: originalMovement.invoiceIssueDate ||
                     originalMovement.operationDate || null,
                 motivoRectificacion: MOTIVOS_RECTIFICACION.OTRAS,
-                nifEmisor: emisor.nifEmisor,
-                nombreRazonEmisor: emisor.nombreRazonEmisor,
-                nifDestinatario: originalMovement.nifDestinatario ||
+                nifEmisor: emisor.issuerTaxId,
+                nombreRazonEmisor: emisor.issuerLegalName,
+                nifDestinatario: originalMovement.recipientTaxId ||
                     originalMovement.nifTercero || null,
-                nombreRazonDestinatario: originalMovement.nombreRazonDestinatario ||
+                nombreRazonDestinatario: originalMovement.recipientLegalName ||
                     originalMovement.razonSocialTercero || null,
                 rolFiscal: ROL_FISCAL.EMISOR,
                 reservaIdVinculada: linkedBookingIds.join(",") || null,
@@ -981,12 +981,12 @@ export async function wixEcom_onOrderRefunded(rawBody) {
                 refundId,
                 desglose: [{
                     base: -Math.abs(Number(
-                        originalMovement.baseImponibleOImporteNoSujeto ??
+                        originalMovement.taxableBaseOrNonSubjectAmount ??
                         originalMovement.taxableAmount ?? 0
                     )),
-                    tipo: Number(originalMovement.tipoImpositivo ?? originalMovement.taxRate ?? 21),
+                    tipo: Number(originalMovement.taxRate ?? originalMovement.taxRate ?? 21),
                     cuota: -Math.abs(Number(
-                        originalMovement.cuotaTotal ??
+                        originalMovement.taxAmount ??
                         originalMovement.taxAmount ?? 0
                     )),
                     descripcion: `Refund - Order ${orderId}`,
@@ -1041,7 +1041,7 @@ export async function wixEcom_onOrderRefunded(rawBody) {
         const refundedTotal = (refundsRes?.items || []).reduce(
             (sum, movement) => sum + Math.abs(Number(
                 movement?.accountingAmount ??
-                movement?.importeTotal ??
+                movement?.totalAmount ??
                 movement?.totalAmount ?? 0
             )),
             0

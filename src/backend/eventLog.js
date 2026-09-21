@@ -165,24 +165,24 @@ function _generateVerificationQR(invoiceNumber, businessTaxId, operationDate, to
 // [FIX-EV-02] Payload AEAT identico al de cajas.web.js v5008.5.
 // Acepta nomenclatura AEAT o legacy indistintamente.
 function _buildAEATPayload(mov, generatedAt) {
-    const nifDest = _safeTrim(mov.nifDestinatario || mov.nifTercero);
-    const nombreDest = _safeTrim(mov.nombreRazonDestinatario || mov.razonSocialTercero);
-    const numSerie = _safeTrim(mov.numSerieFactura || mov.invoiceNumber);
-    const fechaExp = _safeTrim(mov.fechaExpedicionFactura || mov.operationDate);
-    const tipoFactura = _safeTrim(mov.tipoFactura || mov.claveRegistroFactura) || CLAVES_AEAT.F1;
-    const cuotaTotal = Number(mov.cuotaTotal ?? mov.taxAmount ?? 0);
-    const importeTotal = Number(mov.importeTotal ?? mov.totalAmount ?? 0);
-    const huellaAnterior = _safeTrim(mov.huellaAnterior || mov.previousRecordHash);
-    const nifEmisor = _safeTrim(mov.nifEmisor || mov.businessTaxId);
-    const tipoRect = _safeTrim(mov.tipoRectificativa);
-    const idFactAnt = _safeTrim(mov.idFacturaAnterior || mov.idFacturaRectificada);
-    const motivoRect = _safeTrim(mov.motivoRectificacion);
+    const nifDest = _safeTrim(mov.recipientTaxId || mov.nifTercero);
+    const nombreDest = _safeTrim(mov.recipientLegalName || mov.razonSocialTercero);
+    const numSerie = _safeTrim(mov.invoiceNumber || mov.invoiceNumber);
+    const fechaExp = _safeTrim(mov.invoiceIssueDate || mov.operationDate);
+    const tipoFactura = _safeTrim(mov.invoiceType || mov.claveRegistroFactura) || CLAVES_AEAT.F1;
+    const cuotaTotal = Number(mov.taxAmount ?? mov.taxAmount ?? 0);
+    const importeTotal = Number(mov.totalAmount ?? mov.totalAmount ?? 0);
+    const huellaAnterior = _safeTrim(mov.previousRecordHash || mov.previousRecordHash);
+    const nifEmisor = _safeTrim(mov.issuerTaxId || mov.businessTaxId);
+    const tipoRect = _safeTrim(mov.correctionType);
+    const idFactAnt = _safeTrim(mov.previousInvoiceId || mov.idFacturaRectificada);
+    const motivoRect = _safeTrim(mov.correctionReason);
     const estadoDevengo = _safeTrim(mov.estadoDevengoIVA || mov.estadoDevengoIva);
     const idAnticipo = _safeTrim(mov.idAnticipoVinculado);
-    const importeRet = Number(mov.importeRetencionIRPF || 0);
-    const baseRet = Number(mov.baseImponibleRetencion || 0);
+    const importeRet = Number(mov.irpfWithholdingAmount || 0);
+    const baseRet = Number(mov.withholdingBase || 0);
     const rolFiscal = _safeTrim(mov.rolFiscal);
-    const importeRE = Number(mov.cuotaRecargoEquivalencia ?? mov.importeRecargoEquivalencia ?? 0);
+    const importeRE = Number(mov.surchargeAmount ?? mov.importeRecargoEquivalencia ?? 0);
     const refBancaria = _safeTrim(mov.referenciaBancariaConciliacion);
 
     const fields = [
@@ -315,7 +315,7 @@ async function _upsertDatosFiscales({ nifCif, razonSocial, tipoTercero, datosCon
 
     const existing = await wixData
         .query(COLLECTIONS.DATOS_FISCALES)
-        .eq("nifCif", nif)
+        .eq('taxId', nif)
         .limit(1)
         .find({ suppressAuth: true });
 
@@ -333,13 +333,13 @@ async function _upsertDatosFiscales({ nifCif, razonSocial, tipoTercero, datosCon
     }, { suppressAuth: true });
 }
 
-async function _getServicioCatalogo(catalogoId, traceId) {
-    const id = _safeTrim(catalogoId);
+async function _getServicioCatalogo(catalogId, traceId) {
+    const id = _safeTrim(catalogId);
     if (!_looksLikeGuid(id)) return null;
     try {
         return await wixData.get(COLLECTIONS.SERVICIOS_CATALOGO, id, { suppressAuth: true });
     } catch (_) {
-        log.warn("Catalogo no encontrado", { traceId, catalogoId: id });
+        log.warn("Catalogo no encontrado", { traceId, catalogId: id });
         return null;
     }
 }
@@ -352,40 +352,40 @@ function _buildPayloadFiscalSnapshot({
     tercero, catalogo, input, ts, huellaAnterior, huellaActual, fechaHoraHusoGenRegistro,
 }) {
     return {
-        idEmisorFactura: _safeTrim(input.nifEmisor || input.businessTaxId),
-        nombreRazonEmisor: _safeTrim(input.nombreRazonEmisor),
-        nifDestinatario: _safeTrim(tercero?.nifCif || input.nifDestinatario || input.nifTercero),
-        nombreRazonDestinatario: _safeTrim(tercero?.razonSocial || input.nombreRazonDestinatario || input.razonSocialTercero),
-        domicilioDestinatario: tercero?.datosContacto || input.domicilioDestinatario || null,
-        emitidaPorTerceroODestinatario: _safeTrim(input.emitidaPorTerceroODestinatario) || "E",
-        nombreRazonTercero: _safeTrim(input.nombreRazonTercero) || null,
-        nifTerceroExpedidor: _safeTrim(input.nifTerceroExpedidor) || null,
-        numSerieFactura: _safeTrim(input.numSerieFactura || input.invoiceNumber),
-        fechaExpedicionFactura: _safeTrim(input.fechaExpedicionFactura || input.operationDate),
-        fechaOperacion: _safeTrim(input.fechaOperacion) || null,
-        tipoFactura: _safeTrim(input.tipoFactura || input.claveRegistroFactura) || "F1",
-        tipoRectificativa: _safeTrim(input.tipoRectificativa) || null,
-        descripcionOperacion: _safeTrim(input.descripcionOperacion || input.concept),
-        importeTotal: Number(input.importeTotal ?? input.totalAmount ?? 0),
-        baseImponibleOImporteNoSujeto: Number(input.baseImponibleOImporteNoSujeto ?? input.taxableAmount ?? 0),
-        cuotaTotal: Number(input.cuotaTotal ?? input.taxAmount ?? 0),
-        tipoImpositivo: Number(input.tipoImpositivo ?? input.taxRate ?? catalogo?.taxRate ?? 0),
-        tipoRecargoEquivalencia: Number(input.tipoRecargoEquivalencia ?? 0),
-        cuotaRecargoEquivalencia: Number(input.cuotaRecargoEquivalencia ?? input.importeRecargoEquivalencia ?? 0),
-        importeRetencionIRPF: Number(input.importeRetencionIRPF ?? 0),
-        tipoRetencionIRPF: Number(input.tipoRetencionIRPF ?? 0),
-        baseImponibleRetencion: Number(input.baseImponibleRetencion ?? 0),
-        claveRegimen: _safeTrim(input.claveRegimen || catalogo?.claveRegimenAEAT) || "01",
-        calificacionOperacion: _safeTrim(input.calificacionOperacion || catalogo?.calificacionOperacionAEAT) || "S1",
-        operacionExenta: _safeTrim(input.operacionExenta || catalogo?.operacionExentaAEAT) || null,
-        inversionSujetoPasivo: input.inversionSujetoPasivo === true || catalogo?.inversionSujetoPasivo === true,
-        causaNoSujeta: _safeTrim(input.causaNoSujeta) || null,
-        regimenEspecialCriterioCaja: input.regimenEspecialCriterioCaja === true,
-        exentaPorArticulo20: input.exentaPorArticulo20 === true,
+        idEmisorFactura: _safeTrim(input.issuerTaxId || input.businessTaxId),
+        nombreRazonEmisor: _safeTrim(input.issuerLegalName),
+        nifDestinatario: _safeTrim(tercero?.taxId || input.recipientTaxId || input.nifTercero),
+        nombreRazonDestinatario: _safeTrim(tercero?.legalName || input.recipientLegalName || input.razonSocialTercero),
+        domicilioDestinatario: tercero?.contactData || input.recipientAddress || null,
+        emitidaPorTerceroODestinatario: _safeTrim(input.issuedByThirdPartyOrRecipient) || "E",
+        nombreRazonTercero: _safeTrim(input.thirdPartyLegalName) || null,
+        nifTerceroExpedidor: _safeTrim(input.issuerThirdPartyTaxId) || null,
+        numSerieFactura: _safeTrim(input.invoiceNumber || input.invoiceNumber),
+        fechaExpedicionFactura: _safeTrim(input.invoiceIssueDate || input.operationDate),
+        fechaOperacion: _safeTrim(input.operationDate) || null,
+        tipoFactura: _safeTrim(input.invoiceType || input.claveRegistroFactura) || "F1",
+        tipoRectificativa: _safeTrim(input.correctionType) || null,
+        descripcionOperacion: _safeTrim(input.operationDescription || input.concept),
+        importeTotal: Number(input.totalAmount ?? input.totalAmount ?? 0),
+        baseImponibleOImporteNoSujeto: Number(input.taxableBaseOrNonSubjectAmount ?? input.taxableAmount ?? 0),
+        cuotaTotal: Number(input.taxAmount ?? input.taxAmount ?? 0),
+        tipoImpositivo: Number(input.taxRate ?? input.taxRate ?? catalogo?.taxRate ?? 0),
+        tipoRecargoEquivalencia: Number(input.surchargeRate ?? 0),
+        cuotaRecargoEquivalencia: Number(input.surchargeAmount ?? input.importeRecargoEquivalencia ?? 0),
+        importeRetencionIRPF: Number(input.irpfWithholdingAmount ?? 0),
+        tipoRetencionIRPF: Number(input.irpfWithholdingRate ?? 0),
+        baseImponibleRetencion: Number(input.withholdingBase ?? 0),
+        claveRegimen: _safeTrim(input.regimeKey || catalogo?.aeatRegimeKey) || "01",
+        calificacionOperacion: _safeTrim(input.operationClassification || catalogo?.aeatOperationClassification) || "S1",
+        operacionExenta: _safeTrim(input.exemptOperation || catalogo?.aeatExemptOperation) || null,
+        inversionSujetoPasivo: input.reverseCharge === true || catalogo?.reverseCharge === true,
+        causaNoSujeta: _safeTrim(input.nonSubjectReason) || null,
+        regimenEspecialCriterioCaja: input.cashBasisRegime === true,
+        exentaPorArticulo20: input.article20Exempt === true,
         sistemaInformatico: { ...SISTEMA_INFORMATICO },
-        idFacturaAnterior: _safeTrim(input.idFacturaAnterior) || null,
-        numSerieFacturaAnterior: _safeTrim(input.numSerieFacturaAnterior) || null,
-        fechaExpedicionFacturaAnterior: _safeTrim(input.fechaExpedicionFacturaAnterior) || null,
+        idFacturaAnterior: _safeTrim(input.previousInvoiceId) || null,
+        numSerieFacturaAnterior: _safeTrim(input.previousInvoiceNumber) || null,
+        fechaExpedicionFacturaAnterior: _safeTrim(input.previousInvoiceIssueDate) || null,
         huellaAnterior: huellaAnterior || null,
         huella: huellaActual,
         fechaHoraHusoGenRegistro,
@@ -404,91 +404,91 @@ export async function registrarEventoEconomico(input) {
 
     // 1. Resolver tercero
     const tercero = await _upsertDatosFiscales({
-        nifCif: input.nifDestinatario || input.nifTercero || input.nifEmisor,
-        razonSocial: input.nombreRazonDestinatario || input.razonSocialTercero || input.nombreRazonEmisor,
-        tipoTercero: input.tipoTercero || TIPO_TERCERO.CLIENTE,
-        datosContacto: input.datosContacto || input.domicilioDestinatario || null,
+        nifCif: input.recipientTaxId || input.nifTercero || input.issuerTaxId,
+        razonSocial: input.recipientLegalName || input.razonSocialTercero || input.issuerLegalName,
+        tipoTercero: input.thirdPartyType || TIPO_TERCERO.CLIENTE,
+        datosContacto: input.contactData || input.recipientAddress || null,
     }, traceId);
 
     // 2. Resolver catalogo
-    const catalogo = await _getServicioCatalogo(input.catalogoId, traceId);
+    const catalogo = await _getServicioCatalogo(input.catalogId, traceId);
 
     // 3. Ultimo evento + secuencia
     const anterior = await _getUltimoEventoCaja();
     const seq = await _getNextSequenceInternal(traceId);
 
-    const huellaAnterior = _safeTrim(anterior?.huella || anterior?.currentRecordHash) || GENESIS_HASH;
+    const huellaAnterior = _safeTrim(anterior?.recordHash || anterior?.currentRecordHash) || GENESIS_HASH;
     const fechaHoraHusoGenRegistro = _formatAEATDateTimeMadrid(ts);
 
     // 4. Construir movimiento base (aun sin huella)
     const movBase = {
         sequenceNumber: seq.sequenceNumber,
-        numSerieFactura: _safeTrim(input.numSerieFactura || input.invoiceNumber) || seq.invoiceNumber,
-        invoiceNumber: _safeTrim(input.numSerieFactura || input.invoiceNumber) || seq.invoiceNumber,
-        fechaExpedicionFactura: _safeTrim(input.fechaExpedicionFactura || input.operationDate) ||
+        numSerieFactura: _safeTrim(input.invoiceNumber || input.invoiceNumber) || seq.invoiceNumber,
+        invoiceNumber: _safeTrim(input.invoiceNumber || input.invoiceNumber) || seq.invoiceNumber,
+        fechaExpedicionFactura: _safeTrim(input.invoiceIssueDate || input.operationDate) ||
             new Date().toLocaleDateString("sv-SE", { timeZone: SDK_CONFIG?.TZ || "Europe/Madrid" }),
-        operationDate: _safeTrim(input.fechaExpedicionFactura || input.operationDate) ||
+        operationDate: _safeTrim(input.invoiceIssueDate || input.operationDate) ||
             new Date().toLocaleDateString("sv-SE", { timeZone: SDK_CONFIG?.TZ || "Europe/Madrid" }),
-        fechaOperacion: _safeTrim(input.fechaOperacion) || null,
-        fiscalPeriod: (_safeTrim(input.fechaExpedicionFactura || input.operationDate) ||
+        fechaOperacion: _safeTrim(input.operationDate) || null,
+        fiscalPeriod: (_safeTrim(input.invoiceIssueDate || input.operationDate) ||
             new Date().toLocaleDateString("sv-SE", { timeZone: SDK_CONFIG?.TZ || "Europe/Madrid" })).slice(0, 7),
 
-        tipoMovimiento: _safeTrim(input.tipoMovimiento || input.movementType),
-        movementType: _safeTrim(input.tipoMovimiento || input.movementType),
-        tipoEvento: _safeTrim(input.tipoEvento),
+        tipoMovimiento: _safeTrim(input.movementType || input.movementType),
+        movementType: _safeTrim(input.movementType || input.movementType),
+        tipoEvento: _safeTrim(input.eventType),
 
         paymentMethod: _safeTrim(input.paymentMethod),
         channelType: _safeTrim(input.channelType) || "POS",
 
-        importeTotal: Number(input.importeTotal ?? input.totalAmount ?? 0),
-        totalAmount: Number(input.importeTotal ?? input.totalAmount ?? 0),
-        baseImponibleOImporteNoSujeto: Number(input.baseImponibleOImporteNoSujeto ?? input.taxableAmount ?? 0),
-        taxableAmount: Number(input.baseImponibleOImporteNoSujeto ?? input.taxableAmount ?? 0),
-        cuotaTotal: Number(input.cuotaTotal ?? input.taxAmount ?? 0),
-        taxAmount: Number(input.cuotaTotal ?? input.taxAmount ?? 0),
-        tipoImpositivo: Number(input.tipoImpositivo ?? input.taxRate ?? IVA_RATES.GENERAL),
-        taxRate: Number(input.tipoImpositivo ?? input.taxRate ?? IVA_RATES.GENERAL),
-        tipoRecargoEquivalencia: Number(input.tipoRecargoEquivalencia ?? 0),
-        cuotaRecargoEquivalencia: Number(input.cuotaRecargoEquivalencia ?? input.importeRecargoEquivalencia ?? 0),
-        importeRecargoEquivalencia: Number(input.cuotaRecargoEquivalencia ?? input.importeRecargoEquivalencia ?? 0),
-        importeRetencionIRPF: Number(input.importeRetencionIRPF ?? 0),
-        tipoRetencionIRPF: Number(input.tipoRetencionIRPF ?? 0),
-        baseImponibleRetencion: Number(input.baseImponibleRetencion ?? 0),
+        importeTotal: Number(input.totalAmount ?? input.totalAmount ?? 0),
+        totalAmount: Number(input.totalAmount ?? input.totalAmount ?? 0),
+        baseImponibleOImporteNoSujeto: Number(input.taxableBaseOrNonSubjectAmount ?? input.taxableAmount ?? 0),
+        taxableAmount: Number(input.taxableBaseOrNonSubjectAmount ?? input.taxableAmount ?? 0),
+        cuotaTotal: Number(input.taxAmount ?? input.taxAmount ?? 0),
+        taxAmount: Number(input.taxAmount ?? input.taxAmount ?? 0),
+        tipoImpositivo: Number(input.taxRate ?? input.taxRate ?? IVA_RATES.GENERAL),
+        taxRate: Number(input.taxRate ?? input.taxRate ?? IVA_RATES.GENERAL),
+        tipoRecargoEquivalencia: Number(input.surchargeRate ?? 0),
+        cuotaRecargoEquivalencia: Number(input.surchargeAmount ?? input.importeRecargoEquivalencia ?? 0),
+        importeRecargoEquivalencia: Number(input.surchargeAmount ?? input.importeRecargoEquivalencia ?? 0),
+        importeRetencionIRPF: Number(input.irpfWithholdingAmount ?? 0),
+        tipoRetencionIRPF: Number(input.irpfWithholdingRate ?? 0),
+        baseImponibleRetencion: Number(input.withholdingBase ?? 0),
         rolFiscal: _safeTrim(input.rolFiscal) || ROL_FISCAL.EMISOR,
 
-        descripcionOperacion: _cleanText(input.descripcionOperacion || input.concept || "", 500),
-        concept: _cleanText(input.descripcionOperacion || input.concept || "", 500),
+        descripcionOperacion: _cleanText(input.operationDescription || input.concept || "", 500),
+        concept: _cleanText(input.operationDescription || input.concept || "", 500),
 
-        tipoFactura: _safeTrim(input.tipoFactura || input.claveRegistroFactura) || CLAVES_AEAT.F1,
-        claveRegistroFactura: _safeTrim(input.tipoFactura || input.claveRegistroFactura) || CLAVES_AEAT.F1,
-        tipoRectificativa: _safeTrim(input.tipoRectificativa) || null,
-        motivoRectificacion: _safeTrim(input.motivoRectificacion) || null,
-        idFacturaAnterior: _safeTrim(input.idFacturaAnterior || input.idFacturaRectificada) || null,
-        idFacturaRectificada: _safeTrim(input.idFacturaAnterior || input.idFacturaRectificada) || null,
-        numSerieFacturaAnterior: _safeTrim(input.numSerieFacturaAnterior) || null,
-        fechaExpedicionFacturaAnterior: _safeTrim(input.fechaExpedicionFacturaAnterior) || null,
+        tipoFactura: _safeTrim(input.invoiceType || input.claveRegistroFactura) || CLAVES_AEAT.F1,
+        claveRegistroFactura: _safeTrim(input.invoiceType || input.claveRegistroFactura) || CLAVES_AEAT.F1,
+        tipoRectificativa: _safeTrim(input.correctionType) || null,
+        motivoRectificacion: _safeTrim(input.correctionReason) || null,
+        idFacturaAnterior: _safeTrim(input.previousInvoiceId || input.idFacturaRectificada) || null,
+        idFacturaRectificada: _safeTrim(input.previousInvoiceId || input.idFacturaRectificada) || null,
+        numSerieFacturaAnterior: _safeTrim(input.previousInvoiceNumber) || null,
+        fechaExpedicionFacturaAnterior: _safeTrim(input.previousInvoiceIssueDate) || null,
 
-        nifEmisor: _safeTrim(input.nifEmisor || input.businessTaxId),
-        businessTaxId: _safeTrim(input.nifEmisor || input.businessTaxId),
-        nombreRazonEmisor: _safeTrim(input.nombreRazonEmisor),
-        nifDestinatario: _safeTrim(tercero?.nifCif || input.nifDestinatario || input.nifTercero),
-        nifTercero: _safeTrim(tercero?.nifCif || input.nifDestinatario || input.nifTercero),
-        nombreRazonDestinatario: _safeTrim(tercero?.razonSocial || input.nombreRazonDestinatario || input.razonSocialTercero),
-        razonSocialTercero: _safeTrim(tercero?.razonSocial || input.nombreRazonDestinatario || input.razonSocialTercero),
-        domicilioDestinatario: tercero?.datosContacto || input.domicilioDestinatario || null,
+        nifEmisor: _safeTrim(input.issuerTaxId || input.businessTaxId),
+        businessTaxId: _safeTrim(input.issuerTaxId || input.businessTaxId),
+        nombreRazonEmisor: _safeTrim(input.issuerLegalName),
+        nifDestinatario: _safeTrim(tercero?.taxId || input.recipientTaxId || input.nifTercero),
+        nifTercero: _safeTrim(tercero?.taxId || input.recipientTaxId || input.nifTercero),
+        nombreRazonDestinatario: _safeTrim(tercero?.legalName || input.recipientLegalName || input.razonSocialTercero),
+        razonSocialTercero: _safeTrim(tercero?.legalName || input.recipientLegalName || input.razonSocialTercero),
+        domicilioDestinatario: tercero?.contactData || input.recipientAddress || null,
         esB2B: input.esB2B === true,
 
-        emitidaPorTerceroODestinatario: _safeTrim(input.emitidaPorTerceroODestinatario) || "E",
-        nombreRazonTercero: _safeTrim(input.nombreRazonTercero) || null,
-        nifTerceroExpedidor: _safeTrim(input.nifTerceroExpedidor) || null,
-        causaNoSujeta: _safeTrim(input.causaNoSujeta) || null,
-        inversionSujetoPasivo: input.inversionSujetoPasivo === true || catalogo?.inversionSujetoPasivo === true,
+        emitidaPorTerceroODestinatario: _safeTrim(input.issuedByThirdPartyOrRecipient) || "E",
+        nombreRazonTercero: _safeTrim(input.thirdPartyLegalName) || null,
+        nifTerceroExpedidor: _safeTrim(input.issuerThirdPartyTaxId) || null,
+        causaNoSujeta: _safeTrim(input.nonSubjectReason) || null,
+        inversionSujetoPasivo: input.reverseCharge === true || catalogo?.reverseCharge === true,
 
-        claveRegimen: _safeTrim(input.claveRegimen || catalogo?.claveRegimenAEAT) || "01",
-        calificacionOperacion: _safeTrim(input.calificacionOperacion || catalogo?.calificacionOperacionAEAT) || "S1",
-        operacionExenta: _safeTrim(input.operacionExenta || catalogo?.operacionExentaAEAT) || null,
-        regimenEspecialCriterioCaja: input.regimenEspecialCriterioCaja === true,
-        exentaPorArticulo20: input.exentaPorArticulo20 === true,
+        claveRegimen: _safeTrim(input.regimeKey || catalogo?.aeatRegimeKey) || "01",
+        calificacionOperacion: _safeTrim(input.operationClassification || catalogo?.aeatOperationClassification) || "S1",
+        operacionExenta: _safeTrim(input.exemptOperation || catalogo?.aeatExemptOperation) || null,
+        regimenEspecialCriterioCaja: input.cashBasisRegime === true,
+        exentaPorArticulo20: input.article20Exempt === true,
 
         idAnticipoVinculado: _safeTrim(input.idAnticipoVinculado) || null,
         estadoDevengoIVA: _safeTrim(input.estadoDevengoIVA) || ESTADO_DEVENGO_IVA.DEVENGADO,
@@ -497,14 +497,14 @@ export async function registrarEventoEconomico(input) {
 
         resourceId: _safeTrim(input.resourceId) || null,
         staffResourceId: _safeTrim(input.staffResourceId) || null,
-        reservaIdVinculada: _safeTrim(input.reservaIdVinculada) || null,
+        reservaIdVinculada: _safeTrim(input.linkedBookingIds) || null,
         transactionId: _safeTrim(input.transactionId) || `TX_${seq.sequenceNumber}`,
         orderId: _safeTrim(input.orderId) || null,
         refundId: _safeTrim(input.refundId) || null,
         pairToken: _safeTrim(input.pairToken) || null,
 
-        terceroId: tercero?._id || null,
-        catalogoId: catalogo?._id || null,
+        thirdPartyId: tercero?._id || null,
+        catalogId: catalogo?._id || null,
 
         schemaIntegrityVersion: LEDGER_SCHEMA_VERSION,
         schemaVersion: LEDGER_SCHEMA_VERSION,
@@ -532,8 +532,8 @@ export async function registrarEventoEconomico(input) {
         previousRecordHash: huellaAnterior,
         fechaHoraHusoGenRegistro,
         generationTimestamp: _buildGenerationTimestamp(ts),
-        desgloseDetallado: payloadFiscal.desgloseDetallado,
-        sistemaInformatico: payloadFiscal.sistemaInformatico,
+        desgloseDetallado: payloadFiscal.detailedBreakdown,
+        sistemaInformatico: payloadFiscal.computerSystem,
         payloadFiscal,
         proyeccionEstado: PROYECCION_ESTADO.PENDIENTE,
         proyeccionDetalleIds: [],
@@ -552,27 +552,27 @@ export async function registrarEventoEconomico(input) {
         const lineHash = await hashSHA256(huellaActual + JSON.stringify(d));
         const det = await wixData.insert(COLLECTIONS.LIBRO_ASIENTOS_CONTABLES_DETALLE, {
             lineHash,
-            baseImponibleOImporteNoSujeto: Number(d.baseImponibleOImporteNoSujeto ?? d.base ?? 0),
-            tipoImpositivo: Number(d.tipoImpositivo ?? d.tipo ?? 0),
-            cuotaRepercutida: Number(d.cuotaRepercutida ?? d.cuota ?? 0),
-            eventoOrigenId: cabecera._id,
-            numeroLinea: i + 1,
-            terceroId: tercero?._id || null,
-            catalogoId: catalogo?._id || null,
-            descripcionOperacion: _cleanText(d.descripcion || input.descripcionOperacion || input.concept || "", 500),
-            unidades: Number(d.unidades || 1),
-            magnitud: Number(d.magnitud || 1),
-            importeNetoUnitario: Number(d.importeNetoUnitario ?? d.importeNeto ?? 0),
-            codigoImpuesto: _safeTrim(d.codigoImpuesto || catalogo?.codigoImpuesto) || null,
-            claveRegimen: _safeTrim(d.claveRegimen || payloadFiscal.claveRegimen),
-            calificacionOperacion: _safeTrim(d.calificacionOperacion || payloadFiscal.calificacionOperacion),
-            operacionExenta: _safeTrim(d.operacionExenta) || null,
-            inversionSujetoPasivo: d.inversionSujetoPasivo === true || payloadFiscal.inversionSujetoPasivo,
-            cuentaContable: _safeTrim(d.cuentaContable || catalogo?.cuentaContableIngreso) || null,
-            tipoRecargoEquivalencia: Number(d.tipoRecargoEquivalencia ?? d.tipoRE ?? 0),
-            cuotaRecargoEquivalencia: Number(d.cuotaRecargoEquivalencia ?? d.cuotaRE ?? 0),
-            importeRetencionIRPF: Number(d.importeRetencionIRPF || 0),
-            tipoRetencionIRPF: Number(d.tipoRetencionIRPF || 0),
+            baseImponibleOImporteNoSujeto: Number(d.taxableBaseOrNonSubjectAmount ?? d.base ?? 0),
+            tipoImpositivo: Number(d.taxRate ?? d.tipo ?? 0),
+            cuotaRepercutida: Number(d.chargedTaxAmount ?? d.cuota ?? 0),
+            sourceEventId: cabecera._id,
+            lineNumber: i + 1,
+            thirdPartyId: tercero?._id || null,
+            catalogId: catalogo?._id || null,
+            descripcionOperacion: _cleanText(d.descripcion || input.operationDescription || input.concept || "", 500),
+            unidades: Number(d.units || 1),
+            magnitud: Number(d.magnitude || 1),
+            importeNetoUnitario: Number(d.netUnitAmount ?? d.importeNeto ?? 0),
+            codigoImpuesto: _safeTrim(d.taxCode || catalogo?.taxCode) || null,
+            claveRegimen: _safeTrim(d.regimeKey || payloadFiscal.regimeKey),
+            calificacionOperacion: _safeTrim(d.operationClassification || payloadFiscal.operationClassification),
+            operacionExenta: _safeTrim(d.exemptOperation) || null,
+            inversionSujetoPasivo: d.reverseCharge === true || payloadFiscal.reverseCharge,
+            cuentaContable: _safeTrim(d.accountCode || catalogo?.incomeAccountCode) || null,
+            tipoRecargoEquivalencia: Number(d.surchargeRate ?? d.tipoRE ?? 0),
+            cuotaRecargoEquivalencia: Number(d.surchargeAmount ?? d.cuotaRE ?? 0),
+            importeRetencionIRPF: Number(d.irpfWithholdingAmount || 0),
+            tipoRetencionIRPF: Number(d.irpfWithholdingRate || 0),
             _createdDate: new Date(),
         }, { suppressAuth: true });
         detalleIds.push(det._id);
@@ -587,7 +587,7 @@ export async function registrarEventoEconomico(input) {
         log.error("Proyeccion secundaria fallo (no bloqueante)", {
             traceId,
             eventoId: cabecera._id,
-            tipoEvento: cabecera.tipoEvento,
+            tipoEvento: cabecera.eventType,
             message: err?.message,
         });
     }
@@ -599,7 +599,7 @@ export async function registrarEventoEconomico(input) {
             detalleIds,
             huella: huellaActual,
             sequenceNumber: seq.sequenceNumber,
-            numSerieFactura: doc.numSerieFactura,
+            numSerieFactura: doc.invoiceNumber,
             proyeccionEstado,
         },
         error: null,
@@ -611,7 +611,7 @@ export async function registrarEventoEconomico(input) {
 // ============================================================================
 
 async function _proyectarSegunTipoEvento(cabecera, detalleIds, traceId) {
-    switch (cabecera.tipoEvento) {
+    switch (cabecera.eventType) {
         case TIPO_EVENTO.VENTA_LINEA:
         case TIPO_EVENTO.RECTIFICATIVA:
         case TIPO_EVENTO.AJUSTE:
@@ -627,7 +627,7 @@ async function _proyectarSegunTipoEvento(cabecera, detalleIds, traceId) {
             await _proyectarCierreZ(cabecera, traceId);
             break;
         default:
-            log.warn("Tipo evento sin proyeccion", { traceId, tipoEvento: cabecera.tipoEvento });
+            log.warn("Tipo evento sin proyeccion", { traceId, tipoEvento: cabecera.eventType });
     }
 }
 
@@ -651,36 +651,36 @@ async function _proyectarFacturaRecibida(cabecera, traceId) {
     try {
         await wixData.insert(COLLECTIONS.FACTURAS_RECIBIDAS, {
             numeroRecepcion,
-            numSerieFactura: cabecera.numSerieFactura,
-            fechaExpedicionFactura: cabecera.fechaExpedicionFactura,
-            fechaOperacion: cabecera.fechaOperacion,
+            numSerieFactura: cabecera.invoiceNumber,
+            fechaExpedicionFactura: cabecera.invoiceIssueDate,
+            fechaOperacion: cabecera.operationDate,
             fechaRecepcion,
             fechaRegistroContable: fechaRecepcion,
-            terceroId: cabecera.terceroId,
-            nifEmisor: cabecera.nifEmisor,
-            nombreRazonEmisor: cabecera.nombreRazonEmisor,
-            nifDestinatario: cabecera.nifDestinatario,
-            nombreRazonDestinatario: cabecera.nombreRazonDestinatario,
-            tipoFactura: cabecera.tipoFactura,
-            descripcionOperacion: cabecera.descripcionOperacion,
-            importeTotal: cabecera.importeTotal,
-            baseImponibleTotal: cabecera.baseImponibleOImporteNoSujeto,
-            cuotaIvaTotal: cabecera.cuotaTotal,
-            cuotaRecargoEquivalencia: cabecera.cuotaRecargoEquivalencia,
-            importeRetencionIRPF: cabecera.importeRetencionIRPF,
-            tipoRetencionIRPF: cabecera.tipoRetencionIRPF,
-            desgloseDetallado: cabecera.desgloseDetallado,
-            claveRegimen: cabecera.claveRegimen,
-            calificacionOperacion: cabecera.calificacionOperacion,
-            operacionExenta: cabecera.operacionExenta,
-            inversionSujetoPasivo: cabecera.inversionSujetoPasivo,
-            deducible: true,
-            porcentajeDeduccion: 100,
-            cuotaDeducible: Number(cabecera.cuotaTotal || 0),
-            estadoPago: "PENDIENTE",
-            eventoOrigenId: cabecera._id,
-            origenRecepcion: "API",
-            estadoValidacion: "PENDIENTE",
+            thirdPartyId: cabecera.thirdPartyId,
+            issuerTaxId: cabecera.issuerTaxId,
+            issuerLegalName: cabecera.issuerLegalName,
+            recipientTaxId: cabecera.recipientTaxId,
+            recipientLegalName: cabecera.recipientLegalName,
+            invoiceType: cabecera.invoiceType,
+            operationDescription: cabecera.operationDescription,
+            totalAmount: cabecera.totalAmount,
+            totalTaxableBase: cabecera.taxableBaseOrNonSubjectAmount,
+            totalVatAmount: cabecera.taxAmount,
+            surchargeAmount: cabecera.surchargeAmount,
+            irpfWithholdingAmount: cabecera.irpfWithholdingAmount,
+            irpfWithholdingRate: cabecera.irpfWithholdingRate,
+            detailedBreakdown: cabecera.detailedBreakdown,
+            regimeKey: cabecera.regimeKey,
+            operationClassification: cabecera.operationClassification,
+            exemptOperation: cabecera.exemptOperation,
+            reverseCharge: cabecera.reverseCharge,
+            deductible: true,
+            deductionPercentage: 100,
+            deductibleAmount: Number(cabecera.taxAmount || 0),
+            paymentStatus: "PENDIENTE",
+            sourceEventId: cabecera._id,
+            receptionSource: "API",
+            validationStatus: "PENDIENTE",
             traceId,
             _createdDate: new Date(),
             _updatedDate: new Date(),
@@ -705,14 +705,14 @@ async function _proyectarMovimientoInventario(cabecera, traceId) {
             return;
         }
         await fn({
-            wixProductId: cabecera.payloadFiscal?.wixProductId || null,
-            sku: cabecera.payloadFiscal?.sku || null,
+            wixProductId: cabecera.fiscalPayload?.wixProductId || null,
+            sku: cabecera.fiscalPayload?.sku || null,
             orderId: cabecera.orderId || null,
-            refundId: cabecera.payloadFiscal?.refundId || null,
-            eventoOrigenId: cabecera._id,
-            catalogoId: cabecera.catalogoId,
-            magnitud: cabecera.payloadFiscal?.magnitud || 1,
-            terceroId: cabecera.terceroId,
+            refundId: cabecera.fiscalPayload?.refundId || null,
+            sourceEventId: cabecera._id,
+            catalogId: cabecera.catalogId,
+            magnitude: cabecera.fiscalPayload?.magnitude || 1,
+            thirdPartyId: cabecera.thirdPartyId,
             traceId,
         });
     } catch (err) {
@@ -724,14 +724,14 @@ async function _proyectarMovimientoInventario(cabecera, traceId) {
 async function _proyectarCierreZ(cabecera, traceId) {
     try {
         await wixData.insert(COLLECTIONS.HISTORICO_CIERRES_Z, {
-            _id: `Z_${cabecera.fechaExpedicionFactura}`,
-            operationDate: cabecera.fechaExpedicionFactura,
-            saldosPorMetodo: cabecera.payloadFiscal?.saldosPorMetodo || {},
-            eventoOrigenId: cabecera._id,
-            desglosePorRegimen: cabecera.payloadFiscal?.desglosePorRegimen || [],
-            desglosePorTipoOperacion: cabecera.payloadFiscal?.desglosePorTipoOperacion || [],
-            desglosePorTipoImpositivo: cabecera.payloadFiscal?.desglosePorTipoImpositivo || [],
-            resumenVerifactu: cabecera.payloadFiscal?.resumenVerifactu || {},
+            _id: `Z_${cabecera.invoiceIssueDate}`,
+            operationDate: cabecera.invoiceIssueDate,
+            saldosPorMetodo: cabecera.fiscalPayload?.balancesByMethod || {},
+            sourceEventId: cabecera._id,
+            desglosePorRegimen: cabecera.fiscalPayload?.breakdownByRegime || [],
+            desglosePorTipoOperacion: cabecera.fiscalPayload?.breakdownByOperationType || [],
+            desglosePorTipoImpositivo: cabecera.fiscalPayload?.breakdownByTaxRate || [],
+            resumenVerifactu: cabecera.fiscalPayload?.verifactuSummary || {},
             estadoEnvioAeat: "PENDIENTE",
             traceId,
             _createdDate: new Date(),
@@ -739,7 +739,7 @@ async function _proyectarCierreZ(cabecera, traceId) {
     } catch (err) {
         const msg = String(err?.message || "");
         if (msg.includes("WDE0123") || msg.includes("Duplicated") || msg.includes("already exists")) {
-            log.info("CierreZ ya existe (idempotente)", { traceId, fecha: cabecera.fechaExpedicionFactura });
+            log.info("CierreZ ya existe (idempotente)", { traceId, fecha: cabecera.invoiceIssueDate });
             return;
         }
         throw err;
@@ -766,8 +766,8 @@ export const getEventoPorId = webMethod(
             }
             const detalle = await wixData
                 .query(COLLECTIONS.LIBRO_ASIENTOS_CONTABLES_DETALLE)
-                .eq("eventoOrigenId", eventoId)
-                .ascending("numeroLinea")
+                .eq("sourceEventId", eventoId)
+                .ascending("lineNumber")
                 .find({ suppressAuth: true });
             return {
                 status: "SUCCESS",
@@ -794,21 +794,21 @@ export const registrarFacturaRecibida = webMethod(
         const traceId = payload?.traceId || makeTraceId("fact-rec");
         try {
             // 1. Validacion minima
-            const nifEmisor = _safeTrim(payload?.nifEmisor).toUpperCase();
+            const nifEmisor = _safeTrim(payload?.issuerTaxId).toUpperCase();
             if (!nifEmisor) {
                 return {
                     status: "ERROR", data: null,
                     error: { code: "NIF_EMISOR_REQUERIDO", message: "nifEmisor obligatorio" },
                 };
             }
-            const numSerie = _safeTrim(payload?.numSerieFactura);
+            const numSerie = _safeTrim(payload?.invoiceNumber);
             if (!numSerie) {
                 return {
                     status: "ERROR", data: null,
                     error: { code: "NUM_SERIE_REQUERIDO", message: "numSerieFactura obligatorio" },
                 };
             }
-            const importeTotal = Number(payload?.importeTotal) || 0;
+            const importeTotal = Number(payload?.totalAmount) || 0;
             if (importeTotal <= 0) {
                 return {
                     status: "ERROR", data: null,
@@ -819,8 +819,8 @@ export const registrarFacturaRecibida = webMethod(
             // 2. Idempotencia por numSerie + NIF emisor
             const existing = await wixData
                 .query(COLLECTIONS.FACTURAS_RECIBIDAS)
-                .eq("numSerieFactura", numSerie)
-                .eq("nifEmisor", nifEmisor)
+                .eq('invoiceNumber', numSerie)
+                .eq('issuerTaxId', nifEmisor)
                 .limit(1)
                 .find({ suppressAuth: true });
             if (existing?.items?.[0]) {
@@ -836,29 +836,29 @@ export const registrarFacturaRecibida = webMethod(
             const eventResult = await registrarEventoEconomico({
                 tipoEvento: TIPO_EVENTO.COMPRA_LINEA,
                 tipoMovimiento: TIPO_MOVIMIENTO.PAGO_PROVEEDOR,
-                paymentMethod: _safeTrim(payload?.medioPago) || FORMA_PAGO.EFECTIVO,
+                paymentMethod: _safeTrim(payload?.paymentMethod) || FORMA_PAGO.EFECTIVO,
                 importeTotal,
-                baseImponibleOImporteNoSujeto: Number(payload?.baseImponibleTotal) || 0,
-                cuotaTotal: Number(payload?.cuotaIvaTotal) || 0,
-                tipoImpositivo: Number(payload?.tipoImpositivo) || 21,
-                tipoRecargoEquivalencia: Number(payload?.tipoRecargoEquivalencia) || 0,
-                cuotaRecargoEquivalencia: Number(payload?.cuotaRecargoEquivalencia) || 0,
-                importeRetencionIRPF: Number(payload?.importeRetencionIRPF) || 0,
-                tipoRetencionIRPF: Number(payload?.tipoRetencionIRPF) || 0,
-                descripcionOperacion: _cleanText(payload?.descripcionOperacion || "", 500),
+                baseImponibleOImporteNoSujeto: Number(payload?.totalTaxableBase) || 0,
+                cuotaTotal: Number(payload?.totalVatAmount) || 0,
+                tipoImpositivo: Number(payload?.taxRate) || 21,
+                tipoRecargoEquivalencia: Number(payload?.surchargeRate) || 0,
+                cuotaRecargoEquivalencia: Number(payload?.surchargeAmount) || 0,
+                importeRetencionIRPF: Number(payload?.irpfWithholdingAmount) || 0,
+                tipoRetencionIRPF: Number(payload?.irpfWithholdingRate) || 0,
+                descripcionOperacion: _cleanText(payload?.operationDescription || "", 500),
                 numSerieFactura: numSerie,
-                fechaExpedicionFactura: _safeTrim(payload?.fechaExpedicionFactura),
-                fechaOperacion: _safeTrim(payload?.fechaOperacion) || null,
-                tipoFactura: _safeTrim(payload?.tipoFactura) || CLAVES_AEAT.F1,
+                fechaExpedicionFactura: _safeTrim(payload?.invoiceIssueDate),
+                fechaOperacion: _safeTrim(payload?.operationDate) || null,
+                tipoFactura: _safeTrim(payload?.invoiceType) || CLAVES_AEAT.F1,
                 nifEmisor: nifEmisor,
-                nombreRazonEmisor: _safeTrim(payload?.nombreRazonEmisor),
-                nifDestinatario: _safeTrim(payload?.nifDestinatario),
-                nombreRazonDestinatario: _safeTrim(payload?.nombreRazonDestinatario),
-                claveRegimen: _safeTrim(payload?.claveRegimen) || "01",
-                calificacionOperacion: _safeTrim(payload?.calificacionOperacion) || "S1",
-                operacionExenta: _safeTrim(payload?.operacionExenta) || null,
-                inversionSujetoPasivo: payload?.inversionSujetoPasivo === true,
-                desglose: Array.isArray(payload?.desgloseDetallado) ? payload.desgloseDetallado : [],
+                nombreRazonEmisor: _safeTrim(payload?.issuerLegalName),
+                nifDestinatario: _safeTrim(payload?.recipientTaxId),
+                nombreRazonDestinatario: _safeTrim(payload?.recipientLegalName),
+                claveRegimen: _safeTrim(payload?.regimeKey) || "01",
+                calificacionOperacion: _safeTrim(payload?.operationClassification) || "S1",
+                operacionExenta: _safeTrim(payload?.exemptOperation) || null,
+                inversionSujetoPasivo: payload?.reverseCharge === true,
+                desglose: Array.isArray(payload?.detailedBreakdown) ? payload.detailedBreakdown : [],
                 traceId,
             });
 
@@ -901,20 +901,20 @@ export const listarFacturasRecibidas = webMethod(
         const traceId = makeTraceId("list-fact-rec");
         try {
             let q = wixData.query(COLLECTIONS.FACTURAS_RECIBIDAS);
-            if (filters?.estadoPago) {
-                q = q.eq("estadoPago", _safeTrim(filters.estadoPago).toUpperCase());
+            if (filters?.paymentStatus) {
+                q = q.eq('paymentStatus', _safeTrim(filters.paymentStatus).toUpperCase());
             }
-            if (filters?.terceroId && _looksLikeGuid(filters.terceroId)) {
-                q = q.eq("terceroId", filters.terceroId);
+            if (filters?.thirdPartyId && _looksLikeGuid(filters.thirdPartyId)) {
+                q = q.eq("thirdPartyId", filters.thirdPartyId);
             }
             if (filters?.desde) {
-                q = q.ge("fechaExpedicionFactura", filters.desde);
+                q = q.ge('invoiceIssueDate', filters.desde);
             }
             if (filters?.hasta) {
-                q = q.le("fechaExpedicionFactura", filters.hasta);
+                q = q.le('invoiceIssueDate', filters.hasta);
             }
             const limit = Math.min(Number(filters?.limit) || 50, 200);
-            const res = await q.descending("fechaExpedicionFactura").limit(limit)
+            const res = await q.descending('invoiceIssueDate').limit(limit)
                 .find({ suppressAuth: true });
             return {
                 status: "SUCCESS",
@@ -952,8 +952,8 @@ export const actualizarEstadoPagoFactura = webMethod(
             await wixData.update(COLLECTIONS.FACTURAS_RECIBIDAS, {
                 _id: facturaId,
                 estadoPago: estado,
-                fechaPago: estado === "PAGADO" ? new Date() : factura.fechaPago,
-                medioPago: meta?.medioPago || factura.medioPago,
+                fechaPago: estado === "PAGADO" ? new Date() : factura.paymentDate,
+                medioPago: meta?.paymentMethod || factura.paymentMethod,
                 _updatedDate: new Date(),
             }, { suppressAuth: true });
             return {
@@ -983,7 +983,7 @@ export async function reconciliarProyecciones() {
     try {
         const pendientes = await wixData
             .query(COLLECTIONS.MOVIMIENTOS_CAJA)
-            .ne("proyeccionEstado", PROYECCION_ESTADO.OK)
+            .ne('projectionStatus', PROYECCION_ESTADO.OK)
             .descending("sequenceNumber")
             .limit(PROYECCION_BATCH_LIMIT)
             .find({ suppressAuth: true });
@@ -991,7 +991,7 @@ export async function reconciliarProyecciones() {
         for (const evento of pendientes.items || []) {
             try {
                 await withTimeout(
-                    _proyectarSegunTipoEvento(evento, evento.proyeccionDetalleIds || [], traceId),
+                    _proyectarSegunTipoEvento(evento, evento.projectionDetailIds || [], traceId),
                     PROYECCION_TIMEOUT_MS,
                     "reconciliarProyecciones"
                 );

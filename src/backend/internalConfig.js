@@ -537,7 +537,7 @@ export const PROYECCION_ESTADO = Object.freeze({
 
 // =============================================================================
 // BLOQUE 26 - SISTEMA INFORMATICO (Verifactu)
-// Fallback si ConfiguracionFiscal.sistemaInformatico esta vacio.
+// Fallback si ConfiguracionFiscal.computerSystem esta vacio.
 // =============================================================================
 
 export const SISTEMA_INFORMATICO = Object.freeze({
