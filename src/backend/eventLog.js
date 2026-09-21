@@ -838,3 +838,163 @@ export default {
     reconciliarProyecciones,
     _getNextSequenceInternal,
 };
+
+// ============================================================================
+// SECCION 4 - API DE COMPRAS (absorbe facturasRecibidas.web.js)
+// ============================================================================
+
+export const registrarFacturaRecibida = webMethod(
+    Permissions.SiteMember,
+    async (payload) => {
+        const traceId = payload?.traceId || makeTraceId("fact-rec");
+        try {
+            // 1. Validacion minima
+            const nifEmisor = _safeTrim(payload?.nifEmisor).toUpperCase();
+            if (!nifEmisor) {
+                return { status: "ERROR", data: null,
+                    error: { code: "NIF_EMISOR_REQUERIDO", message: "nifEmisor obligatorio" } };
+            }
+            const numSerie = _safeTrim(payload?.numSerieFactura);
+            if (!numSerie) {
+                return { status: "ERROR", data: null,
+                    error: { code: "NUM_SERIE_REQUERIDO", message: "numSerieFactura obligatorio" } };
+            }
+            const importeTotal = Number(payload?.importeTotal) || 0;
+            if (importeTotal <= 0) {
+                return { status: "ERROR", data: null,
+                    error: { code: "IMPORTE_INVALIDO", message: "importeTotal > 0" } };
+            }
+
+            // 2. Idempotencia por numSerie+NIF
+            const existing = await wixData
+                .query(COLLECTIONS.FACTURAS_RECIBIDAS)
+                .eq("numSerieFactura", numSerie)
+                .eq("nifEmisor", nifEmisor)
+                .limit(1)
+                .find({ suppressAuth: true });
+            if (existing?.items?.[0]) {
+                return { status: "SUCCESS", data: existing.items[0], error: null, idempotent: true };
+            }
+
+            // 3. Delegar en el motor
+            const eventResult = await registrarEventoEconomico({
+                tipoEvento: TIPO_EVENTO.COMPRA_LINEA,
+                tipoMovimiento: TIPO_MOVIMIENTO.PAGO_PROVEEDOR,
+                paymentMethod: _safeTrim(payload?.medioPago) || FORMA_PAGO.EFECTIVO,
+                importeTotal,
+                baseImponibleOImporteNoSujeto: Number(payload?.baseImponibleTotal) || 0,
+                cuotaTotal: Number(payload?.cuotaIvaTotal) || 0,
+                tipoImpositivo: Number(payload?.tipoImpositivo) || 21,
+                tipoRecargoEquivalencia: Number(payload?.tipoRecargoEquivalencia) || 0,
+                cuotaRecargoEquivalencia: Number(payload?.cuotaRecargoEquivalencia) || 0,
+                importeRetencionIRPF: Number(payload?.importeRetencionIRPF) || 0,
+                tipoRetencionIRPF: Number(payload?.tipoRetencionIRPF) || 0,
+                descripcionOperacion: _cleanText(payload?.descripcionOperacion || "", 500),
+                numSerieFactura: numSerie,
+                fechaExpedicionFactura: _safeTrim(payload?.fechaExpedicionFactura),
+                fechaOperacion: _safeTrim(payload?.fechaOperacion) || null,
+                tipoFactura: _safeTrim(payload?.tipoFactura) || CLAVES_AEAT.F1,
+                nifEmisor: nifEmisor,
+                nombreRazonEmisor: _safeTrim(payload?.nombreRazonEmisor),
+                nifDestinatario: _safeTrim(payload?.nifDestinatario),
+                nombreRazonDestinatario: _safeTrim(payload?.nombreRazonDestinatario),
+                claveRegimen: _safeTrim(payload?.claveRegimen) || "01",
+                calificacionOperacion: _safeTrim(payload?.calificacionOperacion) || "S1",
+                operacionExenta: _safeTrim(payload?.operacionExenta) || null,
+                inversionSujetoPasivo: payload?.inversionSujetoPasivo === true,
+                desglose: Array.isArray(payload?.desgloseDetallado) ? payload.desgloseDetallado : [],
+                traceId,
+            });
+
+            return eventResult;
+        } catch (err) {
+            log.error("registrarFacturaRecibida fallo", { traceId, message: err?.message });
+            return { status: "ERROR", data: null,
+                error: { code: "FACT_REC_FAIL", message: err?.message } };
+        }
+    }
+);
+
+export const getFacturaRecibida = webMethod(
+    Permissions.Admin,
+    async (facturaId) => {
+        const traceId = makeTraceId("get-fact-rec");
+        try {
+            if (!_looksLikeGuid(facturaId)) {
+                return { status: "ERROR", data: null, error: { code: "INVALID_ID" } };
+            }
+            const factura = await wixData
+                .get(COLLECTIONS.FACTURAS_RECIBIDAS, facturaId, { suppressAuth: true })
+                .catch(() => null);
+            if (!factura) {
+                return { status: "ERROR", data: null, error: { code: "NOT_FOUND" } };
+            }
+            return { status: "SUCCESS", data: factura, error: null };
+        } catch (err) {
+            log.error("getFacturaRecibida fallo", { traceId, message: err?.message });
+            return { status: "ERROR", data: null, error: { code: "LOOKUP_FAILED" } };
+        }
+    }
+);
+
+export const listarFacturasRecibidas = webMethod(
+    Permissions.Admin,
+    async (filters = {}) => {
+        const traceId = makeTraceId("list-fact-rec");
+        try {
+            let q = wixData.query(COLLECTIONS.FACTURAS_RECIBIDAS);
+            if (filters?.estadoPago) {
+                q = q.eq("estadoPago", _safeTrim(filters.estadoPago).toUpperCase());
+            }
+            if (filters?.terceroId && _looksLikeGuid(filters.terceroId)) {
+                q = q.eq("terceroId", filters.terceroId);
+            }
+            if (filters?.desde) {
+                q = q.ge("fechaExpedicionFactura", filters.desde);
+            }
+            if (filters?.hasta) {
+                q = q.le("fechaExpedicionFactura", filters.hasta);
+            }
+            const limit = Math.min(Number(filters?.limit) || 50, 200);
+            const res = await q.descending("fechaExpedicionFactura").limit(limit)
+                .find({ suppressAuth: true });
+            return { status: "SUCCESS", data: { items: res.items || [], total: res.totalCount }, error: null };
+        } catch (err) {
+            log.error("listarFacturasRecibidas fallo", { traceId, message: err?.message });
+            return { status: "ERROR", data: null, error: { code: "QUERY_FAILED" } };
+        }
+    }
+);
+
+export const actualizarEstadoPagoFactura = webMethod(
+    Permissions.SiteMember,
+    async (facturaId, nuevoEstado, meta = {}) => {
+        const traceId = meta?.traceId || makeTraceId("upd-fact-rec");
+        try {
+            if (!_looksLikeGuid(facturaId)) {
+                return { status: "ERROR", data: null, error: { code: "INVALID_ID" } };
+            }
+            const factura = await wixData
+                .get(COLLECTIONS.FACTURAS_RECIBIDAS, facturaId, { suppressAuth: true })
+                .catch(() => null);
+            if (!factura) {
+                return { status: "ERROR", data: null, error: { code: "NOT_FOUND" } };
+            }
+            const estado = _safeTrim(nuevoEstado).toUpperCase();
+            if (!["PENDIENTE", "PAGADO", "PARCIAL"].includes(estado)) {
+                return { status: "ERROR", data: null, error: { code: "INVALID_ESTADO" } };
+            }
+            await wixData.update(COLLECTIONS.FACTURAS_RECIBIDAS, {
+                _id: facturaId,
+                estadoPago: estado,
+                fechaPago: estado === "PAGADO" ? new Date() : factura.fechaPago,
+                medioPago: meta?.medioPago || factura.medioPago,
+                _updatedDate: new Date(),
+            }, { suppressAuth: true });
+            return { status: "SUCCESS", data: { facturaId, estadoPago: estado }, error: null };
+        } catch (err) {
+            log.error("actualizarEstadoPagoFactura fallo", { traceId, message: err?.message });
+            return { status: "ERROR", data: null, error: { code: "UPDATE_FAILED" } };
+        }
+    }
+);
