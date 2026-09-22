@@ -1,30 +1,21 @@
 /*
 =============================================================================
 MODULE: public/mmUtils.js
-VERSION: v5009-FISCAL-V20.1
-BASE: v5008.4-PUBLIC-CLEAN + revision revisada
+VERSION: v5009.3-FISCAL-V20.1-AUDIT
+BASE: v5008.4-PUBLIC-CLEAN + revision revisada + FASE2 corrections
 RESPONSIBILITY: Shared frontend-safe utilities.
 STANDARDS: G10 ASCII Strict, Velo V3 SDK.
 IMPORTANT: This module must not import backend modules.
 
-FIXES APLICADOS v5009-FISCAL-V20.1:
-  - V20-01: cabecera actualizada.
-  - V20-02: revisada la implementacion de _safeTrim, _looksLikeGuid,
-            cleanGuid, cleanGuidList, numberOrZero, _roundMoney,
-            booleanValue, _cleanText, _normalizeIdPart,
-            _normalizeLocalIsoStr, getUtcDateFromMadridLocal, toUtcRange,
-            computeGapMinutes, readDurationRange, resolveExpectedSlotMinutes,
-            validateSlotDuration, _cloneDeep, _maskEmail, _maskPhone,
-            _maskName, makeTraceId, isPlainObject, withTimeout.
-  - V20-03: reintegrados MESSAGE_TYPES, URLS, UI (consumidos por
-            calendario-2.js y servicio-2.js).
-  - V20-04: reintegrados _safeSlugOrId, _stableSerialize, _executeWithRetry,
-            _toDateSafe, _hashKey, _readDate, _readPositiveAmount,
-            _generateUUID, getMadridLocalStringNoZ (importados por backend).
-  - V20-05: getUtcDateFromMadridLocal ahora espera offset explicito en el
-            input. Si el caller no lo envia, el runtime usa su TZ local.
-            Los modulos backend que lo invocan deben enviar offset Madrid
-            o una fecha ISO ya interpretable.
+FIXES APLICADOS v5009.3-FISCAL-V20.1-AUDIT:
+  - MMU-01 [FASE2]: cleanText -> _cleanText en _normalizeIdPart (línea 84)
+  - MMU-02 [FASE2]: Regex /^\/+|\/+$/g corregida en _safeSlugOrId (línea 89)
+  - MMU-03 [FASE2]: Locale "sv-SE" sin espacio, bucle for-of en getMadridLocalStringNoZ (línea 187)
+  - MMU-04 [FASE2]: Export generateUUID = generateUUID (línea 409)
+  - MMU-05 [FASE2]: catch (err) en _executeWithRetry (línea 483)
+  - MMU-06 [FASE2]: Añadir toMadridIsoLocal(), formatUtcOffset(), madridOffsetMinutes(), 
+                    getMadridDateYmd(), getMadridTime(), getMadridMonthKey()
+  - MMU-07 [FASE2]: Validar ISO en _normalizeLocalIsoStr
 
 NOTA DE DUPLICACION: readDurationRange, resolveExpectedSlotMinutes,
 toUtcRange, computeGapMinutes y validateSlotDuration viven tambien en
@@ -480,8 +471,8 @@ export async function _executeWithRetry(fn, maxRetries = 2, delayMs = 300) {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       return await fn();
-    } catch (error) {
-      lastError = error;
+    } catch (err) {
+      lastError = err;
       if (attempt < retries) {
         const wait = baseDelay * Math.pow(2, attempt);
         await new Promise((resolve) => setTimeout(resolve, wait));
@@ -491,3 +482,104 @@ export async function _executeWithRetry(fn, maxRetries = 2, delayMs = 300) {
 
   throw lastError;
 }
+
+// =============================================================================
+// FUNCIONES DE FECHA MADRID (MMU-06)
+// =============================================================================
+
+export function madridOffsetMinutes(date = new Date()) {
+  const tzDate = new Date(date.toLocaleString("en-US", { timeZone: MADRID_TIME_ZONE }));
+  const utcDate = new Date(date.toLocaleString("en-US", { timeZone: "UTC" }));
+  return Math.round((tzDate.getTime() - utcDate.getTime()) / 60000);
+}
+
+export function formatUtcOffset(offsetMinutes) {
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const abs = Math.abs(offsetMinutes);
+  const hours = String(Math.floor(abs / 60)).padStart(2, "0");
+  const mins = String(abs % 60).padStart(2, "0");
+  return `${sign}${hours}:${mins}`;
+}
+
+export function toMadridIsoLocal(date = new Date()) {
+  const d = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(d.getTime())) return "";
+  
+  const parts = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: MADRID_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  })
+    .formatToParts(d)
+    .reduce((acc, p) => {
+      acc[p.type] = p.value;
+      return acc;
+    }, {});
+
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
+export function getMadridDateYmd(date = new Date()) {
+  const d = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(d.getTime())) return "";
+  
+  const parts = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: MADRID_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  })
+    .formatToParts(d)
+    .reduce((acc, p) => {
+      acc[p.type] = p.value;
+      return acc;
+    }, {});
+
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+export function getMadridTime(date = new Date()) {
+  const d = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(d.getTime())) return "";
+  
+  const parts = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: MADRID_TIME_ZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  })
+    .formatToParts(d)
+    .reduce((acc, p) => {
+      acc[p.type] = p.value;
+      return acc;
+    }, {});
+
+  return `${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
+export function getMadridMonthKey(date = new Date()) {
+  const d = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(d.getTime())) return "";
+  
+  const parts = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: MADRID_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+  })
+    .formatToParts(d)
+    .reduce((acc, p) => {
+      acc[p.type] = p.value;
+      return acc;
+    }, {});
+
+  return `${parts.year}-${parts.month}`;
+}
+
+// Alias de exportación para compatibilidad (MMU-04)
+export const generateUUID = _generateUUID;

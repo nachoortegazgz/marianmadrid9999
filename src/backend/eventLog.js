@@ -801,7 +801,7 @@ export const registrarFacturaRecibida = webMethod(
                 totalAmount,
                 taxableBaseOrNonSubjectAmount: Number(payload?.totalTaxableBase) || 0,
                 taxAmount: Number(payload?.totalVatAmount) || 0,
-                taxRate: Number(payload?.taxRate) || 21,
+                taxRate: Number(payload?.taxRate) || IVA_RATES.GENERAL,
                 surchargeRate: Number(payload?.surchargeRate) || 0,
                 surchargeAmount: Number(payload?.surchargeAmount) || 0,
                 irpfWithholdingAmount: Number(payload?.irpfWithholdingAmount) || 0,

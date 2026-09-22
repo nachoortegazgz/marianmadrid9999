@@ -33,6 +33,7 @@ import {
     CONCURRENCY,
     SDK_CONFIG,
     API,
+    INACTIVE_BOOKING_STATUSES,
 } from "backend/internalConfig";
 import {
     _safeTrim,
@@ -321,6 +322,12 @@ export function _safeLockId(key) {
     if (!k) return "";
     return "lk_" + _hashKey(k) + "_" + k.slice(0, 24);
 }
+
+// Alias público para compatibilidad con módulos que importan safeLockId sin guión bajo
+export const safeLockId = _safeLockId;
+
+// Alias público para compatibilidad con módulos que importan generateSlotKey sin guión bajo
+export const generateSlotKey = _generateSlotKey;
 
 async function _getLock(slotClave) {
     const k = String(slotClave || "");
@@ -1013,7 +1020,7 @@ export async function _rankResourcesByLoad(resourceIds, dateYMD, traceId) {
 
                 const status = String(item?.status || "").toUpperCase();
                 const paymentStatus = String(item?.paymentStatus || "").toUpperCase();
-                const cancelled = ["CANCELLED", "DECLINED", "REJECTED", "NO_SHOW"].includes(status);
+                const cancelled = INACTIVE_BOOKING_STATUSES.indexOf(status) >= 0;
                 const ignoredPayment = paymentStatus === "CANCELLED";
 
                 if (!cancelled && !ignoredPayment) loads[resourceId].load += 1;

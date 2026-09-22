@@ -38,6 +38,8 @@ import {
     BOOKING_STATUS,
     PAYMENT_STATUS,
     PAYMENT_METHOD,
+    COMPENSATION_KIND,
+    COMPENSATION_STATUS,
     APP_IDS,
 } from "backend/internalConfig";
 
@@ -190,11 +192,11 @@ async function _compensateCreatedBookings(createdBookings, traceId) {
             try {
                 await wixData.insert(
                     COMPENSACIONESCOL, {
-                        id: "COMP" + bookingId + "_" + Date.now(),
-                        kind: "CANCEL_BOOKING",
+                        id: "COMP_" + bookingId + "_" + Date.now(),
+                        kind: COMPENSATION_KIND.CANCEL_BOOKING,
                         bookingId: bookingId,
                         phase: booking?.phase || "UNKNOWN",
-                        status: "PENDING",
+                        status: COMPENSATION_STATUS.PENDING,
                         attempts: 0,
                         amount: 0,
                         paymentMethod: null,
