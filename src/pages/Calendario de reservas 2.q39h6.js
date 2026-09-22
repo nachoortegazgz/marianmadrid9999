@@ -1,14 +1,6 @@
 /**
  * MODULE: pages/calendario-2.js
- * VERSION: v5009-FISCAL-V20.1
- * BASE: v5003.8-FINAL + Directriz V20 (IDs nativa en ingles)
- * STANDARDS: G10 ASCII Strict, Velo Native Optimized.
- *
- * FIXES APLICADOS v5009-FISCAL-V20.1:
- *  - V20-01: sin renombrados funcionales. Pagina frontend que delega
- *            todo a webMethods backend. No accede a CMS directamente.
- *
- * CORRECCIONES (heredadas): C1..C13, FIX-25, FIX-26, FIX-31.
+ * VERSION: v5010-SERVICE-CONTRACT-ALIGNED
  */
 
 import wixLocation from "wix-location-frontend";
@@ -36,8 +28,8 @@ import {
 import { createWidgetBridge } from "public/widgetBridge";
 import { processDualBooking } from "backend/citasManager.web";
 
-let currentServiceId = null;
-let currentSlugUrl = null;
+let currentServiceId = "";
+let currentSlugUrl = "";
 let currentService = null;
 let bridge = null;
 
@@ -56,37 +48,43 @@ function parseUrlParams() {
 }
 
 function resolveServiceFromParams(params) {
-  if (params.serviceId && _looksLikeGuid(params.serviceId)) {
+  const serviceId = _safeTrim(params.serviceId);
+  const slugUrl = _safeSlugOrId(params.slugUrl);
+
+  if (serviceId && _looksLikeGuid(serviceId)) {
     return {
-      serviceId: params.serviceId,
-      slugUrl: params.slugUrl || null
+      serviceId,
+      slugUrl: slugUrl || ""
     };
   }
 
-  if (params.slugUrl) {
-    return { serviceId: null, slugUrl: params.slugUrl };
+  if (slugUrl) {
+    return {
+      serviceId: "",
+      slugUrl
+    };
   }
 
   return null;
 }
 
 function getMessageType(message) {
-  return String(
-    (message && (message.type || message.action)) || ""
-  )
-    .trim()
-    .toUpperCase();
+  return _safeTrim(
+    message?.type ||
+    message?.action ||
+    ""
+  ).toUpperCase();
 }
 
 function getPayload(message) {
   if (
-    message &&
-    message.payload &&
+    message?.payload &&
     typeof message.payload === "object" &&
     !Array.isArray(message.payload)
   ) {
     return message.payload;
   }
+
   return {};
 }
 
@@ -98,33 +96,175 @@ function createResultError(code, message) {
   };
 }
 
-function filterAllowedAddonIds(service, requestedAddonIds) {
-  if (!Array.isArray(requestedAddonIds) || requestedAddonIds.length === 0) {
-    return [];
+function getReferenceId(value) {
+  if (typeof value === "string") {
+    return _safeTrim(value);
   }
 
-  const addons = Array.isArray(service?.metadata?.addons)
-    ? service.metadata.addons
-    : [];
-
-  if (addons.length === 0) return [];
-
-  const allowed = new Set();
-  for (const addon of addons) {
-    const id = _safeTrim(addon?.id);
-    if (id) allowed.add(id);
-    const nativeId = _safeTrim(addon?.nativeId);
-    if (nativeId) allowed.add(nativeId);
+  if (value && typeof value === "object") {
+    return _safeTrim(
+      value.id ||
+      value.referenceId ||
+      value.value ||
+      ""
+    );
   }
 
-  return requestedAddonIds
-    .map((id) => _safeTrim(id))
-    .filter((id) => id && allowed.has(id));
+  return "";
 }
 
 function getActiveServiceLookup() {
-  if (currentService?.serviceId) return currentService.serviceId;
-  return currentServiceId || currentSlugUrl;
+  return (
+    currentService?.serviceId ||
+    currentService?.slugUrl ||
+    currentServiceId ||
+    currentSlugUrl
+  );
+}
+
+function filterAllowedAddonIds(service, requestedIds) {
+  if (!Array.isArray(requestedIds)) {
+    return [];
+  }
+
+  const addons = Array.isArray(service?.addons)
+    ? service.addons
+    : Array.isArray(service?.metadata?.addons)
+      ? service.metadata.addons
+      : [];
+
+  const allowed = new Set();
+
+  for (const addon of addons) {
+    const id = getReferenceId(
+      typeof addon === "string"
+        ? addon
+        : addon?.addonId ||
+          addon?.id ||
+          addon?.referenceId
+    );
+
+    if (id) {
+      allowed.add(id);
+    }
+  }
+
+  return Array.from(
+    new Set(
+      requestedIds
+        .map(_safeTrim)
+        .filter((id) => id && allowed.has(id))
+    )
+  ).slice(0, 21);
+}
+
+function normalizeService(data, params) {
+  const metadata =
+    data.metadata &&
+    typeof data.metadata === "object"
+      ? data.metadata
+      : {};
+
+  const serviceId = getReferenceId(data.serviceId);
+  const slugUrl = _safeSlugOrId(
+    data.slugUrl ||
+    params.slugUrl ||
+    currentSlugUrl
+  );
+
+  if (!_looksLikeGuid(serviceId)) {
+    throw new Error(
+      "El servicio no tiene un serviceId valido."
+    );
+  }
+
+  if (!slugUrl) {
+    throw new Error(
+      "El servicio no tiene un slugUrl valido."
+    );
+  }
+
+  const imageUrl = _safeTrim(
+    data.mainMedia ||
+    data.imageUrl ||
+    metadata.mainMedia ||
+    metadata.imageUrl ||
+    ""
+  );
+
+  const addons = Array.isArray(data.addons)
+    ? data.addons
+    : Array.isArray(metadata.addons)
+      ? metadata.addons
+      : [];
+
+  return {
+    ...data,
+
+    serviceId,
+    slugUrl,
+
+    title: _safeTrim(
+      data.title ||
+      data.tituloServicio ||
+      metadata.tituloServicio ||
+      ""
+    ),
+
+    description: _safeTrim(
+      data.description ||
+      metadata.description ||
+      ""
+    ),
+
+    location: _safeTrim(
+      data.location ||
+      metadata.location ||
+      ""
+    ),
+
+    totalDuration: Number(
+      data.totalDuration ??
+      metadata.totalDuration ??
+      0
+    ),
+
+    price: Number(
+      data.price ??
+      metadata.price ??
+      0
+    ),
+
+    mainMedia: imageUrl,
+    imageUrl,
+    addons,
+
+    allowCombine:
+      data.allowCombine === true ||
+      metadata.allowCombine === true,
+
+    phase2ServiceId: getReferenceId(
+      data.phase2ServiceId ||
+      data.linkedPhases ||
+      metadata.phase2ServiceId
+    ),
+
+    metadata: {
+      ...metadata,
+      mainMedia: imageUrl,
+      imageUrl,
+      addons
+    },
+
+    referral: params.referral,
+    preselectedAddonIds: params.addonIds,
+    timeZone: "Europe/Madrid",
+    currencyCode: _safeTrim(
+      data.currency ||
+      metadata.currency ||
+      "EUR"
+    ).toUpperCase()
+  };
 }
 
 async function loadServiceContext(params) {
@@ -138,53 +278,40 @@ async function loadServiceContext(params) {
     typeof result.data !== "object"
   ) {
     throw new Error(
-      result?.error?.message || "No se pudo cargar el servicio."
+      result?.error?.message ||
+      "No se pudo cargar el servicio."
     );
   }
 
-  const serviceId = _safeTrim(result.data.serviceId || currentServiceId);
-
-  if (!_looksLikeGuid(serviceId)) {
-    throw new Error("El servicio no tiene un identificador valido.");
-  }
-
-  currentService = { ...result.data, serviceId };
-
-  const metadata = result.data.metadata || {};
-  const imageUrl = _safeTrim(
-    result.data.imageUrl || metadata.imageUrl || ""
+  currentService = normalizeService(
+    result.data,
+    params
   );
 
-  return {
-    ...currentService,
-    slugUrl: result.data.slugUrl || currentSlugUrl,
-    referral: params.referral,
-    preselectedAddonIds: params.addonIds,
-    timeZone: "Europe/Madrid",
-    currencyCode:
-      result.data.currency ||
-      metadata.currency ||
-      metadata.pricing?.currency ||
-      "EUR",
-    imageUrl,
-    metadata: { ...metadata, imageUrl }
-  };
+  currentServiceId = currentService.serviceId;
+  currentSlugUrl = currentService.slugUrl;
+
+  return currentService;
 }
 
 async function handleNavigation(payload) {
-  const target = _safeTrim(payload?.target || "").toUpperCase();
+  const target = _safeTrim(
+    payload?.target || ""
+  ).toUpperCase();
 
   if (target === "SERVICIOS") {
-    wixLocation.to(URLS?.SERVICIOS || "/reserva-online");
-    return true;
+    wixLocation.to(
+      URLS?.SERVICIOS || "/reserva-online"
+    );
+    return;
   }
 
   if (target === "PRIVACY") {
-    wixLocation.to(URLS?.PRIVACY_POLICY || "/politica-de-privacidad");
-    return true;
+    wixLocation.to(
+      URLS?.PRIVACY_POLICY ||
+      "/politica-de-privacidad"
+    );
   }
-
-  return false;
 }
 
 async function handleAvailability(payload, reply) {
@@ -200,82 +327,85 @@ async function handleAvailability(payload, reply) {
     return;
   }
 
-  const action = _safeTrim(payload.action || "").toLowerCase();
+  const action = _safeTrim(
+    payload.action || ""
+  ).toLowerCase();
+
   const addonIds = filterAllowedAddonIds(
     currentService,
-    Array.isArray(payload.addonIds) ? payload.addonIds : []
+    payload.addonIds
   );
 
-  const timeoutMs = UI?.FRONTEND_API_TIMEOUT_MS || 60000;
   const lookup = getActiveServiceLookup();
-
-  let result;
+  const timeout = UI?.FRONTEND_API_TIMEOUT_MS || 60000;
 
   try {
+    let result;
+
     if (action === "days") {
       result = await withTimeout(
-        () =>
-          getAvailableDays(
-            lookup,
-            payload.resourceId || null,
-            Number(payload.year),
-            Number(payload.month),
-            addonIds
-          ),
-        timeoutMs,
+        () => getAvailableDays(
+          lookup,
+          payload.resourceId || null,
+          Number(payload.year),
+          Number(payload.month),
+          addonIds
+        ),
+        timeout,
         "getAvailableDays"
       );
     } else if (action === "slots") {
-      if (currentService.allowCombine === true) {
-        result = await withTimeout(
-          () =>
-            getCertifiedDualSlots(
+      const dateYMD = _safeTrim(
+        payload.dateYMD || ""
+      );
+
+      result = await withTimeout(
+        () => currentService.allowCombine
+          ? getCertifiedDualSlots(
               lookup,
               payload.resourceId || null,
-              _safeTrim(payload.dateYMD || ""),
+              dateYMD,
               addonIds
-            ),
-          timeoutMs,
-          "getCertifiedDualSlots"
-        );
-      } else {
-        result = await withTimeout(
-          () =>
-            getAvailableSlots(
+            )
+          : getAvailableSlots(
               lookup,
               payload.resourceId || null,
-              _safeTrim(payload.dateYMD || ""),
+              dateYMD,
               addonIds
             ),
-          timeoutMs,
-          "getAvailableSlots"
-        );
-      }
+        timeout,
+        currentService.allowCombine
+          ? "getCertifiedDualSlots"
+          : "getAvailableSlots"
+      );
     } else {
       result = createResultError(
         "INVALID_AVAILABILITY_REQUEST",
         "Solicitud de disponibilidad no valida."
       );
     }
-  } catch (error) {
-    result = createResultError(
-      "AVAILABILITY_FAILED",
-      error?.message || "No se pudo obtener disponibilidad."
-    );
-  }
 
-  reply(
-    MESSAGE_TYPES.AVAIL,
-    {
-      ...(result ||
-        createResultError(
+    reply(
+      MESSAGE_TYPES.AVAIL,
+      {
+        ...(result || createResultError(
           "EMPTY_AVAILABILITY_RESPONSE",
           "No se recibio disponibilidad."
         )),
-      requestSequence: payload.requestSequence || 0
-    },
-    payload
-  );
+        requestSequence: payload.requestSequence || 0
+      },
+      payload
+    );
+  } catch (error) {
+    reply(
+      MESSAGE_TYPES.AVAIL,
+      createResultError(
+        "AVAILABILITY_FAILED",
+        "No se pudo obtener disponibilidad."
+      ),
+      payload
+    );
+  }
 }
 
 async function handleSelection(payload, reply) {
@@ -292,10 +422,15 @@ async function handleSelection(payload, reply) {
   }
 
   const start = _safeTrim(
-    payload.localStartDate || payload.slotF1?.localStartDate || ""
+    payload.localStartDate ||
+    payload.slotF1?.localStartDate ||
+    ""
   );
+
   const end = _safeTrim(
-    payload.localEndDate || payload.slotF1?.localEndDate || ""
+    payload.localEndDate ||
+    payload.slotF1?.localEndDate ||
+    ""
   );
 
   if (!start || !end) {
@@ -312,43 +447,36 @@ async function handleSelection(payload, reply) {
 
   const addonIds = filterAllowedAddonIds(
     currentService,
-    Array.isArray(payload.addonIds) ? payload.addonIds : []
+    payload.addonIds
   );
-  const lookup = getActiveServiceLookup();
 
   try {
     const result = await withTimeout(
-      () =>
-        resolveStaffForSlot(
-          lookup,
-          start,
-          payload.resourceId || null,
-          addonIds,
-          end
-        ),
+      () => resolveStaffForSlot(
+        getActiveServiceLookup(),
+        start,
+        payload.resourceId || null,
+        addonIds,
+        end
+      ),
       UI?.FRONTEND_API_TIMEOUT_MS || 60000,
       "resolveStaffForSlot"
     );
 
     reply(
       MESSAGE_TYPES.SELECT,
-      result ||
-        createResultError(
-          "STAFF_RESOLVE_FAILED",
-          "No se pudo validar el profesional."
-        ),
+      result || createResultError(
+        "STAFF_RESOLVE_FAILED",
+        "No se pudo validar el profesional."
+      ),
       payload
     );
   } catch (error) {
     reply(
       MESSAGE_TYPES.SELECT,
       createResultError(
-        error?.code === "TIMEOUT"
-          ? "STAFF_RESOLVE_TIMEOUT"
-          : "STAFF_RESOLVE_FAILED",
-        error?.code === "TIMEOUT"
-          ? "La validacion esta tardando demasiado."
-          : "No se pudo validar el profesional."
+        "STAFF_RESOLVE_FAILED",
+        "No se pudo validar el profesional."
       ),
       payload
     );
@@ -371,7 +499,8 @@ async function handleBooking(message, reply, traceId) {
   }
 
   const bookingData =
-    payload.bookingData && typeof payload.bookingData === "object"
+    payload.bookingData &&
+    typeof payload.bookingData === "object"
       ? payload.bookingData
       : payload;
 
@@ -387,12 +516,14 @@ async function handleBooking(message, reply, traceId) {
     return;
   }
 
-  if (currentService.allowCombine === true) {
+  if (currentService.allowCombine) {
     const f2 = bookingData.slotF2;
-    const f2Start = _safeTrim(f2?.localStartDate);
-    const f2End = _safeTrim(f2?.localEndDate);
 
-    if (!f2 || !f2Start || !f2End) {
+    if (
+      !f2 ||
+      !_safeTrim(f2.localStartDate) ||
+      !_safeTrim(f2.localEndDate)
+    ) {
       reply(
         MESSAGE_TYPES.BOOK,
         createResultError(
@@ -405,16 +536,19 @@ async function handleBooking(message, reply, traceId) {
     }
   }
 
-  const rawAddonIds = Array.isArray(bookingData.addonIds)
-    ? bookingData.addonIds
-    : [];
-  const addonIds = filterAllowedAddonIds(currentService, rawAddonIds);
+  const addonIds = filterAllowedAddonIds(
+    currentService,
+    bookingData.addonIds
+  );
 
   const requestPayload = {
     ...bookingData,
-    addonIds,
+
+    // Identidades normalizadas y no modificables por el widget.
     serviceId: currentService.serviceId,
-    slugUrl: currentService.slugUrl || currentSlugUrl,
+    slugUrl: currentService.slugUrl,
+
+    addonIds,
     traceId
   };
 
@@ -432,30 +566,27 @@ async function handleBooking(message, reply, traceId) {
         "No se recibio respuesta de la reserva."
       );
 
-    reply(MESSAGE_TYPES.BOOK, bookingResult, payload);
+    reply(
+      MESSAGE_TYPES.BOOK,
+      bookingResult,
+      payload
+    );
 
-    const bookingSucceeded =
-      bookingResult?.status === "SUCCESS" ||
-      bookingResult?.success === true;
-
-    if (bookingSucceeded) {
+    if (
+      bookingResult.status === "SUCCESS" ||
+      bookingResult.success === true
+    ) {
       await wixWindow.openLightbox(
         "ConfirmacionReserva",
         bookingResult.data || bookingResult
       );
     }
   } catch (error) {
-    const timeout =
-      error?.code === "TIMEOUT" ||
-      String(error?.message || "").toUpperCase().includes("TIMEOUT");
-
     reply(
       MESSAGE_TYPES.BOOK,
       createResultError(
-        timeout ? "BOOKING_TIMEOUT" : "BOOKING_FAILED",
-        timeout
-          ? "La reserva puede estar procesandose. No la reenvies todavia."
-          : "No se pudo completar la reserva."
+        "BOOKING_FAILED",
+        "No se pudo completar la reserva."
       ),
       payload
     );
@@ -468,7 +599,10 @@ $w.onReady(async () => {
   const resolved = resolveServiceFromParams(params);
 
   if (!resolved) {
-    console.error("[calendario-2] Servicio no valido", { traceId });
+    console.error(
+      "[calendario-2] Identidad de servicio invalida",
+      { traceId }
+    );
     return;
   }
 
@@ -482,15 +616,16 @@ $w.onReady(async () => {
     typeof widget.postMessage !== "function" ||
     typeof widget.onMessage !== "function"
   ) {
-    console.error("[calendario-2] Widget HTML no disponible", { traceId });
+    console.error(
+      "[calendario-2] Widget HTML no disponible",
+      { traceId }
+    );
     return;
   }
 
   try {
     bridge = createWidgetBridge(widget, {
-      onContextReady: async () => {
-        return loadServiceContext(params);
-      },
+      onContextReady: () => loadServiceContext(params),
 
       onWidgetMessage: async (message, reply) => {
         const type = getMessageType(message);
@@ -520,28 +655,38 @@ $w.onReady(async () => {
           type !== MESSAGE_TYPES.READY &&
           type !== MESSAGE_TYPES.CONTEXT
         ) {
-          console.warn("[calendario-2] Mensaje no soportado", {
-            traceId,
-            type
-          });
+          console.warn(
+            "[calendario-2] Mensaje no soportado",
+            { traceId, type }
+          );
         }
       },
 
       onError: (error) => {
-        console.error("[calendario-2] Error de comunicacion", {
-          traceId,
-          message: error?.message
-        });
+        console.error(
+          "[calendario-2] Error de comunicacion",
+          {
+            traceId,
+            message: error?.message
+          }
+        );
       }
     });
 
     if (!bridge) {
-      throw new Error("No se pudo inicializar el bridge.");
+      throw new Error(
+        "No se pudo inicializar el bridge."
+      );
     }
   } catch (error) {
-    console.error("[calendario-2] Error de inicializacion", {
-      traceId,
-      message: error?.message
-    });
+    console.error(
+      "[calendario-2] Error de inicializacion",
+      {
+        traceId,
+        message: error?.message
+      }
+    );
   }
 });
+
+Este módulo usa únicamente `serviceId` y `slugUrl`, obtiene `mainMedia` mediante el contexto normalizado y no accede directamente al CMS.
