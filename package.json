@@ -1,7 +1,7 @@
 {
   "devDependencies": {
     "@babel/parser": "^7.29.9",
-    "@wix/cli": "^1.1.247",
+    "@wix/cli": "^1.0.1",
     "@wix/eslint-plugin-cli": "^1.0.0",
     "acorn": "^8.18.0",
     "depcheck": "^1.4.7",
