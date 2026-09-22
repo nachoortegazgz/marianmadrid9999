@@ -106,8 +106,8 @@ export const SDK_CONFIG = Object.freeze({
 
     // B3-FIX: TIME_SLOTS debe ser "BUSINESS" per dev.wix.com V2 API
     LOCATION_TYPES: Object.freeze({
-        TIME_SLOTS: "BUSINESS", 
-        BOOKINGS_WRITER: "OWNER_BUSINESS",
+        TIME_SLOTS: "BUSINESS",
+        BOOKINGS_WRITER: "OWNERBUSINESS",
     }),
 
     TIMEOUTS: Object.freeze({
@@ -180,7 +180,7 @@ export const SDK_CONFIG = Object.freeze({
 
     M365: Object.freeze({ ENABLED: false }),
     ACCOUNTING: Object.freeze({ ENABLED: false }),
-    
+
     // Flag explícito para activar/desactivar sync de servicios (Deuda #6 resuelta)
     SYNC_BOOKINGS_SERVICES_ENABLED: false,
 
@@ -796,7 +796,7 @@ export function buildComputerSystem(fiscalConfig) {
 export function resolveWithholdingAccount(fiscalRole) {
     switch (fiscalRole) {
         case FISCAL_ROLE.EMISOR:
-            return ACCOUNTING_ACCOUNT.TAX_IRPF_WITHHOLDING_PAYABLE; 
+            return ACCOUNTING_ACCOUNT.TAX_IRPF_WITHHOLDING_PAYABLE;
         case FISCAL_ROLE.RECEPTOR:
             return ACCOUNTING_ACCOUNT.TAX_IRPF_WITHHOLDING_RECEIVABLE;
         default:
@@ -809,7 +809,7 @@ export function resolveWithholdingAccount(fiscalRole) {
  */
 export function validateInternalConfig() {
     const issues = [];
-    
+
     // Verificar colecciones críticas
     if (!BUSINESS_COLLECTIONS.CITAS_F2 || !OPERATIONAL_COLLECTIONS.SLOT_LOCKS) {
         issues.push("Colecciones críticas faltantes");
@@ -829,7 +829,7 @@ export function validateInternalConfig() {
     if (FISCAL_LIMITS.CASHPAYMENT_MAX_EUR !== 1000) {
         issues.push("Límite efectivo incorrecto (debe ser 1000)");
     }
-    
+
     return {
         valid: issues.length === 0,
         issues,
