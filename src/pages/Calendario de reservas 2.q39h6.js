@@ -688,5 +688,3 @@ $w.onReady(async () => {
     );
   }
 });
-
-Este módulo usa únicamente `serviceId` y `slugUrl`, obtiene `mainMedia` mediante el contexto normalizado y no accede directamente al CMS.
