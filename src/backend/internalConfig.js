@@ -480,6 +480,7 @@ export const BOOKING_STATUS = Object.freeze({
     CONFIRMED: "CONFIRMED",
     PENDING_PAYMENT: "PENDING_PAYMENT",
     CANCELLED: "CANCELLED",
+    CANCELED: "CANCELLED",
     REFUNDED: "REFUNDED",
 });
 
@@ -497,6 +498,10 @@ export const PAYMENT_STATUS = Object.freeze({
     REFUNDED: "REFUNDED",
     PARTIALLY_REFUNDED: "PARTIALLY_REFUNDED",
 });
+
+// Compatibility facades for legacy hooks and isolated test runners.
+export const ESTADO_CITA = BOOKING_STATUS;
+export const ESTADO_PAGO = PAYMENT_STATUS;
 
 export const COLLABORATOR_ROLES = Object.freeze({
     ADMIN: "ADMIN",
@@ -873,7 +878,7 @@ export function validateRuntimeContext(context) {
  * Comparador seguro de enums (ignora mayúsculas/minúsculas y espacios).
  */
 export function enumEq(value, expectedEnumValue) {
-    if (!value || !expectedEnumValue) return false;
+    if (!value || !expectedEnumValue) {return false;}
     return String(value).trim().toUpperCase() === String(expectedEnumValue).trim().toUpperCase();
 }
 
@@ -881,7 +886,7 @@ export function enumEq(value, expectedEnumValue) {
  * Verifica si un valor pertenece a un enum (ignora mayúsculas/minúsculas y espacios).
  */
 export function enumIn(value, enumObject) {
-    if (!value || !enumObject) return false;
+    if (!value || !enumObject) {return false;}
     const stringValue = String(value).trim().toUpperCase();
     return Object.values(enumObject).some(v => String(v).trim().toUpperCase() === stringValue);
 }
@@ -890,11 +895,11 @@ export function enumIn(value, enumObject) {
  * Normaliza el tipo de reserva a valores canónicos.
  */
 export function normalizeBookingType(type) {
-    if (!type) return BOOKING_TYPE.NORMAL;
+    if (!type) {return BOOKING_TYPE.NORMAL;}
     const normalized = String(type).toUpperCase();
-    if (normalized === 'DUAL' || normalized === 'PAIR') return BOOKING_TYPE.DUAL;
-    if (normalized === 'PACKAGE' || normalized === 'PAQUETE') return BOOKING_TYPE.PACKAGE;
-    if (normalized === 'CANCELLED' || normalized === 'CANCELADO') return BOOKING_TYPE.CANCELLED;
+    if (normalized === 'DUAL' || normalized === 'PAIR') {return BOOKING_TYPE.DUAL;}
+    if (normalized === 'PACKAGE' || normalized === 'PAQUETE') {return BOOKING_TYPE.PACKAGE;}
+    if (normalized === 'CANCELLED' || normalized === 'CANCELADO') {return BOOKING_TYPE.CANCELLED;}
     return BOOKING_TYPE.NORMAL;
 }
 
@@ -909,7 +914,7 @@ export function isDualBookingType(type) {
  * Valida formato GUID/UUID.
  */
 export function isValidGuid(guid) {
-    if (typeof guid !== 'string') return false;
+    if (typeof guid !== 'string') {return false;}
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(guid);
 }
 

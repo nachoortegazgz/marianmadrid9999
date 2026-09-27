@@ -111,12 +111,54 @@ const CHECKOUT_TIMEOUT_MS =
 const API_TIMEOUT_MS =
     Number(SDK_CONFIG?.TIMEOUTS?.API_MS) || 15000;
 
+async function _recordRecoveryAlert({
+    traceId,
+    pairToken,
+    operation,
+    error,
+    attempt = 1,
+    recoveryState,
+}) {
+    const message = error?.message || String(error || "UNKNOWN_ERROR");
+    try {
+        await wixData.insert(
+            COLLECTIONS.ALERTAS_OPERATIVAS,
+            {
+                alertType: "BOOKING_PERSISTENCE_FAILURE",
+                severity: "ERROR",
+                message,
+                status: "OPEN",
+                traceId,
+                meta: {
+                    pairToken: pairToken || null,
+                    operation,
+                    attempt,
+                    recoveryState,
+                    error: message,
+                },
+                _createdDate: new Date(),
+            },
+            { suppressAuth: true }
+        );
+    } catch (alertError) {
+        log.error("AlertasOperativas persistence failed", {
+            traceId,
+            pairToken,
+            operation,
+            attempt,
+            recoveryState: "ALERT_NOT_PERSISTED",
+            error: alertError?.message,
+            originalError: message,
+        });
+    }
+}
+
 // =============================================================================
 // BLOCK 1 - DETERMINISTIC PAIR TOKEN
 // =============================================================================
 function _resolveStablePairToken({ serviceId, resourceId, f1Start, f2Start, email, existingPairToken }) {
     const existing = _safeTrim(existingPairToken);
-    if (existing) return existing;
+    if (existing) {return existing;}
 
     const emailHash = _hashKey(_safeTrim(email).toLowerCase());
     const payload = _stableSerialize({
@@ -133,7 +175,7 @@ function _resolveStablePairToken({ serviceId, resourceId, f1Start, f2Start, emai
 // BLOCK 2 - PERSISTED META NORMALIZATION
 // =============================================================================
 export function _normalizePersistedMeta(meta) {
-    if (!meta) return {};
+    if (!meta) {return {};}
 
     try {
         if (typeof meta === "string") {
@@ -167,10 +209,10 @@ async function _bestEffortUnlockAll(lockKeys, lockOwnerId) {
 // =============================================================================
 // BLOCK 4 - BOOKING COMPENSATION
 // =============================================================================
-async function _compensateCreatedBookings(createdBookings, traceId) {
+async function _compensateCreatedBookings(createdBookings, traceId, pairToken) {
     for (const booking of createdBookings || []) {
         const bookingId = booking?.bookingId || booking?.id;
-        if (!bookingId) continue;
+        if (!bookingId) {continue;}
         try {
             await _executeWithRetry(
                 () =>
@@ -199,11 +241,13 @@ async function _compensateCreatedBookings(createdBookings, traceId) {
                         status: COMPENSATION_STATUS.PENDING,
                         attempts: 0,
                         amount: 0,
+                        totalAmount: 0,
                         paymentMethod: null,
                         transactionId: null,
                         orderId: null,
                         refundId: null,
                         concept: "Booking compensation after saga failure",
+                        operationDescription: "Booking compensation after saga failure",
                         movementType: null,
                         alertRequired: true,
                         lastError: cancelErr?.message || "UNKNOWN",
@@ -217,6 +261,17 @@ async function _compensateCreatedBookings(createdBookings, traceId) {
                     bookingId: bookingId,
                     traceId: traceId,
                     error: queueErr?.message,
+                    pairToken: pairToken || booking?.pairToken || null,
+                    operation: "INSERT_COMPENSATION",
+                    attempt: 1,
+                    recoveryState: "COMPENSATION_NOT_QUEUED",
+                });
+                await _recordRecoveryAlert({
+                    traceId,
+                    pairToken: pairToken || booking?.pairToken || null,
+                    operation: "INSERT_COMPENSATION",
+                    error: queueErr,
+                    recoveryState: "COMPENSATION_NOT_QUEUED",
                 });
             }
         }
@@ -237,7 +292,7 @@ async function _createBookingWithSelectiveElevation(booking, options, traceId) {
         const code = _safeTrim(err?.code || err?.details?.applicationError?.code).toUpperCase();
         const isAccessDenied = code === "ACCESS_DENIED" ||
             String(err?.message || "").toUpperCase().includes("ACCESS_DENIED");
-        if (!isAccessDenied) throw err;
+        if (!isAccessDenied) {throw err;}
         log.info("Elevating createBooking due to ACCESS_DENIED", { traceId: traceId });
         return await withTimeout(
             () => elevate(bookings.createBooking)(booking, options),
@@ -441,7 +496,7 @@ async function _validateLinkedPhaseService(linkedPhases, parentLocationId, trace
 // =============================================================================
 async function _deleteCitasByPairToken(pairToken, traceId) {
     const token = _safeTrim(pairToken);
-    if (!token) return;
+    if (!token) {return;}
 
     try {
         const res = await wixData
@@ -477,7 +532,7 @@ async function _deleteCitasByPairToken(pairToken, traceId) {
 // =============================================================================
 function _isGuidOrNull(value) {
     const v = _safeTrim(value);
-    if (!v) return null;
+    if (!v) {return null;}
     return _looksLikeGuid(v) ? v : null;
 }
 
@@ -569,6 +624,7 @@ export class BookingSagaOrchestrator {
 // =============================================================================
 export async function executeBookingSaga(unsafePayload) {
     const traceId = unsafePayload?.traceId || makeTraceId("saga");
+    let transactionPairToken = null;
     const metaCita = _normalizePersistedMeta(unsafePayload?.metaCita || unsafePayload?.meta || {});
 
     const detectedAddonIds = _detectAndWarnAddons(unsafePayload, metaCita, traceId);
@@ -662,16 +718,28 @@ export async function executeBookingSaga(unsafePayload) {
             email: email,
             existingPairToken: unsafePayload?.pairToken || metaCita.pairToken,
         });
+        transactionPairToken = pairToken;
 
         // =========================================================================
         // PHASE 1: IDEMPOTENCY CHECK ON CITAS_F2
         // =========================================================================
-        const existingCitaRes = await wixData
-            .query(CITASCOL)
-            .eq("pairToken", pairToken)
-            .limit(1)
-            .find({ suppressAuth: true, suppressHooks: true })
-            .catch(function () { return { items: [] }; });
+        let existingCitaRes;
+        try {
+            existingCitaRes = await wixData
+                .query(CITASCOL)
+                .eq("pairToken", pairToken)
+                .limit(1)
+                .find({ suppressAuth: true, suppressHooks: true });
+        } catch (error) {
+            await _recordRecoveryAlert({
+                traceId,
+                pairToken,
+                operation: "READ_CITA_IDEMPOTENCY",
+                error,
+                recoveryState: "SAGA_ABORTED",
+            });
+            throw error;
+        }
 
         if (existingCitaRes?.items?.length > 0) {
             const existingCita = existingCitaRes.items[0];
@@ -761,7 +829,8 @@ export async function executeBookingSaga(unsafePayload) {
         if (resourceValidation?.status !== "SUCCESS") {
             await _failTransaction(
                 pairToken,
-                resourceValidation?.error?.code || "SLOT_UNAVAILABLE"
+                resourceValidation?.error?.code || "SLOT_UNAVAILABLE",
+                traceId
             );
             throw createBookingError(
                 resourceValidation?.error?.code || ERROR_CODES.SLOT_UNAVAILABLE,
@@ -866,7 +935,7 @@ export async function executeBookingSaga(unsafePayload) {
                     totalParticipants: 1,
                 };
                 const f1Options = {
-                    flowControlSettings: { skipAvailabilityValidation: true },
+                    flowControlSettings: {},
                 };
 
                 let bookingF1 = null;
@@ -902,7 +971,7 @@ export async function executeBookingSaga(unsafePayload) {
                         totalParticipants: 1,
                     };
                     const f2Options = {
-                        flowControlSettings: { skipAvailabilityValidation: true },
+                        flowControlSettings: {},
                     };
 
                     const resF2 = await _createBookingWithSelectiveElevation(f2Booking, f2Options, traceId);
@@ -928,7 +997,7 @@ export async function executeBookingSaga(unsafePayload) {
                 };
             },
             async function () {
-                await _compensateCreatedBookings(createdBookings, traceId);
+                await _compensateCreatedBookings(createdBookings, traceId, pairToken);
             }
         );
 
@@ -1147,7 +1216,7 @@ export async function executeBookingSaga(unsafePayload) {
                     await _deleteCitasByPairToken(pairToken, traceId);
                 } catch (_) { /* best effort */ }
                 try {
-                    await _compensateCreatedBookings(createdBookings, traceId);
+                    await _compensateCreatedBookings(createdBookings, traceId, pairToken);
                 } catch (_) { /* best effort */ }
                 throw completeErr;
             }
@@ -1187,8 +1256,31 @@ export async function executeBookingSaga(unsafePayload) {
     } catch (error) {
         const norm = normalizeError(error);
         log.error("executeBookingSaga failed", {
-            code: norm.code, error: norm.message, traceId: traceId,
+            code: norm.code,
+            error: norm.message,
+            traceId,
+            pairToken: transactionPairToken,
+            operation: "EXECUTE_BOOKING_SAGA",
+            attempt: 1,
+            recoveryState: "SAGA_FAILED",
         });
+        if (transactionPairToken) {
+            try {
+                await _failTransaction(
+                    transactionPairToken,
+                    norm.code || norm.message,
+                    traceId
+                );
+            } catch (failurePersistError) {
+                await _recordRecoveryAlert({
+                    traceId,
+                    pairToken: transactionPairToken,
+                    operation: "FAIL_TRANSACTION",
+                    error: failurePersistError,
+                    recoveryState: "TRANSACTION_FAILURE_NOT_PERSISTED",
+                });
+            }
+        }
         return {
             status: "ERROR",
             data: null,

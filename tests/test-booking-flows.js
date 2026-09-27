@@ -12,8 +12,7 @@ import {
   bookings, 
   payments, 
   resetMocks, 
-  getMockState,
-  seedTestData 
+  seedTestData
 } from './mocks/wix-mocks.js';
 
 // ============================================================================
@@ -29,8 +28,7 @@ const TEST_CONFIG = {
   TIMEZONE: 'Europe/Madrid'
 };
 
-let testResults = [];
-let currentTest = '';
+const testResults = [];
 
 // ============================================================================
 // UTILIDADES DE TEST
@@ -43,7 +41,6 @@ function assert(condition, message) {
 }
 
 function logTest(name) {
-  currentTest = name;
   console.log(`\n🧪 TEST: ${name}`);
   console.log('='.repeat(60));
 }
@@ -268,9 +265,8 @@ async function testDualBookingWithGap() {
       totalParticipants: 1
     };
     
-    const resultF1 = await bookings.createBooking(payloadF1, {
-      flowControlSettings: { skipAvailabilityValidation: true }
-    });
+    const resultF1Pending = await bookings.createBooking(payloadF1);
+    const resultF1 = await bookings.confirmBooking(resultF1Pending.booking._id);
     
     assert(resultF1.booking, 'Booking F1 creado');
     assert(resultF1.booking.status === 'CONFIRMED', 'F1 CONFIRMED');
@@ -295,9 +291,8 @@ async function testDualBookingWithGap() {
       totalParticipants: 1
     };
     
-    const resultF2 = await bookings.createBooking(payloadF2, {
-      flowControlSettings: { skipAvailabilityValidation: true }
-    });
+    const resultF2Pending = await bookings.createBooking(payloadF2);
+    const resultF2 = await bookings.confirmBooking(resultF2Pending.booking._id);
     
     assert(resultF2.booking, 'Booking F2 creado');
     assert(resultF2.booking.status === 'CONFIRMED', 'F2 CONFIRMED');
@@ -415,50 +410,28 @@ async function testConcurrencyAndAntiOverbooking() {
     
     const lockKey = `lock:${TEST_CONFIG.MARIAN_RESOURCE_ID}:2025-01-16:1500`;
     
-    // Usuario A intenta obtener lock
-    logStep('Paso 2: Usuario A solicita lock');
-    
-    const existingLock = await wixData.query('SlotLocks')
-      .eq('lockKey', lockKey)
-      .findOne();
-    
-    if (!existingLock) {
-      await wixData.insert('SlotLocks', {
-        _id: lockKey,
-        lockKey,
-        pairToken: 'userA_token',
-        expiresAt: new Date(Date.now() + 300000).toISOString(),
-        owner: 'userA'
-      });
-      logStep('   Usuario A obtiene lock');
-    } else {
-      logStep('   Usuario A: lock ya existe');
-    }
-    
-    // Usuario B intenta obtener el MISMO lock
-    logStep('Paso 3: Usuario B solicita mismo lock (concurrencia)');
-    
-    const existingLockB = await wixData.query('SlotLocks')
-      .eq('lockKey', lockKey)
-      .findOne();
-    
-    let userBGotLock = false;
-    
-    if (!existingLockB) {
-      await wixData.insert('SlotLocks', {
-        _id: lockKey,
-        lockKey,
-        pairToken: 'userB_token',
-        expiresAt: new Date(Date.now() + 300000).toISOString(),
-        owner: 'userB'
-      });
-      userBGotLock = true;
-      logStep('   ❌ Usuario B también obtuvo lock (ERROR DE CONCURRENCIA)');
-    } else {
-      logStep('   ✅ Usuario B rechazado: lock ya ocupado por userA');
-    }
-    
-    assert(!userBGotLock, 'Solo un usuario obtiene el lock (anti-sobre-reserva)');
+    // Dos usuarios solicitan el mismo lock simultáneamente. La unicidad de _id
+    // debe rechazar exactamente uno; consultar antes de insertar no es atómico.
+    logStep('Paso 2: Usuario A y B solicitan simultáneamente el mismo lock');
+    const acquireLock = (pairToken, owner) => wixData.insert('SlotLocks', {
+      _id: lockKey,
+      lockKey,
+      pairToken,
+      expiresAt: new Date(Date.now() + 300000).toISOString(),
+      owner
+    }).then(() => ({ owner, acquired: true }))
+      .catch((error) => ({ owner, acquired: false, error }));
+
+    const attempts = await Promise.all([
+      acquireLock('userA_token', 'userA'),
+      acquireLock('userB_token', 'userB')
+    ]);
+    const winners = attempts.filter((attempt) => attempt.acquired);
+    const losers = attempts.filter((attempt) => !attempt.acquired);
+    assert(winners.length === 1, 'Exactamente un usuario obtiene el lock');
+    assert(losers.length === 1, 'El segundo usuario es rechazado por colisión');
+    assert(losers[0].error?.code === 'WD_ITEM_ALREADY_EXISTS', 'La colisión devuelve error de unicidad');
+    logStep(`   ✅ Ganador: ${winners[0].owner}; rechazado: ${losers[0].owner}`);
     
     // Usuario A completa la reserva
     logStep('Paso 4: Usuario A completa reserva');
@@ -473,9 +446,8 @@ async function testConcurrencyAndAntiOverbooking() {
       totalParticipants: 1
     };
     
-    const booking = await bookings.createBooking(payload, {
-      flowControlSettings: { skipAvailabilityValidation: true }
-    });
+    const bookingPending = await bookings.createBooking(payload);
+    const booking = await bookings.confirmBooking(bookingPending.booking._id);
     
     assert(booking.booking, 'Reserva completada por userA');
     logStep(`   Booking confirmado: ${booking.booking._id}`);

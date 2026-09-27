@@ -100,6 +100,11 @@ const ACTIONS = {
       traceId,
     }),
 };
+const ADMIN_ALLOWED_TYPES = Object.freeze([
+  ...Object.keys(ACTIONS),
+  ...Object.keys(ACTIONS).map((type) => `${type}_RES`),
+  "UNKNOWN_RES",
+]);
 
 $w.onReady(async () => {
   const traceId = makeTraceId("admin-page");
@@ -134,6 +139,7 @@ $w.onReady(async () => {
   }
 
   createWidgetBridge(widget, {
+    allowedTypes: ADMIN_ALLOWED_TYPES,
     slugUrl: "administracion",
     traceId,
 
@@ -177,26 +183,24 @@ $w.onReady(async () => {
       };
     },
 
-    onWidgetMessage: async (message, reply) => {
+    onWidgetMessage: async (message, currentBridge) => {
       const type = String(message?.type || "")
         .trim()
         .toUpperCase();
 
       const payload = message?.payload || {};
       const handler = ACTIONS[type];
+      const reply = (responseType, responsePayload) =>
+        currentBridge.reply(responseType, responsePayload, message);
 
       if (!handler) {
-        reply(
-          `${type || "UNKNOWN"}_RES`,
-          {
-            status: "ERROR",
-            error: {
-              code: "UNKNOWN_ACTION",
-              message: "Accion no reconocida",
-            },
+        reply(`${type || "UNKNOWN"}_RES`, {
+          status: "ERROR",
+          error: {
+            code: "UNKNOWN_ACTION",
+            message: "Accion no reconocida",
           },
-          payload
-        );
+        });
         return;
       }
 
@@ -206,21 +210,17 @@ $w.onReady(async () => {
           traceId,
         });
 
-        reply(`${type}_RES`, result, payload);
+        reply(`${type}_RES`, result);
       } catch (error) {
-        reply(
-          `${type}_RES`,
-          {
-            status: "ERROR",
-            error: {
-              code: "ACTION_FAILED",
-              message:
-                error?.message ||
-                "No se pudo completar la accion.",
-            },
+        reply(`${type}_RES`, {
+          status: "ERROR",
+          error: {
+            code: "ACTION_FAILED",
+            message:
+              error?.message ||
+              "No se pudo completar la accion.",
           },
-          payload
-        );
+        });
       }
     },
   });

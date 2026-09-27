@@ -129,7 +129,13 @@ export const wixData = {
     if (!mockState.collections.has(collectionId)) {
       throw new Error(`Collection '${collectionId}' not found`);
     }
-    
+    const collection = mockState.collections.get(collectionId);
+    if (document._id && collection.some(item => item._id === document._id)) {
+      const error = new Error(`Duplicate key for _id '${document._id}'`);
+      error.code = 'WD_ITEM_ALREADY_EXISTS';
+      throw error;
+    }
+
     const newItem = {
       ...document,
       _id: document._id || `mock_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -137,7 +143,7 @@ export const wixData = {
       _updatedDate: new Date().toISOString()
     };
     
-    mockState.collections.get(collectionId).push(newItem);
+    collection.push(newItem);
     return newItem;
   },
 

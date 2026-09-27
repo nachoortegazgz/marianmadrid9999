@@ -107,14 +107,14 @@ function filterAllowedAddonIds(service, requestedAddonIds) {
     ? service.metadata.addons
     : [];
 
-  if (addons.length === 0) return [];
+  if (addons.length === 0) {return [];}
 
   const allowed = new Set();
   for (const addon of addons) {
     const id = _safeTrim(addon?.id);
-    if (id) allowed.add(id);
+    if (id) {allowed.add(id);}
     const nativeId = _safeTrim(addon?.nativeId);
-    if (nativeId) allowed.add(nativeId);
+    if (nativeId) {allowed.add(nativeId);}
   }
 
   return requestedAddonIds
@@ -123,7 +123,7 @@ function filterAllowedAddonIds(service, requestedAddonIds) {
 }
 
 function getActiveServiceLookup() {
-  if (currentService?.serviceId) return currentService.serviceId;
+  if (currentService?.serviceId) {return currentService.serviceId;}
   return currentServiceId || currentSlugUrl;
 }
 
@@ -492,9 +492,11 @@ $w.onReady(async () => {
         return loadServiceContext(params);
       },
 
-      onWidgetMessage: async (message, reply) => {
+      onWidgetMessage: async (message, currentBridge) => {
         const type = getMessageType(message);
         const payload = getPayload(message);
+        const reply = (replyType, responsePayload) =>
+          currentBridge.reply(replyType, responsePayload, message);
 
         if (type === MESSAGE_TYPES.NAV) {
           await handleNavigation(payload);
