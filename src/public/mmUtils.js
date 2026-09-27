@@ -58,17 +58,16 @@ const MADRID_TIME_ZONE = "Europe/Madrid";
 // =============================================================================
 
 export function _safeTrim(value, maxLength = MAX_TEXT_LENGTH) {
-  if (value === null || value === undefined) return "";
+  if (value === null || value === undefined) {return "";}
   return String(value)
     .trim()
     .slice(0, Math.max(1, Number(maxLength) || MAX_TEXT_LENGTH));
 }
 
 export function _cleanText(value, maxLength = MAX_TEXT_LENGTH) {
-  return _safeTrim(value, maxLength).replace(
-    /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g,
-    ""
-  );
+  return Array.from(_safeTrim(value, maxLength))
+    .filter((character) => character >= " " || character === "\t" || character === "\n" || character === "\r")
+    .join("");
 }
 
 export function _normalizeIdPart(value, maxLength = 200) {
@@ -115,7 +114,7 @@ export function cleanGuidList(value) {
     ...new Set(
       source
         .map((item) => {
-          if (typeof item === "string") return _safeTrim(item, 100);
+          if (typeof item === "string") {return _safeTrim(item, 100);}
           return _safeTrim(item?.resourceId || item?.id || item?._id, 100);
         })
         .filter(_looksLikeGuid)
@@ -134,7 +133,7 @@ export function numberOrZero(value, minimum = 0) {
 
 export function _roundMoney(value, decimals = 2) {
   const number = Number(value);
-  if (!Number.isFinite(number)) return 0;
+  if (!Number.isFinite(number)) {return 0;}
   const factor = 10 ** Math.max(0, Number(decimals) || 2);
   return Math.round((number + Number.EPSILON) * factor) / factor;
 }
@@ -154,14 +153,14 @@ export function _readPositiveAmount(value) {
 
 export function _normalizeLocalIsoStr(value) {
   const raw = _safeTrim(value, 80);
-  if (!raw) return "";
+  if (!raw) {return "";}
   return raw.replace(" ", "T");
 }
 
 function parseDate(value) {
-  if (value instanceof Date) return new Date(value.getTime());
+  if (value instanceof Date) {return new Date(value.getTime());}
   const raw = _normalizeLocalIsoStr(value);
-  if (!raw) return null;
+  if (!raw) {return null;}
   const date = new Date(raw);
   return Number.isNaN(date.getTime()) ? null : date;
 }
@@ -173,7 +172,7 @@ export function getUtcDateFromMadridLocal(value) {
 
 export function getMadridLocalStringNoZ(value) {
   const dt = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(dt.getTime())) return "";
+  if (Number.isNaN(dt.getTime())) {return "";}
 
   const parts = new Intl.DateTimeFormat("sv-SE", {
     timeZone: MADRID_TIME_ZONE,
@@ -195,7 +194,7 @@ export function getMadridLocalStringNoZ(value) {
 }
 
 export function _toDateSafe(value) {
-  if (!value) return null;
+  if (!value) {return null;}
   if (value instanceof Date) {
     return Number.isNaN(value.getTime()) ? null : value;
   }
@@ -205,16 +204,16 @@ export function _toDateSafe(value) {
 
 export function _readDate(value) {
   const clean = _safeTrim(value, 40);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) return clean;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) {return clean;}
   const dt = _toDateSafe(value);
-  if (!dt) return null;
+  if (!dt) {return null;}
   return dt.toLocaleDateString("sv-SE", { timeZone: MADRID_TIME_ZONE });
 }
 
 export function toUtcRange(startLocal, endLocal) {
   const startUtc = getUtcDateFromMadridLocal(startLocal);
   const endUtc = getUtcDateFromMadridLocal(endLocal);
-  if (!startUtc || !endUtc || endUtc <= startUtc) return null;
+  if (!startUtc || !endUtc || endUtc <= startUtc) {return null;}
   return { startUtc, endUtc };
 }
 
@@ -244,14 +243,14 @@ export function readDurationRange(item = {}) {
     item.data?.durationRange ||
     item.fields?.durationRange;
 
-  if (!range || typeof range !== "object") return null;
+  if (!range || typeof range !== "object") {return null;}
 
   const min = numberOrZero(range.minDuration ?? range.min);
   const rawMax = numberOrZero(range.maxDuration ?? range.max);
   const max = rawMax > 0 ? rawMax : Infinity;
 
-  if (min <= 0 && max === Infinity) return null;
-  if (max !== Infinity && max <= min) return null;
+  if (min <= 0 && max === Infinity) {return null;}
+  if (max !== Infinity && max <= min) {return null;}
 
   return { min, max };
 }
@@ -282,7 +281,7 @@ export function validateSlotDuration({
   };
 
   const range = toUtcRange(startLocal, endLocal);
-  if (!range) return { ...result, ok: false, code: "INVALID_SLOT_RANGE" };
+  if (!range) {return { ...result, ok: false, code: "INVALID_SLOT_RANGE" };}
 
   result.actualMinutes = Math.round(
     (range.endUtc - range.startUtc) / 60000
@@ -317,9 +316,9 @@ export function validateSlotDuration({
 // =============================================================================
 
 export function _cloneDeep(value) {
-  if (value === null || typeof value !== "object") return value;
-  if (value instanceof Date) return new Date(value.getTime());
-  if (Array.isArray(value)) return value.map(_cloneDeep);
+  if (value === null || typeof value !== "object") {return value;}
+  if (value instanceof Date) {return new Date(value.getTime());}
+  if (Array.isArray(value)) {return value.map(_cloneDeep);}
 
   const result = {};
   for (const [key, child] of Object.entries(value)) {
@@ -338,9 +337,9 @@ export function isPlainObject(value) {
 }
 
 export function _stableSerialize(value) {
-  if (value === null || value === undefined) return String(value);
-  if (Array.isArray(value)) return `[${value.map(_stableSerialize).join(",")}]`;
-  if (value instanceof Date) return `"${value.toISOString()}"`;
+  if (value === null || value === undefined) {return String(value);}
+  if (Array.isArray(value)) {return `[${value.map(_stableSerialize).join(",")}]`;}
+  if (value instanceof Date) {return `"${value.toISOString()}"`;}
   if (typeof value === "object") {
     return `{${Object.keys(value)
       .sort()
@@ -357,7 +356,7 @@ export function _stableSerialize(value) {
 export function _maskEmail(value) {
   const email = _safeTrim(value, 254);
   const at = email.indexOf("@");
-  if (at <= 1) return "[REDACTED_EMAIL]";
+  if (at <= 1) {return "[REDACTED_EMAIL]";}
   return `${email[0]}***${email.slice(at - 1)}`;
 }
 
@@ -439,7 +438,7 @@ export function withTimeout(promiseOrFactory, timeoutMs, label = "OPERATION_TIME
     let settled = false;
 
     const timer = setTimeout(() => {
-      if (settled) return;
+      if (settled) {return;}
       settled = true;
       const error = new Error(label);
       error.code = "TIMEOUT";
@@ -449,13 +448,13 @@ export function withTimeout(promiseOrFactory, timeoutMs, label = "OPERATION_TIME
     Promise.resolve()
       .then(factory)
       .then((value) => {
-        if (settled) return;
+        if (settled) {return;}
         settled = true;
         clearTimeout(timer);
         resolve(value);
       })
       .catch((error) => {
-        if (settled) return;
+        if (settled) {return;}
         settled = true;
         clearTimeout(timer);
         reject(error);
@@ -503,7 +502,7 @@ export function formatUtcOffset(offsetMinutes) {
 
 export function toMadridIsoLocal(date = new Date()) {
   const d = date instanceof Date ? date : new Date(date);
-  if (Number.isNaN(d.getTime())) return "";
+  if (Number.isNaN(d.getTime())) {return "";}
   
   const parts = new Intl.DateTimeFormat("sv-SE", {
     timeZone: MADRID_TIME_ZONE,
@@ -526,7 +525,7 @@ export function toMadridIsoLocal(date = new Date()) {
 
 export function getMadridDateYmd(date = new Date()) {
   const d = date instanceof Date ? date : new Date(date);
-  if (Number.isNaN(d.getTime())) return "";
+  if (Number.isNaN(d.getTime())) {return "";}
   
   const parts = new Intl.DateTimeFormat("sv-SE", {
     timeZone: MADRID_TIME_ZONE,
@@ -545,7 +544,7 @@ export function getMadridDateYmd(date = new Date()) {
 
 export function getMadridTime(date = new Date()) {
   const d = date instanceof Date ? date : new Date(date);
-  if (Number.isNaN(d.getTime())) return "";
+  if (Number.isNaN(d.getTime())) {return "";}
   
   const parts = new Intl.DateTimeFormat("sv-SE", {
     timeZone: MADRID_TIME_ZONE,
@@ -565,7 +564,7 @@ export function getMadridTime(date = new Date()) {
 
 export function getMadridMonthKey(date = new Date()) {
   const d = date instanceof Date ? date : new Date(date);
-  if (Number.isNaN(d.getTime())) return "";
+  if (Number.isNaN(d.getTime())) {return "";}
   
   const parts = new Intl.DateTimeFormat("sv-SE", {
     timeZone: MADRID_TIME_ZONE,

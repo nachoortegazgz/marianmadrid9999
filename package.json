@@ -29,7 +29,6 @@
     "sinon": "^22.1.0"
   },
   "scripts": {
-    "postinstall": "wix sync-types",
     "dev": "wix dev",
     "lint": "eslint ."
   }

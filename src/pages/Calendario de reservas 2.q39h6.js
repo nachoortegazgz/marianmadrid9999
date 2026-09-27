@@ -627,9 +627,11 @@ $w.onReady(async () => {
     bridge = createWidgetBridge(widget, {
       onContextReady: () => loadServiceContext(params),
 
-      onWidgetMessage: async (message, reply) => {
+      onWidgetMessage: async (message, currentBridge) => {
         const type = getMessageType(message);
         const payload = getPayload(message);
+        const reply = (replyType, responsePayload) =>
+          currentBridge.reply(replyType, responsePayload, message);
 
         if (type === MESSAGE_TYPES.NAV) {
           await handleNavigation(payload);

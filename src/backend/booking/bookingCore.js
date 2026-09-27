@@ -51,6 +51,17 @@ import {
 
 const log = logger;
 
+function _logPersistenceFailure(operation, error, context = {}) {
+    log.error("CRITICAL_PERSISTENCE_FAILURE", {
+        operation,
+        traceId: context.traceId || null,
+        pairToken: context.pairToken || null,
+        attempt: Number(context.attempt) || 1,
+        recoveryState: context.recoveryState || "NOT_RECOVERED",
+        error: error?.message || String(error || "UNKNOWN_ERROR"),
+    });
+}
+
 // FIX-32: STAFF_RESOURCE_TYPE_ID via SSOT.
 const STAFF_RESOURCE_TYPE_ID = API.STAFF_RESOURCE_TYPE_ID;
 
@@ -176,20 +187,20 @@ export function _handleError(error, context, traceId, logFn) {
 
 async function _resolveScheduleIdByResourceId(resourceId) {
     const id = _safeTrim(resourceId);
-    if (!id || !_looksLikeGuid(id)) return null;
+    if (!id || !_looksLikeGuid(id)) {return null;}
     const scheduleId = await getStaffScheduleId(id);
     return scheduleId && _looksLikeGuid(scheduleId) ? scheduleId : null;
 }
 
 export async function _resolveScheduleIdForResource(resourceId, sourceSlot) {
     const resourceIdClean = _safeTrim(resourceId);
-    if (!resourceIdClean || !_looksLikeGuid(resourceIdClean)) return null;
+    if (!resourceIdClean || !_looksLikeGuid(resourceIdClean)) {return null;}
 
     const s = (sourceSlot && typeof sourceSlot === "object") ? sourceSlot : {};
     let scheduleId = _safeTrim(
         s.scheduleId || s.slot?.scheduleId || s.schedule?.id || s.resource?.scheduleId || ""
     );
-    if (scheduleId && _looksLikeGuid(scheduleId)) return scheduleId;
+    if (scheduleId && _looksLikeGuid(scheduleId)) {return scheduleId;}
 
     scheduleId = await _resolveScheduleIdByResourceId(resourceIdClean);
     return scheduleId || null;
@@ -200,7 +211,7 @@ export async function _resolveScheduleIdForResource(resourceId, sourceSlot) {
 // =============================================================================
 
 export async function _forceStaffInPristineSlot(slot, resourceId, serviceIdOverride, defaultDurationMinutes) {
-    if (!slot || typeof slot !== "object") return null;
+    if (!slot || typeof slot !== "object") {return null;}
 
     const serviceId = _safeTrim(serviceIdOverride || slot.serviceId);
     if (!serviceId || !_looksLikeGuid(serviceId)) {
@@ -227,31 +238,31 @@ export async function _forceStaffInPristineSlot(slot, resourceId, serviceIdOverr
 
     let localStartDate = "";
     const rawStart = slot.localStartDate || slot.startDate;
-    if (rawStart instanceof Date) localStartDate = getMadridLocalStringNoZ(rawStart);
+    if (rawStart instanceof Date) {localStartDate = getMadridLocalStringNoZ(rawStart);}
     else if (typeof rawStart === "string" && rawStart.endsWith("Z")) {
         const utcDt = new Date(rawStart);
         localStartDate = !isNaN(utcDt.getTime()) ? getMadridLocalStringNoZ(utcDt) : "";
-    } else localStartDate = _safeTrim(rawStart);
-    if (!localStartDate) return null;
+    } else {localStartDate = _safeTrim(rawStart);}
+    if (!localStartDate) {return null;}
 
     let localEndDate = "";
     const rawEnd = slot.localEndDate || slot.endDate;
-    if (rawEnd instanceof Date) localEndDate = getMadridLocalStringNoZ(rawEnd);
+    if (rawEnd instanceof Date) {localEndDate = getMadridLocalStringNoZ(rawEnd);}
     else if (typeof rawEnd === "string" && rawEnd.endsWith("Z")) {
         const utcDt = new Date(rawEnd);
         localEndDate = !isNaN(utcDt.getTime()) ? getMadridLocalStringNoZ(utcDt) : "";
-    } else localEndDate = _safeTrim(rawEnd);
+    } else {localEndDate = _safeTrim(rawEnd);}
 
     if (!localEndDate) {
         const startUtc = getUtcDateFromMadridLocal(localStartDate);
-        if (!startUtc) return null;
+        if (!startUtc) {return null;}
         const durationMin = Number(defaultDurationMinutes || CONCURRENCY?.DEFAULT_DURATION_MIN || 30);
         localEndDate = getMadridLocalStringNoZ(new Date(startUtc.getTime() + durationMin * 60 * 1000));
     }
 
     const startDate = getUtcDateFromMadridLocal(localStartDate);
     const endDate = getUtcDateFromMadridLocal(localEndDate);
-    if (!startDate || !endDate) return null;
+    if (!startDate || !endDate) {return null;}
 
     if (endDate.getTime() <= startDate.getTime()) {
         log.error("_forceStaffInPristineSlot: invalid date range (endDate <= startDate)", {
@@ -265,7 +276,7 @@ export async function _forceStaffInPristineSlot(slot, resourceId, serviceIdOverr
 
     const locationId = _safeTrim(SDK_CONFIG?.LOCATION_ID);
     let locationType = _safeTrim(SDK_CONFIG?.LOCATION_TYPES?.BOOKINGS_WRITER) || "OWNER_BUSINESS";
-    if (locationType === "BUSINESS") locationType = "OWNER_BUSINESS";
+    if (locationType === "BUSINESS") {locationType = "OWNER_BUSINESS";}
     const timezone = _safeTrim(SDK_CONFIG?.TZ) || "Europe/Madrid";
 
     if (!locationId) {
@@ -294,10 +305,10 @@ export function _extractCheckoutId(checkoutSession) {
 
 export async function getCheckoutUrlSafe(checkoutSessionOrId) {
     const direct = checkoutSessionOrId?.checkoutUrl || checkoutSessionOrId?.checkout?.checkoutUrl || null;
-    if (direct) return direct;
+    if (direct) {return direct;}
     const checkoutId =
         typeof checkoutSessionOrId === "string" ? checkoutSessionOrId : _extractCheckoutId(checkoutSessionOrId);
-    if (!checkoutId) return null;
+    if (!checkoutId) {return null;}
     try {
         const result = await getCheckoutUrlElevated(checkoutId, {});
         return result?.checkoutUrl || null;
@@ -319,7 +330,7 @@ const LOCKS_COL = COLLECTIONS.SLOT_LOCKS;
 
 export function _safeLockId(key) {
     const k = String(key || "").trim();
-    if (!k) return "";
+    if (!k) {return "";}
     return "lk_" + _hashKey(k) + "_" + k.slice(0, 24);
 }
 
@@ -331,17 +342,29 @@ export const generateSlotKey = _generateSlotKey;
 
 async function _getLock(slotClave) {
     const k = String(slotClave || "");
-    if (!k) return null;
-    const item = await wixData
-        .get(LOCKS_COL, _safeLockId(k), { suppressAuth: true, consistentRead: true })
-        .catch(() => null);
-    if (!item) return null;
-    if (item.expiresAt) item.expiresAt = _toDateSafe(item.expiresAt);
+    if (!k) {return null;}
+    let item;
+    try {
+        item = await wixData.get(
+            LOCKS_COL,
+            _safeLockId(k),
+            { suppressAuth: true, consistentRead: true }
+        );
+    } catch (error) {
+        log.warn("_getLock cache/read miss", {
+            slotClave: k,
+            error: error?.message,
+            recoveryState: "TREATED_AS_NOT_FOUND",
+        });
+        return null;
+    }
+    if (!item) {return null;}
+    if (item.expiresAt) {item.expiresAt = _toDateSafe(item.expiresAt);}
     return item;
 }
 
 function _getLockOwnerId(lock) {
-    if (!lock || typeof lock !== "object") return "";
+    if (!lock || typeof lock !== "object") {return "";}
     return _safeTrim(lock.lockOwnerId || lock.traceId || "");
 }
 
@@ -366,7 +389,7 @@ function _buildLockDocument(slotClave, lockOwnerId, ttlMs, existing) {
 export async function _lockSlotKeyOrFail(slotClave, lockOwnerId, ttlMs) {
     const k = String(slotClave || "");
     const owner = String(lockOwnerId || "").trim();
-    if (!k || !owner) return { ok: false, message: "LOCK_KEY_OR_OWNER_INVALID" };
+    if (!k || !owner) {return { ok: false, message: "LOCK_KEY_OR_OWNER_INVALID" };}
 
     try {
         await wixData.insert(LOCKS_COL, _buildLockDocument(k, owner, ttlMs), { suppressAuth: true });
@@ -385,11 +408,25 @@ export async function _lockSlotKeyOrFail(slotClave, lockOwnerId, ttlMs) {
         const expiresAt = _toDateSafe(existing?.expiresAt);
         const expired = expiresAt ? expiresAt.getTime() < Date.now() : false;
         if (expired && existing?._id) {
-            await wixData.remove(LOCKS_COL, existing._id, { suppressAuth: true }).catch(() => null);
+            try {
+                await wixData.remove(LOCKS_COL, existing._id, { suppressAuth: true });
+            } catch (removeError) {
+                _logPersistenceFailure("SlotLocks.remove.expired", removeError, {
+                    pairToken: k,
+                    operation: "RECLAIM_EXPIRED_LOCK",
+                    recoveryState: "LOCK_NOT_RECLAIMED",
+                });
+                return { ok: false, message: "LOCK_RECLAIM_FAILED" };
+            }
             try {
                 await wixData.insert(LOCKS_COL, _buildLockDocument(k, owner, ttlMs), { suppressAuth: true });
                 return { ok: true, acquired: true, reclaimed: true };
-            } catch (_) {
+            } catch (insertError) {
+                _logPersistenceFailure("SlotLocks.insert.reclaim", insertError, {
+                    pairToken: k,
+                    operation: "RECLAIM_EXPIRED_LOCK",
+                    recoveryState: "LOCK_NOT_RECLAIMED",
+                });
                 return { ok: false, message: "LOCK_HELD_BY_ANOTHER_OWNER" };
             }
         }
@@ -400,9 +437,9 @@ export async function _lockSlotKeyOrFail(slotClave, lockOwnerId, ttlMs) {
 export async function _unlockSlotKey(slotClave, lockOwnerId) {
     const owner = String(lockOwnerId || "").trim();
     const existing = await _getLock(slotClave);
-    if (!existing) return { ok: true, missing: true };
+    if (!existing) {return { ok: true, missing: true };}
     const currentOwner = _getLockOwnerId(existing);
-    if (!owner || currentOwner !== owner) return { ok: false, skipped: true };
+    if (!owner || currentOwner !== owner) {return { ok: false, skipped: true };}
     await wixData.remove(LOCKS_COL, existing._id, { suppressAuth: true });
     return { ok: true };
 }
@@ -411,9 +448,9 @@ export async function _renewLock(slotClave, lockOwnerId, ttlMs) {
     try {
         const owner = String(lockOwnerId || "").trim();
         const existing = await _getLock(slotClave);
-        if (!existing) return { ok: false };
+        if (!existing) {return { ok: false };}
         const currentOwner = _getLockOwnerId(existing);
-        if (!owner || currentOwner !== owner) return { ok: false };
+        if (!owner || currentOwner !== owner) {return { ok: false };}
         await wixData.update(LOCKS_COL, _buildLockDocument(slotClave, owner, ttlMs, existing), { suppressAuth: true });
         return { ok: true };
     } catch (error) {
@@ -458,13 +495,26 @@ const TRANSACTION_MAX_WAIT_MS = Number(CONCURRENCY?.TRANSACTION_MAX_WAIT_MS) || 
 
 async function _getTransactionById(pairToken) {
     const id = String(pairToken || "");
-    if (!id) return null;
-    return await wixData.get(TRANSACTIONS_COL, id, { suppressAuth: true, consistentRead: true }).catch(() => null);
+    if (!id) {return null;}
+    try {
+        return await wixData.get(
+            TRANSACTIONS_COL,
+            id,
+            { suppressAuth: true, consistentRead: true }
+        );
+    } catch (error) {
+        log.warn("_getTransactionById read miss", {
+            pairToken: id,
+            error: error?.message,
+            recoveryState: "TREATED_AS_NOT_FOUND",
+        });
+        return null;
+    }
 }
 
 export async function _initTransaction(pairToken, payloadHash, traceId) {
     const id = String(pairToken || "");
-    if (!id) return { success: false, error: "INVALID_PAIR_TOKEN" };
+    if (!id) {return { success: false, error: "INVALID_PAIR_TOKEN" };}
 
     try {
         await wixData.insert(
@@ -482,7 +532,7 @@ export async function _initTransaction(pairToken, payloadHash, traceId) {
         );
         return { success: true, isNew: true };
     } catch (error) {
-        if (!_isDuplicateItemError(error)) throw error;
+        if (!_isDuplicateItemError(error)) {throw error;}
 
         const startTime = Date.now();
         let pollAttempt = 0;
@@ -492,7 +542,7 @@ export async function _initTransaction(pairToken, payloadHash, traceId) {
                 if (String(existing.payloadHash || "") !== String(payloadHash || "")) {
                     return { success: false, error: "PAIR_TOKEN_PAYLOAD_MISMATCH" };
                 }
-                if (existing.status === "COMPLETED") return { success: true, isNew: false, existing };
+                if (existing.status === "COMPLETED") {return { success: true, isNew: false, existing };}
                 if (existing.status === "FAILED") {
                     return { success: false, error: "TRANSACTION_PREVIOUSLY_FAILED", existing };
                 }
@@ -502,7 +552,7 @@ export async function _initTransaction(pairToken, payloadHash, traceId) {
                 Math.floor(TRANSACTION_POLL_BASE_MS * Math.pow(2, Math.min(pollAttempt, 3)) * (0.5 + Math.random())),
                 remainingMs
             );
-            if (delay <= 0) break;
+            if (delay <= 0) {break;}
             pollAttempt++;
             await new Promise(function (r) { setTimeout(r, delay); });
         }
@@ -520,9 +570,9 @@ export async function _initTransaction(pairToken, payloadHash, traceId) {
 
 export async function _completeTransaction(pairToken, result, traceId) {
     const id = String(pairToken || "");
-    if (!id) return;
+    if (!id) {return;}
     const existing = await _getTransactionById(id);
-    if (existing && existing.status === "COMPLETED") return;
+    if (existing && existing.status === "COMPLETED") {return;}
     const doc = {
         ...(existing || {}),
         _id: id,
@@ -533,15 +583,28 @@ export async function _completeTransaction(pairToken, result, traceId) {
         _updatedDate: new Date(),
         _createdDate: existing?._createdDate || new Date(),
     };
-    if (existing) await wixData.update(TRANSACTIONS_COL, doc, { suppressAuth: true });
-    else await wixData.insert(TRANSACTIONS_COL, doc, { suppressAuth: true });
+    try {
+        if (existing) {
+            await wixData.update(TRANSACTIONS_COL, doc, { suppressAuth: true });
+        } else {
+            await wixData.insert(TRANSACTIONS_COL, doc, { suppressAuth: true });
+        }
+    } catch (error) {
+        _logPersistenceFailure("BookingTransactions.complete", error, {
+            traceId,
+            pairToken: id,
+            operation: "COMPLETE_TRANSACTION",
+            recoveryState: "SAGA_MUST_COMPENSATE",
+        });
+        throw error;
+    }
 }
 
-export async function _failTransaction(pairToken, errorMessage) {
+export async function _failTransaction(pairToken, errorMessage, traceId) {
     const id = String(pairToken || "");
-    if (!id) return;
+    if (!id) {return;}
     const existing = await _getTransactionById(id);
-    if (existing && existing.status === "COMPLETED") return;
+    if (existing && existing.status === "COMPLETED") {return;}
     const doc = {
         ...(existing || {}),
         _id: id,
@@ -551,8 +614,21 @@ export async function _failTransaction(pairToken, errorMessage) {
         _updatedDate: new Date(),
         _createdDate: existing?._createdDate || new Date(),
     };
-    if (existing) await wixData.update(TRANSACTIONS_COL, doc, { suppressAuth: true }).catch(() => null);
-    else await wixData.insert(TRANSACTIONS_COL, doc, { suppressAuth: true }).catch(() => null);
+    try {
+        if (existing) {
+            await wixData.update(TRANSACTIONS_COL, doc, { suppressAuth: true });
+        } else {
+            await wixData.insert(TRANSACTIONS_COL, doc, { suppressAuth: true });
+        }
+    } catch (error) {
+        _logPersistenceFailure("BookingTransactions.fail", error, {
+            traceId,
+            pairToken: id,
+            operation: "FAIL_TRANSACTION",
+            recoveryState: "FAILURE_STATE_NOT_PERSISTED",
+        });
+        throw error;
+    }
 }
 
 // =============================================================================
@@ -627,12 +703,22 @@ export async function _persistBooking(params, traceId) {
         throw new Error("Missing pairToken for linked booking");
     }
 
-    const existing = await wixData
-        .query(CITAS_COL)
-        .eq("bookingId", String(bookingId))
-        .limit(1)
-        .find({ suppressAuth: true, suppressHooks: true })
-        .catch(() => null);
+    let existing;
+    try {
+        existing = await wixData
+            .query(CITAS_COL)
+            .eq("bookingId", String(bookingId))
+            .limit(1)
+            .find({ suppressAuth: true, suppressHooks: true });
+    } catch (error) {
+        _logPersistenceFailure("CitasF2.readBeforeWrite", error, {
+            traceId,
+            pairToken: doc.pairToken,
+            operation: "READ_CITA_BEFORE_PERSIST",
+            recoveryState: "PERSISTENCE_ABORTED",
+        });
+        throw error;
+    }
 
     if (existing?.items?.length > 0) {
         const existingDoc = existing.items[0];
@@ -649,12 +735,32 @@ export async function _persistBooking(params, traceId) {
         delete updated._createdDate;
         delete updated._updatedDate;
         delete updated._owner;
-        const item = await wixData.update(CITAS_COL, updated, { suppressAuth: true, suppressHooks: true });
-        return { created: false, item };
+        try {
+            const item = await wixData.update(CITAS_COL, updated, { suppressAuth: true, suppressHooks: true });
+            return { created: false, item };
+        } catch (error) {
+            _logPersistenceFailure("CitasF2.update", error, {
+                traceId,
+                pairToken: doc.pairToken,
+                operation: "UPDATE_CITA",
+                recoveryState: "SAGA_MUST_COMPENSATE",
+            });
+            throw error;
+        }
     }
 
-    const item = await wixData.insert(CITAS_COL, doc, { suppressAuth: true, suppressHooks: true });
-    return { created: true, item };
+    try {
+        const item = await wixData.insert(CITAS_COL, doc, { suppressAuth: true, suppressHooks: true });
+        return { created: true, item };
+    } catch (error) {
+        _logPersistenceFailure("CitasF2.insert", error, {
+            traceId,
+            pairToken: doc.pairToken,
+            operation: "INSERT_CITA",
+            recoveryState: "SAGA_MUST_COMPENSATE",
+        });
+        throw error;
+    }
 }
 
 // =============================================================================
@@ -663,7 +769,7 @@ export async function _persistBooking(params, traceId) {
 
 export async function _updateCitaSafe(bookingId, updater, traceId, operation) {
     const bid = _safeTrim(bookingId);
-    if (!bid) return { updated: false, reason: "INVALID_BOOKING_ID" };
+    if (!bid) {return { updated: false, reason: "INVALID_BOOKING_ID" };}
 
     try {
         const res = await wixData
@@ -679,7 +785,7 @@ export async function _updateCitaSafe(bookingId, updater, traceId, operation) {
         }
 
         const updated = updater(cita);
-        if (!updated) return { updated: false, reason: "NO_CHANGE" };
+        if (!updated) {return { updated: false, reason: "NO_CHANGE" };}
 
         updated._updatedDate = new Date();
         updated.traceId = traceId || updated.traceId;
@@ -692,8 +798,13 @@ export async function _updateCitaSafe(bookingId, updater, traceId, operation) {
             operation,
             traceId,
             error: err?.message,
+            recoveryState: "CITA_UPDATE_NOT_PERSISTED",
         });
-        return { updated: false, reason: "ERROR", error: err?.message };
+        throw createBookingError(
+            ERROR_CODES.DATABASE_ERROR,
+            "CitasF2 update failed",
+            { bookingId: bid, operation, traceId, cause: err?.message }
+        );
     }
 }
 
@@ -704,20 +815,30 @@ export async function _updateCitaSafe(bookingId, updater, traceId, operation) {
 const DUAL_CACHE_COL = COLLECTIONS.DUAL_SLOT_CACHE;
 
 export async function _getDualPairFromCache(pairToken, traceId, expected = {}) {
-    if (!pairToken) return null;
+    if (!pairToken) {return null;}
 
-    const res = await wixData
-        .query(DUAL_CACHE_COL)
-        .eq("_id", String(pairToken))
-        .limit(1)
-        .find({ suppressAuth: true })
-        .catch(() => null);
+    let res;
+    try {
+        res = await wixData
+            .query(DUAL_CACHE_COL)
+            .eq("_id", String(pairToken))
+            .limit(1)
+            .find({ suppressAuth: true });
+    } catch (error) {
+        log.warn("_getDualPairFromCache read failed", {
+            pairToken,
+            traceId,
+            error: error?.message,
+            recoveryState: "CACHE_BYPASSED",
+        });
+        return null;
+    }
 
     const item = res?.items?.[0] || null;
-    if (!item) return null;
+    if (!item) {return null;}
 
     const exp = _toDateSafe(item.expiresAt);
-    if (exp && exp.getTime() < Date.now()) return null;
+    if (exp && exp.getTime() < Date.now()) {return null;}
 
     if (expected.serviceId && _safeTrim(item.serviceId) !== _safeTrim(expected.serviceId)) {
         log.warn("_getDualPairFromCache: serviceId mismatch", {
@@ -758,7 +879,7 @@ export async function _getDualPairFromCache(pairToken, traceId, expected = {}) {
 // =============================================================================
 
 export function _normalizeAddons(addons) {
-    if (!Array.isArray(addons)) return [];
+    if (!Array.isArray(addons)) {return [];}
     return addons.map((a) => {
         const rawPrice = Number(a?.precio ?? a?.price ?? 0);
         const precio = Number.isFinite(rawPrice) && rawPrice >= 0 ? rawPrice : 0;
@@ -779,10 +900,10 @@ export function _sumAddons(addons) {
 // =============================================================================
 
 export function _extractResourceIdsFromSlot(slot) {
-    if (!slot || typeof slot !== "object") return [];
+    if (!slot || typeof slot !== "object") {return [];}
 
     let groups = [];
-    if (Array.isArray(slot.availableResources)) groups = slot.availableResources;
+    if (Array.isArray(slot.availableResources)) {groups = slot.availableResources;}
     else if (slot.slot && typeof slot.slot === "object" && Array.isArray(slot.slot.availableResources)) {
         groups = slot.slot.availableResources;
     } else if (slot.resourceId) {
@@ -792,7 +913,7 @@ export function _extractResourceIdsFromSlot(slot) {
     }
 
     const staffGroup = groups.find((g) => String(g.resourceTypeId) === String(STAFF_RESOURCE_TYPE_ID));
-    if (!staffGroup) return [];
+    if (!staffGroup) {return [];}
 
     return Array.from(new Set(
         (staffGroup.resources || [])
@@ -814,19 +935,19 @@ export function isValidGuid(id) {
 // =============================================================================
 
 export function _areSlotsContiguous(slot1, slot2, maxGapMinutes) {
-    if (!slot1 || !slot2) return false;
-    const maxGap = maxGapMinutes == null ? 120 : maxGapMinutes;
+    if (!slot1 || !slot2) {return false;}
+    const maxGap = maxGapMinutes ?? 120;
     const end1 = slot1.localEndDate || slot1.endDate;
     const start2 = slot2.localStartDate || slot2.startDate;
-    if (!end1 || !start2) return false;
+    if (!end1 || !start2) {return false;}
 
     const end1Utc = end1 instanceof Date ? end1 : getUtcDateFromMadridLocal(_normalizeLocalIsoStr(end1));
     const start2Utc = start2 instanceof Date ? start2 : getUtcDateFromMadridLocal(_normalizeLocalIsoStr(start2));
-    if (!end1Utc || !start2Utc) return false;
+    if (!end1Utc || !start2Utc) {return false;}
 
     const rawDiffMinutes = (start2Utc.getTime() - end1Utc.getTime()) / 60000;
 
-    if (rawDiffMinutes < -1) return false;
+    if (rawDiffMinutes < -1) {return false;}
 
     const gapMinutes = computeGapMinutes(end1Utc, start2Utc);
 
@@ -838,23 +959,23 @@ export function _areSlotsContiguous(slot1, slot2, maxGapMinutes) {
 // =============================================================================
 
 export function _projectCertifiedSlot(slot, resourceId) {
-    if (!slot || typeof slot !== "object") return null;
+    if (!slot || typeof slot !== "object") {return null;}
 
     const serviceId = _safeTrim(slot.serviceId);
-    if (!serviceId || !_looksLikeGuid(serviceId)) return null;
+    if (!serviceId || !_looksLikeGuid(serviceId)) {return null;}
 
     const resourceIdClean = _safeTrim(resourceId || slot.resourceId || slot.resource?.id);
-    if (!resourceIdClean || !_looksLikeGuid(resourceIdClean)) return null;
+    if (!resourceIdClean || !_looksLikeGuid(resourceIdClean)) {return null;}
 
     const localStartDate = _normalizeLocalIsoStr(slot.localStartDate || slot.startDate);
     const localEndDate = _normalizeLocalIsoStr(slot.localEndDate || slot.endDate);
 
-    if (!localStartDate || !localEndDate) return null;
+    if (!localStartDate || !localEndDate) {return null;}
 
     const startDateUtc = getUtcDateFromMadridLocal(localStartDate);
     const endDateUtc = getUtcDateFromMadridLocal(localEndDate);
 
-    if (!startDateUtc || !endDateUtc || endDateUtc.getTime() <= startDateUtc.getTime()) return null;
+    if (!startDateUtc || !endDateUtc || endDateUtc.getTime() <= startDateUtc.getTime()) {return null;}
 
     return {
         serviceId,
@@ -875,13 +996,13 @@ export function _projectCertifiedSlot(slot, resourceId) {
 
 export function _projectWriterSlotFromAvailability(slot, resourceId, serviceId) {
     const projected = _projectCertifiedSlot(slot, resourceId);
-    if (!projected) return null;
+    if (!projected) {return null;}
 
     const finalServiceId = _safeTrim(serviceId) || projected.serviceId;
-    if (!finalServiceId || !_looksLikeGuid(finalServiceId)) return null;
+    if (!finalServiceId || !_looksLikeGuid(finalServiceId)) {return null;}
 
     let writerLocationType = _safeTrim(SDK_CONFIG?.LOCATION_TYPES?.BOOKINGS_WRITER);
-    if (writerLocationType === "BUSINESS" || !writerLocationType) writerLocationType = "OWNER_BUSINESS";
+    if (writerLocationType === "BUSINESS" || !writerLocationType) {writerLocationType = "OWNER_BUSINESS";}
 
     return {
         serviceId: finalServiceId,
@@ -984,7 +1105,7 @@ export async function _rankResourcesByLoad(resourceIds, dateYMD, traceId) {
     const input = Array.isArray(resourceIds) ?
         Array.from(new Set(resourceIds.map((id) => _safeTrim(id)).filter(_looksLikeGuid))) : [];
 
-    if (input.length < 2) return input;
+    if (input.length < 2) {return input;}
 
     const day = _safeTrim(dateYMD);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
@@ -1016,19 +1137,19 @@ export async function _rankResourcesByLoad(resourceIds, dateYMD, traceId) {
 
             for (const item of items) {
                 const resourceId = _safeTrim(item?.resourceId);
-                if (!loads[resourceId]) continue;
+                if (!loads[resourceId]) {continue;}
 
                 const status = String(item?.status || "").toUpperCase();
                 const paymentStatus = String(item?.paymentStatus || "").toUpperCase();
                 const cancelled = INACTIVE_BOOKING_STATUSES.indexOf(status) >= 0;
                 const ignoredPayment = paymentStatus === "CANCELLED";
 
-                if (!cancelled && !ignoredPayment) loads[resourceId].load += 1;
+                if (!cancelled && !ignoredPayment) {loads[resourceId].load += 1;}
             }
 
             skip += items.length;
             hasMore = items.length === pageSize;
-            if (!items.length) hasMore = false;
+            if (!items.length) {hasMore = false;}
         }
 
         return Object.values(loads)

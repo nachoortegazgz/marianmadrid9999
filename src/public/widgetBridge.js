@@ -88,7 +88,9 @@ export function createWidgetBridge(widgetElement, options = {}) {
     error.code = code;
     try {
       onError(error, detail);
-    } catch (_) {}
+    } catch (ignoredError) {
+      void ignoredError;
+    }
   }
 
   function extractEvent(event) {
@@ -111,7 +113,7 @@ export function createWidgetBridge(widgetElement, options = {}) {
     const source = safeObject(message);
     const type = safeType(source.type || source.messageType || source.eventType);
 
-    if (!allowedTypes.has(type)) return null;
+    if (!allowedTypes.has(type)) {return null;}
 
     const payload = safeObject(source.payload || source.data);
     const messageId = safeMessageId(source.messageId || source.id);
@@ -126,7 +128,7 @@ export function createWidgetBridge(widgetElement, options = {}) {
   }
 
   function send(type, payload = {}, messageId = null) {
-    if (destroyed) throw new Error("WIDGET_BRIDGE_DESTROYED");
+    if (destroyed) {throw new Error("WIDGET_BRIDGE_DESTROYED");}
 
     const normalizedType = safeType(type);
     if (!allowedTypes.has(normalizedType)) {
@@ -163,7 +165,7 @@ export function createWidgetBridge(widgetElement, options = {}) {
   }
 
   const unsubscribe = widgetElement.onMessage((event) => {
-    if (destroyed) return;
+    if (destroyed) {return;}
 
     try {
       const message = normalizeMessage(extractEvent(event));
@@ -175,7 +177,7 @@ export function createWidgetBridge(widgetElement, options = {}) {
 
       onMessage(message);
 
-      if (onWidgetMessage) onWidgetMessage(message, bridge);
+      if (onWidgetMessage) {onWidgetMessage(message, bridge);}
 
       if (message.type === "MM_READY" && onContextReady) {
         Promise.resolve(onContextReady(message))
@@ -210,12 +212,14 @@ export function createWidgetBridge(widgetElement, options = {}) {
     },
 
     destroy() {
-      if (destroyed) return;
+      if (destroyed) {return;}
       destroyed = true;
       if (typeof unsubscribe === "function") {
         try {
           unsubscribe();
-        } catch (_) {}
+        } catch (ignoredError) {
+          void ignoredError;
+        }
       }
     },
   };

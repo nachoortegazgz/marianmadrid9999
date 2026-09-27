@@ -28,6 +28,7 @@ import { requireCajero, requireAdmin, requireMarianManager, rateLimiter } from "
 import { logger } from "backend/logger";
 
 import { _toPublicError } from "backend/responseUtils";
+import { getFiscalSystemConfig } from "backend/repositories/fiscalRepository";
 
 const log = logger;
 const CHUNK_PAGE_SIZE = 100;
@@ -262,7 +263,7 @@ export async function getQuarterlyTaxSummaryInternal(year, quarter, options = {}
   const state = _initTaxAccumulator(months);
   _accumulatePage(fetchResult.items, state);
 
-  const nifEmisor = await _getBusinessTaxId(traceId).catch(() => "BXXXXXXXX");
+  const nifEmisor = await _getBusinessTaxId();
 
   return {
     status: "SUCCESS",
@@ -394,22 +395,9 @@ export async function getLibroRegistroFacturasExpedidasInternal(year, quarter, o
   };
 }
 
-async function _getBusinessTaxId(traceId) {
-  try {
-    const config = await withTimeout(
-      wixData.query(COLLECTIONS.CONFIGURACION_FISCAL)
-        .eq("active", true)
-        .limit(1)
-        .find({ suppressAuth: true }),
-      CMS_TIMEOUT_MS,
-      "getBusinessTaxId"
-    );
-    const item = config?.items?.[0];
-    return item?.producerTaxId || item?.businessTaxId || item?.taxId || item?.issuerTaxId || item?.nifEmisor || "BXXXXXXXX";
-  } catch (err) {
-    log.warn("_getBusinessTaxId failed, using fallback", { traceId, error: err?.message });
-    return "BXXXXXXXX";
-  }
+async function _getBusinessTaxId() {
+  const config = await getFiscalSystemConfig();
+  return config.taxId;
 }
 
 // =============================================================================
